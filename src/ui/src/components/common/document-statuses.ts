@@ -16,6 +16,10 @@ export const ABORTABLE_STATUSES: readonly string[] = [
   'EXTRACTING',
   'ASSESSING',
   'POSTPROCESSING',
+  // Policy rule validation runs between the assembly step and review routing.
+  'RULE_VALIDATION_POLICY_CLASSIFICATION',
+  'RULE_VALIDATION',
+  'RULE_VALIDATION_ORCHESTRATOR',
   'HITL_IN_PROGRESS',
   'SUMMARIZING',
   'EVALUATING',

@@ -13,6 +13,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation, useParams } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const roleRef = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
@@ -52,11 +53,18 @@ import AuthRoutes from '../AuthRoutes';
 const ANNOTATOR_ONLY = { loading: false, isAnnotator: true, isAnnotatorOnly: true, hasNoRole: false, sessionError: false };
 const FULL_SHELL = { loading: false, isAnnotator: false, isAnnotatorOnly: false, hasNoRole: false, sessionError: false };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderAt = (path: string) =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <AuthRoutes redirectParam="" />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 beforeEach(() => {

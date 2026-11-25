@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "idp-sdk"
-version = "0.6.15"
+version = "0.6.16"
 description = "Python SDK for IDP Accelerator - programmatic access to document processing capabilities"
 authors = [{name = "AWS"}]
 license = {text = "MIT-0"}
@@ -40,6 +40,9 @@ dependencies = [
     "click>=8.0.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
+    # DMN XML import and export of routing tables (client.config.routing_to_dmn /
+    # routing_from_dmn), through idp_common.decision_tables.dmn.
+    "defusedxml==0.7.1",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +57,9 @@ dev = [
 # validates against.
 terraform = [
     "aws-sam-translator>=1.109.0,<2",
+    # S3 conditional writes (If-Match and If-None-Match on PutObject), which the
+    # Terraform module versions index uses; 1.35.99 is the first with both.
+    "botocore>=1.35.99",
     "pyyaml>=6.0",
 ]
 lambda = [
@@ -68,3 +74,7 @@ lambda = [
 
 [tool.setuptools.packages.find]
 include = ["idp_sdk*"]
+
+[tool.setuptools.package-data]
+# The fit-check report contract, read at run time to validate fit-report.json.
+idp_sdk = ["_core/fit_check/fit-report.schema.json"]

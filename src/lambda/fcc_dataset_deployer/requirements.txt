@@ -2,6 +2,6 @@
 huggingface-hub==0.20.0
 
 # For reading parquet metadata files efficiently
-pyarrow==23.0.1
+pyarrow==26.0.1
 
 # cfnresponse is vendored as cfnresponse.py beside index.py, not installed.

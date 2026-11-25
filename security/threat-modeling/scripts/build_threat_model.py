@@ -72,7 +72,7 @@ PREFIX_DOCS = {
 #     Accepted = accurate finding, deliberately not mitigated, justified in the doc
 STATUS: dict[str, tuple[int, str]] = {
     # Pipeline mode
-    "PM.T01": (9, "Mitigated"),
+    "PM.T01": (9, "Partially Mitigated"),
     "PM.T02": (4, "Mitigated"),
     "PM.T03": (6, "Mitigated"),
     "PM.T04": (3, "Mitigated"),
@@ -83,6 +83,9 @@ STATUS: dict[str, tuple[int, str]] = {
     # Low x High. The GuardDuty ingest gate is optional and off by default, and
     # static detection only; the Staging bucket's archive decoder is outside it.
     "PM.T09": (3, "Partially Mitigated"),
+    # Low x Medium. Validated, bound to the document's own sidecar key and kept out
+    # of prompts, paths and routing, but the values are the uploader's assertions.
+    "PM.T10": (2, "Partially Mitigated"),
     # BDA mode
     "BDA.T01": (4, "Partially Mitigated"),
     "BDA.T02": (2, "Mitigated"),
@@ -99,7 +102,8 @@ STATUS: dict[str, tuple[int, str]] = {
     "AGT.T02": (4, "Partially Mitigated"),
     "AGT.T03": (4, "Mitigated"),
     "AGT.T04": (2, "Mitigated"),
-    "AGT.T05": (6, "Mitigated"),
+    "AGT.T05": (6, "Partially Mitigated"),
+    "AGT.T06": (3, "Partially Mitigated"),
     # Chat
     "CHAT.T01": (9, "Mitigated"),
     "CHAT.T02": (3, "Mitigated"),
@@ -109,16 +113,17 @@ STATUS: dict[str, tuple[int, str]] = {
     "CHAT.T06": (3, "Mitigated"),
     # MCP
     "MCP.T01": (8, "Partially Mitigated"),
-    "MCP.T02": (3, "Mitigated"),
+    "MCP.T02": (3, "Partially Mitigated"),
     "MCP.T03": (6, "Partially Mitigated"),
-    "MCP.T04": (6, "Mitigated"),
-    "MCP.T05": (4, "Mitigated"),
+    "MCP.T04": (6, "Partially Mitigated"),
+    "MCP.T05": (4, "Partially Mitigated"),
     "MCP.T06": (2, "Mitigated"),
+    "MCP.T07": (3, "Mitigated"),
     # Knowledge base
-    "KB.T01": (6, "Mitigated"),
+    "KB.T01": (6, "Partially Mitigated"),
     "KB.T02": (6, "Partially Mitigated"),
-    "KB.T03": (2, "Mitigated"),
-    "KB.T04": (2, "Mitigated"),
+    "KB.T03": (2, "Partially Mitigated"),
+    "KB.T04": (4, "Partially Mitigated"),
     # Auth / RBAC
     "AUTH.T01": (4, "Mitigated"),
     "AUTH.T02": (6, "Mitigated"),
@@ -151,7 +156,11 @@ STATUS: dict[str, tuple[int, str]] = {
     "SDK.T02": (6, "Partially Mitigated"),
     "SDK.T03": (3, "Mitigated"),
     "SDK.T04": (4, "Mitigated"),
-    "SDK.T05": (8, "Partially Mitigated"),
+    "SDK.T05": (3, "Partially Mitigated"),
+    "SDK.T06": (6, "Partially Mitigated"),
+    "SDK.T07": (4, "Partially Mitigated"),
+    "SDK.T08": (4, "Mitigated"),
+    "SDK.T09": (3, "Partially Mitigated"),
     # Hooks
     "HOOK.T01": (4, "Partially Mitigated"),
     "HOOK.T02": (8, "Partially Mitigated"),
@@ -160,6 +169,9 @@ STATUS: dict[str, tuple[int, str]] = {
     "HOOK.T05": (3, "Mitigated"),
     "HOOK.T06": (6, "Mitigated"),
     "HOOK.T07": (6, "Mitigated"),
+    "HOOK.T08": (3, "Partially Mitigated"),
+    "HOOK.T09": (3, "Partially Mitigated"),
+    "HOOK.T10": (4, "Mitigated"),
     # Web UI
     "UI.T01": (6, "Partially Mitigated"),
     "UI.T02": (2, "Mitigated"),
@@ -185,6 +197,10 @@ STATUS: dict[str, tuple[int, str]] = {
     "FEAT.T02": (2, "Accepted"),
     "FEAT.T03": (6, "Partially Mitigated"),
     "FEAT.T04": (3, "Partially Mitigated"),
+    "FEAT.T05": (2, "Mitigated"),
+    # Low x High. Commit-pinned source and weights, but the upstream Dockerfile's
+    # transitive dependencies are unverified and the build and function have egress.
+    "FEAT.T06": (3, "Partially Mitigated"),
     # Jobs API
     "JOB.T01": (6, "Mitigated"),
     "JOB.T02": (3, "Open"),
@@ -217,6 +233,10 @@ STATUS: dict[str, tuple[int, str]] = {
     "HITL.T03": (2, "Partially Mitigated"),
     # Low x High: grants are stack-scoped but wider than any Annotator operation.
     "HITL.T04": (3, "Partially Mitigated"),
+    "HITL.T05": (3, "Partially Mitigated"),
+    # Low x High. The routing table is Admin-only, but the profile settings that
+    # feed it are Author-editable and a reprocess can skip the steps that feed it.
+    "HITL.T06": (3, "Partially Mitigated"),
     # Tenant isolation in a shared stack (v0.6.14). Likelihood x Severity per entry.
     # Medium x High: Off with Manual is the default and reads an unscoped non-Admin
     # as unrestricted; Strict or an external grant source fails closed.

@@ -1,22 +1,17 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Guards for the repo-quality-review skill, and for the skill-symlink class.
+"""Guards for the repo-quality-review skill, and for the skill-registration class.
 
 The skill this file guards is itself about two defect classes: a control that
 exists but is never consulted, and a fix applied to the instance rather than the
 class. It would be poor form to ship it guarded by per-skill assertions, which is
-the shape it warns about — so both structural checks below enumerate from the
-**directory** rather than naming one file: every ``.cline/skills`` entry must be a
-symlink, and every ``.claude/skills/*.md`` must have a row in the ``CLAUDE.md`` skill
-table. Writing the second one required first fixing the gap it exposed
-(``sync-pii-anonymizer.md`` had no row), which is the intended order: close the class,
-do not narrow the assertion to dodge it.
-
-Why the symlink matters: ``.claude/skills/`` is canonical and each
-``.cline/skills/*.md`` is a symlink to its counterpart (see the "Two skill systems,
-one source of truth" section of ``.claude/skills/documentation.md``). A real file
-there diverges silently, and the two assistants then read different instructions.
+the shape it warns about — so the structural check below enumerates from the
+**directory** rather than naming one file: every ``.claude/skills/<name>/SKILL.md``
+must have a row in the ``CLAUDE.md`` skill table. Writing it required first fixing
+the gap it exposed (``sync-pii-anonymizer`` had no row), which is the intended
+order: close the class, do not narrow the assertion to dodge it. The format of the
+skill files themselves is guarded in ``test_skill_format.py``.
 
 The content assertions police **structure, not prose**. They pin the load-bearing
 promises a future edit could remove without anyone noticing — the read-only
@@ -39,7 +34,6 @@ Two traps worth knowing if you extend these:
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -47,13 +41,24 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_SKILLS = REPO_ROOT / ".claude" / "skills"
-CLINE_SKILLS = REPO_ROOT / ".cline" / "skills"
-SKILL = CLAUDE_SKILLS / "repo-quality-review.md"
+SKILL = CLAUDE_SKILLS / "repo-quality-review" / "SKILL.md"
 
 # The measurements the skill promises to define. Numbered sub-measurements (``D2``)
 # are headed in bold rather than with ``###``; both forms are accepted.
 MEASUREMENT_LABELS = (
-    "A", "B", "C", "D", "D2", "E", "F", "F2", "G", "G2", "H", "I", "I2",
+    "A",
+    "B",
+    "C",
+    "D",
+    "D2",
+    "E",
+    "F",
+    "F2",
+    "G",
+    "G2",
+    "H",
+    "I",
+    "I2",
 )
 
 # Sections the skill is unusable without. Compared against the fence-stripped text.
@@ -62,23 +67,6 @@ MANDATORY_SECTIONS = (
     "## Output contract",
     "## Known non-defects",
 )
-
-# ``.claude`` skills with no ``.cline`` symlink, and why. ``documentation.md``'s
-# "When adding a new skill" rule says to create one, so an absence needs a reason
-# recorded where a future reader can check it — that is what this table is for.
-#
-# Do NOT add a symlink merely to shorten this list. Whether a skill should be
-# visible to Cline is a judgement about that assistant's capabilities, and creating
-# one to satisfy a test would invert the decision.
-CLINE_EXEMPT = {
-    "full-test-battery.md": "live tier: drives the full battery against a real stack",
-    "run-benchmarks.md": "live tier: runs the benchmark matrix against Bedrock",
-    "run-stack-tests.md": "live tier: deploy-variant stack tests against a live stack",
-    "test-upgrade.md": "live tier: deploys and upgrades real CloudFormation stacks",
-    "transform-deploy-test.md": "live tier: deploys a transformed template",
-    "ux-test-stories.md": "Claude Code only: pair mode starts a claude --mcp-config "
-    "session, and unattended runs go to run_in_background",
-}
 
 
 def _fence_stripped(text: str) -> str:
@@ -99,7 +87,7 @@ def test_the_skill_exists() -> None:
 def test_the_skill_is_registered_in_claude_md() -> None:
     """An unregistered skill is one nobody finds."""
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    assert ".claude/skills/repo-quality-review.md" in claude_md
+    assert ".claude/skills/repo-quality-review/SKILL.md" in claude_md
 
 
 @pytest.mark.unit
@@ -113,72 +101,16 @@ def test_every_claude_skill_is_registered_in_claude_md() -> None:
     """
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     unregistered = sorted(
-        p.name
-        for p in CLAUDE_SKILLS.glob("*.md")
-        if f".claude/skills/{p.name}" not in claude_md
+        p.parent.name
+        for p in CLAUDE_SKILLS.glob("*/SKILL.md")
+        if f".claude/skills/{p.parent.name}/SKILL.md" not in claude_md
+    )
+    assert any(CLAUDE_SKILLS.glob("*/SKILL.md")), (
+        f"no skills found under {CLAUDE_SKILLS}"
     )
     assert not unregistered, (
-        "every .claude/skills/*.md needs a row in the CLAUDE.md skill table; "
+        "every .claude/skills/*/SKILL.md needs a row in the CLAUDE.md skill table; "
         f"missing: {unregistered}"
-    )
-
-
-@pytest.mark.unit
-def test_every_cline_skill_is_a_symlink_into_claude_skills() -> None:
-    """Enumerated from the directory, not from a list someone must remember."""
-    entries = sorted(p for p in CLINE_SKILLS.iterdir() if p.name.endswith(".md"))
-    assert entries, f"no skill entries found under {CLINE_SKILLS}"
-
-    copies = [p.name for p in entries if not p.is_symlink()]
-    assert not copies, (
-        f".cline/skills entries must be symlinks to .claude/skills, not copies: {copies}"
-    )
-
-    for entry in entries:
-        target = Path(os.path.realpath(entry))
-        assert target.is_file(), f"{entry.name} points at a missing file: {target}"
-        assert target.parent == CLAUDE_SKILLS.resolve(), (
-            f"{entry.name} resolves outside .claude/skills: {target}"
-        )
-
-
-@pytest.mark.unit
-def test_the_cline_entry_for_this_skill_resolves_to_the_canonical_file() -> None:
-    entry = CLINE_SKILLS / "repo-quality-review.md"
-    assert entry.is_symlink(), f"{entry} must be a symlink to the .claude skill"
-    assert os.path.realpath(entry).endswith(".claude/skills/repo-quality-review.md")
-
-
-@pytest.mark.unit
-def test_every_claude_skill_has_a_cline_entry() -> None:
-    """The converse of the symlink test, which the first draft of this file omitted.
-
-    ``documentation.md``'s "When adding a new skill" step says to add a ``.cline``
-    symlink, so a skill without one is invisible to Cline. Closing only the other
-    direction let ``sync-pii-anonymizer.md`` be forced into the ``CLAUDE.md`` table by
-    the test above while still being unreadable by Cline — two sides of the
-    visibility triangle guarded, the third open.
-
-    Absences are allowed but must be *stated*: every one needs a row in
-    ``CLINE_EXEMPT`` giving the reason.
-    """
-    linked = {
-        Path(os.path.realpath(entry)).name
-        for entry in CLINE_SKILLS.iterdir()
-        if entry.name.endswith(".md")
-    }
-    missing = sorted(p.name for p in CLAUDE_SKILLS.glob("*.md") if p.name not in linked)
-
-    undocumented = [name for name in missing if name not in CLINE_EXEMPT]
-    assert not undocumented, (
-        "these .claude skills have no .cline symlink and no recorded reason; either "
-        "add the symlink (see documentation.md 'Two skill systems, one source of "
-        f"truth') or add a CLINE_EXEMPT row saying why not: {undocumented}"
-    )
-
-    stale = sorted(set(CLINE_EXEMPT) - set(missing))
-    assert not stale, (
-        f"CLINE_EXEMPT names skills that now have a .cline symlink; drop them: {stale}"
     )
 
 

@@ -31,7 +31,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_VALIDATION_ENGINE,
 )
 from idp_common.models import Document, RuleValidationResult, Status
-from idp_common.rule_validation.concurrency import resolve_semaphore
+from idp_common.rule_validation.concurrency import resolve_semaphore, run_sync
 from idp_common.rule_validation.models import FactExtractionResponse
 from idp_common.utils.transient_errors import reraise_if_transient
 
@@ -173,20 +173,27 @@ class RuleValidationService:
         Each entry contains:
           - "description": the rule question text
           - "engine": the validation engine ("llm" or "z3"), defaults to "llm"
+          - "rule_key": the rule's key in the policy's ``rule_properties``
+          - "policy_rule_id": the rule's stable id, ``<policy type>.<rule key>``.
+            It names the rule in every output, where the description alone cannot:
+            two rules may share a description, and a description may be edited.
+          - "rule_id": the rule's Z3 id (``x-aws-idp-rule-id``), or None. This key
+            has always meant the Z3 id; the stable id is ``policy_rule_id``.
+          - "rule_json": the rule's embedded RuleJSON, or None
 
         Args:
             config: Configuration dictionary
             policy_type: Policy type to get metadata for
 
         Returns:
-            List of dicts with "description" and "engine" keys
+            List of dicts with the keys above
         """
         policy_classes = config.get("policy_classes", [])
         for policy_class in policy_classes:
             if _policy_type_of(policy_class) == policy_type:
                 rule_properties = policy_class.get("rule_properties", {})
                 metadata = []
-                for prop in rule_properties.values():
+                for rule_key, prop in rule_properties.items():
                     description = prop.get("description")
                     if description:
                         engine = prop.get(
@@ -198,6 +205,8 @@ class RuleValidationService:
                             {
                                 "description": description,
                                 "engine": engine,
+                                "rule_key": rule_key,
+                                "policy_rule_id": f"{policy_type}.{rule_key}",
                                 "rule_id": rule_id,
                                 "rule_json": rule_json,
                             }
@@ -571,6 +580,8 @@ class RuleValidationService:
         policy_type: str,
         config: Dict[str, Any],
         extraction_results: Dict[str, Any] = None,
+        policy_rule_id: Optional[str] = None,
+        z3_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a single rule question against user history.
@@ -581,6 +592,9 @@ class RuleValidationService:
             policy_type: Type of policy
             config: Configuration for the validation
             extraction_results: Optional extraction results to include in the prompt
+            policy_rule_id: The rule's stable id (``<policy type>.<rule key>``),
+                written on the response as ``rule_id``
+            z3_rule_id: The rule's Z3 id, written on the response as ``z3_rule_id``
 
         Returns:
             Validated response dictionary
@@ -684,6 +698,8 @@ class RuleValidationService:
                 # Add rule context to response
                 response_dict["policy_type"] = policy_type
                 response_dict["rule"] = rule
+                response_dict["rule_id"] = policy_rule_id
+                response_dict["z3_rule_id"] = z3_rule_id
 
                 # Validate response with FactExtractionResponse model
                 validated_response = FactExtractionResponse(**response_dict)
@@ -724,7 +740,7 @@ class RuleValidationService:
                 # is not an exception, the document COMPLETES, so nothing retries
                 # and no failure is ever surfaced to anyone.
                 #
-                # Re-raise a transient cause under the one name RuleValidationStep
+                # Re-raise a transient cause under the one name PolicyRuleValidationStep
                 # retries. A DETERMINISTIC failure keeps the per-rule fallback: one
                 # unparseable response or schema violation should not discard the
                 # other rules' answers, which is the partial-failure tolerance the
@@ -734,6 +750,8 @@ class RuleValidationService:
                 return {
                     "policy_type": policy_type,
                     "rule": rule,
+                    "rule_id": policy_rule_id,
+                    "z3_rule_id": z3_rule_id,
                     "supporting_pages": [],
                     "recommendation": "Information Not Found",
                     "reasoning": f"Error during processing: {str(e)}",
@@ -748,6 +766,7 @@ class RuleValidationService:
         document_text: str,
         config: Dict[str, Any],
         rule_json: Optional[Dict[str, Any]] = None,
+        policy_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Extract facts for a Z3 rule using the standard fact extraction prompt,
@@ -768,6 +787,7 @@ class RuleValidationService:
             document_text: Raw document text for this section
             config: Configuration dictionary
             rule_json: The RuleJSON object from config (x-aws-idp-rule-json)
+            policy_rule_id: The rule's stable id (``<policy type>.<rule key>``)
 
         Returns:
             FactExtractionResponse dict (same format as LLM rules)
@@ -797,6 +817,8 @@ class RuleValidationService:
             policy_type=policy_type,
             config=config,
             extraction_results=extraction_results,
+            policy_rule_id=policy_rule_id,
+            z3_rule_id=rule_id,
         )
 
         # Restore the original rule description (without augmentation)
@@ -849,6 +871,7 @@ class RuleValidationService:
                 engine = rule_meta["engine"]
                 rule_id = rule_meta.get("rule_id")
                 rule_json = rule_meta.get("rule_json")
+                policy_rule_id = rule_meta.get("policy_rule_id")
 
                 if engine == VALIDATION_ENGINE_Z3 and rule_id:
                     # Z3 rules: use standard fact extraction (same as LLM rules)
@@ -863,6 +886,7 @@ class RuleValidationService:
                         document_text=user_history,
                         config=config,
                         rule_json=rule_json,
+                        policy_rule_id=policy_rule_id,
                     )
                 elif engine == VALIDATION_ENGINE_Z3 and not rule_id:
                     # Strict mode: Z3 rule without rule_id is a configuration error
@@ -872,10 +896,14 @@ class RuleValidationService:
                     )
                     # Return a hard fail — do not silently fall back to LLM
 
-                    async def _z3_config_error(rd=rule_description, pt=policy_type):
+                    async def _z3_config_error(
+                        rd=rule_description, pt=policy_type, pid=policy_rule_id
+                    ):
                         return {
                             "policy_type": pt,
                             "rule": rd,
+                            "rule_id": pid,
+                            "z3_rule_id": None,
                             "extracted_facts": [],
                             "extraction_summary": (
                                 "Z3 configuration error: rule_id is missing. "
@@ -893,6 +921,9 @@ class RuleValidationService:
                         policy_type=policy_type,
                         config=config,
                         extraction_results=extraction_results,
+                        policy_rule_id=policy_rule_id,
+                        # An LLM rule may carry an id for the solver too.
+                        z3_rule_id=rule_id,
                     )
                 tasks.append(task)
 
@@ -1241,7 +1272,7 @@ class RuleValidationService:
             # exception — the only thing that carried the transient classification —
             # no longer exists. Step Functions matches a Lambda failure by the
             # exception's class NAME, ``Exception`` is in no ``Retry.ErrorEquals``
-            # list, and so the eight-attempt ladder RuleValidationStep already
+            # list, and so the eight-attempt ladder PolicyRuleValidationStep already
             # carries never fired for the one class of failure it was provisioned
             # for. The document finished failed and had to be re-uploaded.
             #
@@ -1274,32 +1305,5 @@ class RuleValidationService:
         Returns:
             Document with updated rule_validation_result
         """
-        import concurrent.futures
-
-        try:
-            # Try to get the current event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an environment with a running event loop (like Jupyter)
-                # Use ThreadPoolExecutor to run the async function in a separate thread
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        self.validate_document_async(document, self.config.to_dict()),
-                    )
-                    return future.result()
-            else:
-                # Event loop exists but not running, we can use it
-                return loop.run_until_complete(
-                    self.validate_document_async(document, self.config.to_dict())
-                )
-        except RuntimeError:
-            # No event loop exists, create a new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(
-                    self.validate_document_async(document, self.config.to_dict())
-                )
-            finally:
-                loop.close()
+        config = self.config.to_dict()
+        return run_sync(lambda: self.validate_document_async(document, config))

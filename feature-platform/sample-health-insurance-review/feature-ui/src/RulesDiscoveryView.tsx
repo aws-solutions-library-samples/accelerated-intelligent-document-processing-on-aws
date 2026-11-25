@@ -161,8 +161,7 @@ const RulesDiscoveryView: React.FC<RulesDiscoveryViewProps> = ({
           <Header
             variant="h2"
             description={
-              `Upload a payer policy document (e.g. ` +
-              `samples/rule-validation/NCCI Medicare Policy Manual.pdf). ` +
+              `Upload a payer policy document of your own. ` +
               `The host runs Rules Discovery and writes the extracted ` +
               `validation rules into config version "${configVersion}".`
             }
@@ -184,7 +183,7 @@ const RulesDiscoveryView: React.FC<RulesDiscoveryViewProps> = ({
               limitShowMore: 'Show more',
               errorIconAriaLabel: 'Error',
             }}
-            constraintText="A single PDF policy document (e.g. the NCCI Medicare Policy Manual)."
+            constraintText="A single PDF policy document, such as a payer's coding policy manual."
           />
           <Box>
             <Button

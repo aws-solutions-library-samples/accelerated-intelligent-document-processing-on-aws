@@ -133,9 +133,14 @@ describe('scoreBand and formatScore', () => {
   });
 
   it('formats a proportion as a percentage, and null as an em-dash', () => {
-    expect(formatScore(0.9421)).toBe('94.2%');
-    expect(formatScore(1)).toBe('100.0%');
-    expect(formatScore(null)).toBe('—');
+    expect(formatScore(0.9421, 'en')).toBe('94.2%');
+    expect(formatScore(1, 'en')).toBe('100.0%');
+    expect(formatScore(null, 'en')).toBe('—');
+  });
+
+  it('follows the locale it is given', () => {
+    // French puts a (no-break) space before the sign; which codepoint varies between ICU releases.
+    expect(formatScore(0.9421, 'fr-CA')).toMatch(/^94,2\s%$/);
   });
 });
 
@@ -406,8 +411,8 @@ describe('describeValue', () => {
 
 describe('formatDuration', () => {
   it('formats seconds and minutes, and null when unrecorded', () => {
-    expect(formatDuration(12.34)).toBe('12.3 s');
-    expect(formatDuration(125)).toBe('2 min 5 s');
-    expect(formatDuration(undefined)).toBeNull();
+    expect(formatDuration(12.34, 'en')).toBe('12.3 s');
+    expect(formatDuration(125, 'en')).toBe('2 min 5 s');
+    expect(formatDuration(undefined, 'en')).toBeNull();
   });
 });

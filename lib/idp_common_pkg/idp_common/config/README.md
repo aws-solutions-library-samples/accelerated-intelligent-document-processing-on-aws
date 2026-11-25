@@ -40,12 +40,18 @@ model_id = idp_config.extraction.model
 
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
-IDs, max-token limits, required prompt placeholders, schema-field warnings, and
+IDs, max-token limits, required prompt placeholders, schema-field warnings, a
+warning when `classification.fallback_class` is neither `unclassified` nor a
+configured class, a warning when `extraction.agentic.enabled: true` is overridden
+by a simple `extraction.mode` (`_validate_agentic_flag_against_mode`, which reads the
+flag with the migration's `_coerce_bool`), and
 model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
 covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
 the active strategy makes, the per-class model overrides, and the `model` a field
 evaluated with `LLM` names in its method-config. The two embedding fields are left
-out because `pricing.yaml` prices no embedding model, and
+out because they also take Titan Multimodal Embeddings, which the embeddings
+client supports and `pricing.yaml` does not price (it prices only the Cohere
+Embed v4 profiles), so checking them would refuse a supported configuration, and
 `tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
 `IDPConfig` that is not checked by one of those routes and not one of the two. IDs are compared as written, because the
 Bedrock client routes and sends them unchanged. Like the rest of the check, it does
@@ -245,8 +251,34 @@ to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model
 profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
 translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
 `idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
-the deploy-time swap gives the call's stored siblings. A model key absent from the
-data, rather than cleared, still takes the field default, the US id.
+the deploy-time swap gives the call's stored siblings.
+
+A model key **absent** from the data, rather than cleared, resolves the same way,
+and not for classification only. Every configuration model whose field declares a
+`us.` profile (extraction, summarization, chat, the three classification calls, the
+agents, rule validation's fact extraction, orchestrator and Z3 blocks, evaluation's
+LLM judge, and discovery) inherits `RegionalModelDefaults`, a `mode="before"`
+validator that fills each such absent key with `regional_field_default(<declared
+id>)`. That reaches a stack whenever the stored configuration does not carry the
+key: BDA mode's system defaults ship no chat, classification or extraction model,
+and the Z3 blocks ship none at all. Three properties to rely on:
+
+- A key the input carries is never translated, an explicit `us.` id included, so
+  a stored value the deploy-time swap already rewrote, or one a user chose, is
+  kept as written.
+- `model_fields[...].default` stays the US id, so the parity tests above still
+  compare the declaration with the YAML.
+- A Region with no row in `idp_common.regional_models.REGIONAL_DEFAULT_MODELS`
+  gets the US id unchanged: GovCloud (`us-gov-*`), Asia Pacific and every other
+  Region the deploy-time swap also leaves alone. The swap has no mapping for
+  those, so there is no regional profile to choose.
+
+`tests/unit/config/test_regional_field_defaults.py` finds every such field by
+reading the declarations, asserts its class inherits the mixin and its default is
+in `FALLBACK_MODEL_IDS`, and checks the resolved id per field across US, EU,
+Canada, GovCloud and Asia Pacific Regions against the regional table. The
+evaluation comparator's own fallback for a missing `model` goes through
+`regional_field_default` too.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
@@ -282,6 +314,11 @@ to compare, so this gate says nothing about it.
 | `prefix_mappings.py` | Config prefix mappings — which profile a document processes under, decided by its Input-bucket prefix. See [Config prefix mappings](#config-prefix-mappings--prefix_mappingspy). |
 | `tenants.py` | Tenant declarations — the prefix subtrees and profile pattern of each tenant, and the boundary checks over mappings, scopes and ingest. See [Tenant declarations](#tenant-declarations--tenantspy). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `routing_models.py` | The `routing` section: `RoutingConfig`, `RoutingTable`, `RoutingRule`, `RoutingCondition`, `RoutingAction`, `RoutingDefaultOutcome`, `builtin_rules()`, and the two helpers every reader of an outcome uses, `review_queue_of()` and `queue_actions()`. See [Review routing](#review-routing--the-routing-section). |
+| `routing_validation.py` | `validate_routing()` and the input catalogue (`ROUTING_INPUTS`): what a routing table may read and what is checked when one is saved. Also `routing_warnings()` (what an accepted save will not do) and `refuse_single_outcome_shape()`. |
+| `routing_reason.py` | The reason of a routing rule: `parse_reason()` (its placeholders, checked at save) and `render_reason()` (the text a reviewer reads), `format_value()`, `cut_bytes()`. Standard library only. |
+| `feature_flags.py` | Whether an optional step does its work for a configuration, one answer per step for every caller: `policy_rule_validation_enabled()`, `review_routing_enabled()` (`hitl.enabled`), `confidence_enabled()`, and `step_enabled()`, which gives all of them by step id. |
+| `routing_references.py` | `find_queue_references()`: which profiles' routing rules send documents to a review queue, in the published configuration and in a newer revision. |
 | `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
@@ -570,12 +607,13 @@ Four decisions worth knowing before changing this code:
   `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
   profile with history raises `RevisionNotRecordedError`.
 - **Resolving against `default` is recorded as a revision, by the deployment.**
-  `get_merged_configuration` resolves every profile against `default`. A pinned
-  read builds `IDPConfig` from the revision body without that resolution, so for a
-  profile with revision history the two differ whenever `default` holds a value
-  the model's own default does not (#1782). For such a profile a read applies the
-  resolution in memory and writes nothing, because whether its process may write
-  revisions depends on IAM grants the code cannot see.
+  `get_merged_configuration` resolves every profile against `default`, the head
+  and a pinned revision alike (`_resolve_against_default`, #1955). A revision's
+  stored body does not carry the values that fills in, so for a profile with
+  revision history the body Revision History shows differs from what documents
+  run whenever `default` fills something in (#1782). For such a profile a read
+  applies the resolution in memory and writes nothing, because whether its
+  process may write revisions depends on IAM grants the code cannot see.
   `record_resolution_against_default(profile)` saves the resolution as a revision
   (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
   it, and its one caller is the stack-deployment custom resource
@@ -590,9 +628,28 @@ Four decisions worth knowing before changing this code:
   revision history and the revision picker.
 
 `_record_revisions()` skips the cut entirely when the saved configuration equals
-what was already stored. Every deployment re-saves `default` and each managed
+the published revision's. Every deployment re-saves `default` and each managed
 profile, so without that check a few no-op upgrades would evict a user's real
 history from the retention window.
+
+The baseline is the published revision's stored body validated on its own
+(`_published_configuration()`), not the head the save replaces, and
+`save_configuration()` uses the same comparison to decide whether a save must
+record a revision or raise `RevisionNotRecordedError`. The head is the baseline
+only when that body cannot be read: history is disabled, the body has expired (the
+head then stands in for it only if it is that revision anyway), or the read failed.
+The two can differ because a release can change what a stored head reads as. The
+head leaves out an empty value while empty is its default
+(`_omit_rollback_hostile_defaults`) and a revision body holds it as `null`, so after
+a release makes the default a value the head reads that value and the revision
+documents run reads empty. Compared with the head, the deployment's re-save of such
+a profile would change nothing, rewrite the head, record no revision and leave
+`head_matches_published()` False; `record_resolution_against_default()` for a custom
+profile would do the same, and every later deployment would then decline to record
+it. Compared with the revision, each records one. A setting a release adds reads as
+its default on both sides, so it records nothing. Nor does a number in a class that
+the head stores and reads back as a string, which with the head as the baseline
+would make some shipped presets record an identical revision on every deployment.
 
 Retention keeps the last `CONFIG_REVISION_CAP` (default 20) revisions per profile,
 plus the published revision and anything labeled or pinned by a test run. A
@@ -651,8 +708,23 @@ Lambda passes `document.config_revision`, which the queue processor pins at queu
 time, so a save made mid-flight cannot change the configuration under an in-flight
 document.
 
-Two deliberate choices:
+Three deliberate choices:
 
+- **A pinned revision is resolved against `default` exactly as the head is.**
+  `_load_revision_config()` and the head path both call
+  `_resolve_against_default()`: start from the current `default` profile and let
+  every key the stored configuration holds override it. A key it holds wins even
+  when empty, so a revision that stored `max_tokens: null` (one saved before the
+  10000-token defaults that left the cap empty) keeps requesting the model's maximum, on the
+  pinned read and on the head alike; a key it lacks, typically one a later release
+  added, takes `default`'s value — including the stack Region's model id that the
+  deployment stored in `default` for an absent model key — rather than the
+  model's own default. The same guards apply: `default` unreadable, or a merge
+  that fails a cross-field validator, returns the revision validated on its own.
+  Nothing is written, and `get_revision()` still returns the body as stored.
+  `restore_revision()` saves the resolved form, so the restored head runs what a
+  document pinned to that revision runs. A setting a revision lacks therefore
+  follows later changes to `default`; one it holds never does.
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
@@ -665,8 +737,8 @@ Two deliberate choices:
   conversion is **in memory only; the stored body is never rewritten**, because a
   revision is an immutable record of the configuration that actually ran. Callers
   that construct an `IDPConfig` from the result (`_load_revision_config()`,
-  `restore_revision()`) convert again through its validator, which is a no-op: the
-  chain is idempotent. What depends on this is shape agreement between the surfaces
+  `restore_revision()`) convert again before resolving it against `default`, which
+  is a no-op: the chain is idempotent. What depends on this is shape agreement between the surfaces
   that serve one revision — `get_revision()` behind `idp-cli config-download
   --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds
@@ -797,6 +869,230 @@ from the value the same configuration hashes to now. The curve keys are unaffect
 anything that compares *stored* index fingerprints must treat a mismatch on a
 pre-normalization revision as "unknown" rather than "changed".
 
+## Review routing — the `routing` section
+
+`IDPConfig.routing` (`routing_models.RoutingConfig`) holds a profile's review routing
+table: the routing rules the Review Routing step evaluates after policy rule
+validation to decide whether a document is held in a review queue. The user-facing
+description is
+[docs/review-routing.md](../../../../docs/review-routing.md); the evaluation is in
+[`review_queues`](../review_queues/README.md#routing-both-processing-modes) and
+[`decision_tables`](../decision_tables/README.md).
+
+**The shape.** A `RoutingTable` holds ordered `RoutingRule`s and a
+`RoutingDefaultOutcome`. A routing rule has `id`, `label`, `enabled`, `conditions`
+(`RoutingCondition`: `input`, `path`, `aggregate`, `test`), `actions` and `reason`.
+The default outcome has `actions` and `reason`.
+
+- `actions` is a list of `RoutingAction` (`type`, `queue`). `ACTION_REVIEW_QUEUE`
+  (`"review_queue"`) is the one action type: it sends the document to the review
+  queue that `queue` names. An empty list means the document is not reviewed.
+- `review_queue_of(actions)` is the one reader of "which queue": the queue of the
+  first `review_queue` action, `""` when there is none. `queue_actions(queue)` is
+  its inverse, `[RoutingAction(queue=queue)]` for a queue id and `[]` for `""`. The
+  DMN mapping (and through it the routing step) and `routing_references` use them,
+  so nothing else reads the list itself.
+- `reason` is what the reviewer reads. See
+  [The reason](#the-reason--routing_reasonpy).
+
+**The models carry no validation of their own beyond types.** `RoutingConfig` has
+one validator, which reads `max_consecutive_placements` as a whole number and clamps
+it to 1–10. `stage`, `hit_policy`, `engine`, `aggregate` and the action `type` are
+plain strings, not `Literal` types, so a revision written by newer code still loads.
+Everything else (limits, input names, tests, paths, actions, reasons, queues) is
+checked at the write boundary, not in the model, for the reason the gating-hook
+check gives: a revision a document is pinned to must always load, even when a queue
+it names has since been deleted or a field has left a class schema.
+
+**Defaults.** A configuration with no `routing` section gets one table,
+`review-routing`, holding the built-in routing rules (`builtin_rules()`), in this
+order: `builtin-extraction-failed`, `builtin-confidence-alerts` and
+`builtin-missing-required`. Each has the Default queue as its one action and a
+reason (`BUILTIN_EXTRACTION_FAILED_REASON`, `BUILTIN_CONFIDENCE_REASON`,
+`BUILTIN_MISSING_REQUIRED_REASON`), and the default outcome has no action and no
+reason. The failed extraction comes first: such a section has no fields, so its
+required fields are missing too, and the first routing rule that matches gives the
+reviewer the reason. The same values, the reasons included, are in
+`system_defaults/base-routing.yaml`; the gate described under
+[`system_defaults/` and the models must describe the same settings](#system_defaults-and-the-models-must-describe-the-same-settings)
+compares the section whole. At run time a configuration with no table is evaluated
+with the built-in one (`routing_step.routing_table`).
+
+**Validation at the write boundary.** `ConfigurationManager._validate_routing` runs
+from every save path of `handle_update_custom_configuration`, and only when the
+write itself carries `routing`. A save that does not mention the section is not
+refused over a stored table that went stale, so an Author can still save the rest of
+a profile after a queue was deleted. Reset-to-default and `restore_revision` do not
+run it: both copy something that was valid when it was saved. It does two things,
+in this order:
+
+1. `refuse_single_outcome_shape(delta["routing"])`, on the section **as the write
+   carries it**. A routing rule that holds an `outcome` key, and a `default_outcome`
+   that holds `kind` or `queue`, are refused with the form to write instead. The
+   check has to read the raw section: the models drop a key they do not define, so
+   by the time the configuration is an `IDPConfig` such a routing rule has no
+   action and would be saved as "not reviewed" without a word.
+2. `routing_validation.validate_routing(config, queue_lookup=…)`, on the
+   configuration about to be saved. It checks, in order:
+   1. the limits (one table; routing rules per table; conditions per routing rule;
+      the id pattern; the byte sizes of label, path, test and the serialised
+      section);
+   2. `stage`, `hit_policy` (`FIRST`) and that `engine` is registered in
+      `decision_tables.ENGINES`;
+   3. the actions of the default outcome and of every routing rule: each action's
+      `type` is `review_queue`, an outcome holds at most one action, and that
+      action names a queue whose id has the queue-id form;
+   4. the reason of the default outcome and of every routing rule (below);
+   5. each condition: the input is in the catalogue, it has a path exactly where the
+      catalogue needs one, the aggregate fits the input, and the test parses
+      (`decision_tables.sfeel`) with literals that fit the input's type;
+   6. a `field_value` path exists in the class schema it names (or in at least one
+      class when it names none), a policy rule id or policy type exists in the
+      Policy Schema, and a `class_present` class is a class of the profile, compared
+      without regard to case;
+   7. with a `queue_lookup`, every queue an action names exists and is a production
+      queue. A disabled queue is accepted; the routing step falls back to the
+      Default queue. The configuration resolver passes a lookup, and so does an SDK
+      or CLI upload to a stack that has a review table. Without one, queue ids are
+      checked for their form only.
+
+It raises `ConfigurationValidationError` naming the table, the routing rule, and the
+input, the action or the reason placeholder. The web UI's Routing Rules tab reads
+the same limits and input catalogue from a generated file
+(`scripts/generate_run_step_catalog.py` writes `routing-inputs.json`), so the form
+and the server agree.
+
+**The input catalogue.** `ROUTING_INPUTS` is a tuple of `RoutingInput` (`name`,
+`label`, `type`, `needs_path`, `is_list`, `path_kind`, `path_optional`, `choices`).
+`path_kind` says what a path names: a field (`PATH_FIELD`), a policy rule id
+(`PATH_POLICY_RULE`), a policy type (`PATH_POLICY_TYPE`) or a class (`PATH_CLASS`).
+`choices` are the values a guided control offers for an input with a fixed set of
+them: `VERDICT_CHOICES` for `policy_rule_verdict` (the verdicts of
+`rule_validation.orchestrator.VERDICTS`, restated because importing
+`rule_validation` loads the solver) and `MODE_CHOICES` for `processing_mode`.
+`policy_input(name)` is true for an input that reads a result of policy rule
+validation. `class_present` (`PATH_CLASS`, boolean) is true when a processed
+section has the class its path names; it is the condition for a package that lacks
+a document it should contain.
+
+### The reason — `routing_reason.py`
+
+A reason is text with placeholders in braces. `parse_reason(text)` returns its
+`Placeholder`s in the order written (`text` as written, `kind`, and `input` and
+`path` or `index`), and raises `ReasonSyntaxError` with the problem and the
+character it is at. `render_reason(text, resolve)` replaces each placeholder with
+`format_value(resolve(placeholder))`.
+
+| Written | Kind | Stands for |
+|---|---|---|
+| `{input}` or `{input:path}` | `input` | A routing input, as a condition names it. The path is everything after the first `:`, so `{field_value:Invoice:Total}` reads `field_value` with the path `Invoice:Total` |
+| `{condition_N.value}` (N from 1 to 99) | `condition_value` | What the routing rule's N-th condition compares with |
+| `{confidence_threshold}` | `confidence_threshold` | The profile's confidence threshold |
+| `{{`, `}}` | — | A literal `{`, `}` |
+
+A `{` or `}` that is none of these is a syntax error, and so are an empty
+placeholder and an empty input or path beside the colon. Spaces around a token and
+its parts are ignored.
+
+Rendering is one pass over the text, so what a value holds is never read as a
+placeholder or an escape. `format_value` writes `None`, an empty string and an empty
+list as `ABSENT` (`(no value)`), a boolean as `yes` or `no`, a whole number without
+a fraction (an `int`, a `float` or a `Decimal`), a list as its first
+`MAX_LIST_ITEMS` items and how many more there are, and anything else as compact
+JSON. Each value is cut to `MAX_VALUE_BYTES` and the whole text to
+`MAX_RENDERED_REASON_BYTES` (`cut_bytes` cuts between two characters and ends the
+text with `ELLIPSIS`).
+
+`format_prompt` (`idp_common.bedrock`) is not used for this: it leaves an unknown
+token in the text, has no marker for an absent value and no escape for a brace, and
+lives in a package that builds a client when it is imported. This module imports the
+standard library only, because the save validation and the routing Lambda both load
+it.
+
+At save, `validate_routing` refuses a reason that is longer than `MAX_REASON_BYTES`,
+that belongs to an outcome with no `review_queue` action (nobody would read it),
+that does not parse, or that holds more than `MAX_REASON_PLACEHOLDERS` placeholders.
+Each placeholder is then checked as a condition would be: the input exists, it has a
+path exactly where the catalogue needs one, and the field, policy rule id, policy
+type or class the path names exists. `{condition_N.value}` is refused in the default
+outcome's reason, and when the routing rule has fewer than N conditions.
+
+### Warnings — `routing_warnings`
+
+`routing_validation.routing_warnings(config)` returns what a configuration's
+`routing` section will not do although a save of it is accepted. It answers only
+when policy rule validation does not run for the configuration
+(`feature_flags.policy_rule_validation_enabled` is false: the step is off, or the
+profile has no policies): one warning for each **enabled** routing rule whose
+conditions test a policy rule result, one for each whose reason only shows one, and
+one for a default outcome's reason that does. It is pure and never raises.
+
+`handle_update_custom_configuration(..., warnings=[...])` adds them to the list the
+caller passes, on the save-as-default path, both save-as-version paths and the
+ordinary update; reset-to-default adds none. Its return value stays the success
+flag. It collects on **every** save, not only one that carries `routing`, because
+turning policy rule validation off is what makes a stored routing rule stop
+matching. The configuration resolver returns the list as `warnings` of
+`updateConfiguration`, the SDK as `ConfigUploadResult.warnings`, after the
+validation warnings, and `idp-cli config-upload` prints the whole list once, in its
+`Warnings:` block on standard output. A warning names the table and
+`rule '<id>'` in the form a refusal does.
+
+### The Review Routing switch
+
+`hitl.enabled` is the switch, and `feature_flags.review_routing_enabled(config)` is
+its one reader: the routing step, `review_queues.routing` and `step_enabled` all call
+it. It is false for `None` and for a configuration that does not set the key, which
+is the model default and the value in `system_defaults/base-confidence.yaml`. Both
+stay off, so a revision a document is pinned to, and a stack that is upgraded, read
+as they did.
+
+A new stack gets the switch on from the stack-deployment custom resource
+(`src/lambda/update_configuration`, `seed_review_routing`), which decides it for
+each profile it is about to save. The first of these that applies decides:
+
+1. The supplied configuration (the preset or the custom configuration, read before
+   it is merged with the system defaults) sets the switch: it is left.
+2. The profile is stored already: its value is written, so an update carries what
+   the profile has.
+3. This is the stack's first deployment (a Create with no stored `default`) and the
+   stack has a review table (the `HITLTableName` property, empty on a headless
+   stack): on.
+4. The stored `default` profile has a value: it is written, so a profile a
+   deployment adds starts as `default` is.
+5. Otherwise it is left at the system default, off.
+
+A profile created later starts from `default` (`saveAsVersion`), so it takes
+`default`'s value unless the save sets the key. The test deployments that process
+documents unattended upload `scripts/sdlc/config/review-routing-off.yaml` to the
+`default` profile after the stack is deployed.
+
+### Who may change it, pinned reads and queue references
+
+**Who may change it.** `handle_update_custom_configuration` and `restore_revision`
+take a `write_guard` (`WriteGuard = Callable[[Optional[IDPConfig], IDPConfig, str],
+None]`), called before every save with the configuration before the write, the
+configuration about to be saved and the profile. The configuration resolver passes a
+guard that raises `PermissionError` when the `routing` section differs and the caller
+is not an Admin. The library has no notion of roles: a caller that passes no guard
+(the CLI and SDK, which are authorised by IAM) is not role-checked, and the
+validation above runs either way.
+
+**Pinned reads.** The routing step and the apply-review step read the configuration
+at the revision the document is pinned to (see
+[Reading a pinned revision](#reading-a-pinned-revision)), so a routing rule saved
+while a document is in flight, or in review, does not change how that document is
+routed. `testRoutingTable` with no table of its own reads the same pinned
+configuration. A pinned revision is resolved against `default` as the head is
+(#1955), so a revision that holds no `routing` section, such as one saved before
+routing tables existed, routes with the table `default` holds: the built-in one
+unless an Admin changed `default`'s.
+
+**Queue references.** `routing_references.find_queue_references(queue_id, …)` reads a
+page of profiles and returns the routing rules (and default outcomes) that send
+documents to the queue, from each profile's published revision and, when it differs,
+from its newest revision. It is what `getReviewQueueReferences` returns.
+
 ## Config prefix mappings — `prefix_mappings.py`
 
 An S3 prefix in the Input bucket to a Configuration Profile, so the *destination*
@@ -808,7 +1104,7 @@ Two halves, deliberately separate, and the split is what makes the rule testable
 
 | Half | What it is |
 |---|---|
-| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites, and an append-only change log beside it (below) |
 | `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
 
 Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
@@ -845,8 +1141,9 @@ land on every queued document, not on the admin who caused it.
 
 ⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
 `unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
-revision as given, with no lookup. So a mapping whose profile has been deleted falls
-back and is reported, while a mapping whose pinned *revision* has been deleted or has
+revision as given, with no lookup. So a mapping whose profile does not exist **refuses
+the document** (`rejected` and `unresolvable` both set, whatever the metadata says),
+while a mapping whose pinned *revision* has been deleted or has
 expired resolves cleanly at ingest and raises in
 `ConfigurationManager._load_revision_config` downstream. That is the intended trade —
 the per-document cost of a second lookup against a failure that surfaces loudly anyway —
@@ -860,6 +1157,29 @@ unconditionally — so swallowing a throttle would turn one admin's write into "
 mapping list is now exactly this one entry", silently deleting every other mapping,
 and report success. Read failures are handled by the **caller**, which knows whether
 it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+### The change log
+
+Every `put` and `delete` appends one record, in the **same `TransactWriteItems`** as the
+aggregate update, so a change and its record land together or not at all. Each record
+is its own item, `ConfigPrefixMapHistory#<12-digit seq>`, holding `Seq`, `Timestamp`,
+`Actor` (byte-bounded like the entry's actor strings) and `Changes` — one element per
+changed prefix with `action` and the normalized entry `before` and `after`, derived by
+`describe_changes` from the two entry lists rather than told by the caller. The
+sequence lives on its own head item, `ConfigPrefixMapHistory#__head`, advanced under a
+condition in the same transaction, so recreating the aggregate by hand cannot make a
+later record collide with an earlier one; each record is `Put` with
+`attribute_not_exists`, which is what makes the log append-only in code. Neither key
+matches `begins_with(Configuration, "Config#")`.
+
+The count is **uncapped**, deliberately: the log is not on the aggregate, so it does not
+grow the item ingest reads or approach the 400 KB bound, and each record is bounded by
+two entries' worth of fields. `history(prefix=None, limit, before)` reads it newest first
+by `BatchGetItem` over descending sequence numbers — no `Scan` — and examines at most
+`MAX_HISTORY_EXAMINED` records per call, so a filtered read of a long log returns a
+short page and a `nextBefore` cursor rather than reading everything. A cancelled
+transaction is retried only when every cancellation reason is a lost condition; any
+other reason is raised as itself. A direct write to the table records nothing.
 
 ⚠️ **A revision carried across a profile change reads a configuration nobody asked
 for.** Revision numbers are per profile, so when the resolved profile differs from the
@@ -876,7 +1196,25 @@ apply — failing open means a transient DynamoDB error bypasses every `reject` 
 in the deployment. It is still the right call, because the alternative is halting
 document ingest for the whole deployment when a *routing* table is unreadable, and
 every one of those objects processed under the active profile before this feature
-existed. The metric is alarmed so the window is visible rather than silent.
+existed. The metric is alarmed so the window is visible rather than silent, and
+`queue_sender` records a warning `ProcessingIssue` (`config_prefix_mapping_lookup_failed`,
+stage `ingest`) on each document processed in the window. It is a **document-level**
+issue — `Document.processing_issues`, persisted as the tracking row's top-level
+`ProcessingIssues` by `serialize_issue_list` — because the row is created before any
+section exists. Its `root_cause` is the error's type and AWS error code, never the
+message, which can carry a role ARN.
+
+### Only named internal producers are exempt
+
+Rule 1 applies only when `submission_source` is in `INTERNAL_SUBMISSION_SOURCES`
+(`test-studio`, `pii-anonymizer`), compared exactly by `is_internal_producer`. Any other
+value is an ordinary upload: it is mapped and adjudicated like one, and
+`tenants.ingest_rejection_reason` treats it as external too. The set is the exact values
+the two writers in this repository stamp (`src/lambda/test_file_copier` and the PII
+anonymizer hook), so a new producer must be added there deliberately. A browser cannot
+set the key at all, because the upload resolver's presigned-POST policy names every
+field it accepts; a principal with direct `s3:PutObject` on the Input bucket can, and is
+trusted because it already chooses the key.
 
 Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
 read fails closed. They answer different questions — an unreadable mapping means a
@@ -1058,9 +1396,10 @@ convenience wrapper take an optional `region`, which is passed to the DynamoDB
 resource they build and, through `ConfigRevisionStore`, to the S3 client used for
 revision history.
 
-`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
-`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
-a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+`region=None` means "let boto3 resolve it" — `AWS_DEFAULT_REGION`, then the
+profile (boto3 does not read `AWS_REGION`, and does not take the Region from
+instance metadata). That is the right value inside a Lambda, where the runtime
+sets both `AWS_REGION` and `AWS_DEFAULT_REGION`, and it is why these classes
 worked for years without the parameter.
 
 **An out-of-region caller must pass it.** A DynamoDB table name is not
@@ -1120,7 +1459,7 @@ one GovCloud uses.
 `was_offered` decides one thing only — whether a `pricing.yaml` row must be
 retained. A model this solution never made selectable cannot appear in anyone's
 cost report, so it needs no rate, and inventing one would breach the "never invent
-model facts" rule in `.claude/skills/add-model.md`.
+model facts" rule in `.claude/skills/add-model/SKILL.md`.
 
 ## Adding or changing a model
 
@@ -1128,7 +1467,7 @@ Model defaults and inference fields live in `models.py`, and model/feature
 compatibility is enforced in `merge_utils.py`. Adding a selectable Bedrock model
 touches many other files too (template enums, pricing, UI, the bedrock client,
 docs) — follow the checklist in
-[.claude/skills/documentation.md](../../../../.claude/skills/documentation.md).
+[.claude/skills/documentation/SKILL.md](../../../../.claude/skills/documentation/SKILL.md).
 
 Removing one that has reached **end of life** is the reverse walk of that
 checklist, with one exception: the model keeps its `pricing.yaml` entry, its

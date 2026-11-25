@@ -63,7 +63,9 @@ LOCK_VARIABLE = "$(UI_DEPS_LOCK)"
 #: catalog gate runs the installed ``formatjs`` and ``node`` the way ``codegen``
 #: does, the string-debt ratchet runs the installed ``eslint`` the same way, and
 #: the advisory coverage report runs ``node`` over a worker that imports the
-#: installed ``@formatjs/icu-messageformat-parser``.
+#: installed ``@formatjs/icu-messageformat-parser``. The three catalog targets of
+#: #2080 join them: the todo list and the ingest run that worker, and the ingest and
+#: the drop of stale entries write the catalog, which the lock keeps to one writer.
 UI_TARGETS = (
     "ui-lint",
     "ui-lint-fix",
@@ -72,6 +74,9 @@ UI_TARGETS = (
     "ui-test",
     "ui-i18n-extract",
     "ui-i18n-coverage",
+    "ui-i18n-todo",
+    "ui-i18n-ingest",
+    "ui-i18n-drop-stale",
     "codegen",
     "codegen-check",
     "check-ui-i18n-catalog",

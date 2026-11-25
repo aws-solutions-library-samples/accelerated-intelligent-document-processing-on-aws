@@ -41,9 +41,12 @@ idp-cli publish --source-dir . --bucket-basename <basename> --prefix <prefix> \
   policy grants anonymous read.
 - `--terraform` also generates the release's Terraform module from the templates just
   published and uploads it beside them under `<prefix>/<version>/terraform/`, with its
-  checksum, and updates the `<prefix>/terraform/idp-terraform-latest.json` pointer that
+  checksum, adds the version to the `<prefix>/terraform/idp-terraform-versions.json` index,
+  and updates the `<prefix>/terraform/idp-terraform-latest.json` pointer that
   `idp-cli deploy --terraform` reads by default. With `--public` the module is anonymously readable
-  too. See [Terraform deployment](terraform.md).
+  too. A release version cannot be republished with a different module: the module publish is
+  refused before any module object is written, but by then the CloudFormation templates under
+  `<prefix>/<version>/` have already been replaced, so cut a new version instead. See [Terraform deployment](terraform.md).
 - `--clean-build` forces every component to rebuild instead of reusing cached builds.
 
 `make publish REGION=<region> BUCKET_BASENAME=<basename> PREFIX=<prefix> PUBLIC=1` is a
@@ -101,7 +104,8 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   a real release, with that string in every key. Check it by hand with `cat VERSION`.
 - Set the version with `make version V=<x.y.z>`. It validates the version, then rewrites
   `VERSION`, the 9 package version files, the seller entitlement service template's
-  version and the project's own entry in `lib/idp_common_pkg/uv.lock`: 12 paths in all,
+  version, the project's own entry in `lib/idp_common_pkg/uv.lock` and the solution
+  profile manifest's `version`: 13 paths in all,
   which it lists when it finishes. Do not edit `VERSION` or the lockfile by hand. The
   lockfile line matters because `make setup` and every CI job that builds the Python
   environment run `uv export --locked`, which refuses a lockfile whose project version
@@ -110,7 +114,7 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   which is safe to repeat.
 - `CHANGELOG.md` should have its `[Unreleased]` section turned into a section for the new
   version, with the template URLs for each region you publish. The procedures are in
-  `.claude/skills/prepare-changelog.md` and `.claude/skills/cut-release-changelog.md`.
+  `.claude/skills/prepare-changelog/SKILL.md` and `.claude/skills/cut-release-changelog/SKILL.md`.
   The URLs return 404 until the publish completes.
 - The working tree must be clean and checked out at the commit you intend to tag. The
   publisher reads the working tree and `./VERSION` relative to the current directory, so
@@ -125,7 +129,7 @@ publishing adds build output to the tree.
 
 The fuller validation programme, including the tiers that deploy the published
 template, is described in [Release Validation](./release-validation/README.md) and
-`.claude/skills/release-validation.md`. Most of its tiers test the published artifact,
+`.claude/skills/release-validation/SKILL.md`. Most of its tiers test the published artifact,
 so they run after Step 3.
 
 ### 1.3 Local toolchain
@@ -177,6 +181,9 @@ earlier copy of an overwritten key if you ever need to.
 
 ### Step 1 — Stamp the version
 
+`.claude/skills/prep-develop-for-release/SKILL.md` runs Steps 1 and 2 and the checks in
+1.2 in one request, and stops before Step 3.
+
 ```bash
 make version V=<x.y.z>
 cat VERSION                      # must print exactly <x.y.z>
@@ -184,12 +191,13 @@ git describe --tags --abbrev=0   # should print the previous release tag
 ```
 
 **Success:** every file the command stamps — `VERSION`, the 9 package version files, the
-seller entitlement service template and the lockfile's project entry — reads `<x.y.z>`, and
-the command lists the 12 paths it changed.
+seller entitlement service template, the lockfile's project entry and the solution profile
+manifest — reads `<x.y.z>`, and
+the command lists the 13 paths it changed.
 
 ### Step 2 — Cut the CHANGELOG
 
-Follow `.claude/skills/prepare-changelog.md`, then `.claude/skills/cut-release-changelog.md`.
+Follow `.claude/skills/prepare-changelog/SKILL.md`, then `.claude/skills/cut-release-changelog/SKILL.md`.
 `## [Unreleased]` becomes `## [<x.y.z>]`, followed by a `## Templates` block with one
 template URL per region.
 
@@ -199,6 +207,18 @@ grep -n "idp-main_$(cat VERSION).yaml" CHANGELOG.md  # one hit per region you pu
 ```
 
 **Success:** one versioned template URL per region. They return 404 until Step 3.
+
+Then review the solution profile for the release, following
+`.claude/skills/update-solution-profile/SKILL.md`: check the curated files in
+`solution-profile/` against the new CHANGELOG section, add the release to
+`solution-profile/changes.yaml`, and set `reviewed_for_version` to the version. Once
+`VERSION` is final, `make solution-profile-check` (and so `make lint`) applies the
+profile contract's release rules and stays red until this is done. See
+[Solution Profile](./solution-profile.md).
+
+```bash
+make solution-profile-check   # release rules ON, validator "valid", cross-checks passed
+```
 
 ### Step 3 — Publish the artifacts
 
@@ -258,6 +278,15 @@ gh release create v<x.y.z> --title "v<x.y.z>" \
   --notes-file <file containing the CHANGELOG section>
 ```
 
+Publishing the release starts the **Solution profile release asset** workflow
+(`.github/workflows/solution-profile-release.yml`), which builds the solution profile
+from the tag and attaches `solution-profile-genai-idp-accelerator-<x.y.z>.tar.gz` and
+its `.sha256` to the release.
+
+**Success:** `gh release view v<x.y.z> --json assets` lists both files. If the run
+failed or did not start, run it for the tag with
+`gh workflow run solution-profile-release.yml -f tag=v<x.y.z>`.
+
 ### Step 7 — Publish the documentation site
 
 ```bash
@@ -274,7 +303,7 @@ it.
 
 Deploy and test the published release as described in
 [Release Validation](./release-validation/README.md) and
-`.claude/skills/release-validation.md`. It covers deploy variants, the `--headless` and
+`.claude/skills/release-validation/SKILL.md`. It covers deploy variants, the `--headless` and
 `--govcloud` template transforms, an in-place upgrade from the previous release, API
 authorization, security scanning and a benchmark comparison. Expect it to take most of
 a working day and to incur Bedrock charges.
@@ -357,7 +386,10 @@ rollback has failed.
 
 ## 4. What is not automated
 
-No CI job publishes a release. Every step is run by hand, in this order:
+No CI job publishes a release. `make release` (`scripts/release.py`, driven by
+`.claude/skills/release/SKILL.md`) runs Steps 3 to 7 from a workstation, after preflight
+checks, with the GitHub Release kept a draft until the artifacts verify; without it,
+every step is run by hand, in this order:
 
 1. `make version V=<x.y.z>`.
 2. Preparing and cutting `CHANGELOG.md`.

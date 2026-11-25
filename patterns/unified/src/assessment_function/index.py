@@ -16,12 +16,17 @@ from idp_common import assessment, get_config, s3
 # below) or never ran at all (the skip paths inside AssessmentService). Both live
 # in one module so the alarm on AssessmentConfidenceUnavailable cannot see one
 # cause and miss the other.
-from idp_common.assessment.degradation import degrade_section_to_no_confidence
+from idp_common.assessment.degradation import (
+    degrade_section_to_no_confidence,
+    record_no_confidence_in_result,
+)
+from idp_common.decision_model import DecisionModelError
 from idp_common.docs_service import create_document_service
 from idp_common.lambda_deadline import lambda_deadline_scope, set_lambda_deadline_epoch
 from idp_common.models import Document, Status
 from idp_common.utils import (
     calculate_lambda_metering,
+    failure_metering,
     merge_metering_data,
 )
 from idp_common.utils.transient_errors import (
@@ -80,6 +85,14 @@ def is_throttling_exception(exception):
         bool: True if the exception is throttling-related, False otherwise
     """
     from botocore.exceptions import ClientError
+
+    # A decision-model failure carries its client's own retry verdict, which
+    # is_transient_error reads. Its message is the decider's error text, which can
+    # hold a throttling keyword, so matching it here would re-raise a failure the
+    # client called permanent under a name no Retry lists, failing the document
+    # instead of degrading the section (#2112).
+    if isinstance(exception, DecisionModelError):
+        return False
 
     if isinstance(exception, ClientError):
         error_code = exception.response.get("Error", {}).get("Code", "")
@@ -197,8 +210,19 @@ def _handle(event, context):
     # standalone AssessmentService batches large lists on its own).
     assessment_context = "Assessment"
 
+    # A run that starts at assessment (its run plan says so) asks for the section
+    # to be assessed again, so the skip below is not taken. The state machine
+    # passes its input as ``execution_input``; a run that started under the
+    # definition before it did sends none.
+    run_plan = (event.get("execution_input") or {}).get("runPlan") or {}
+    assess_again = run_plan.get("startStep") == "assessment"
+
     # Intelligent Assessment Skip: Check if extraction results already contain explainability_info
-    if section.extraction_result_uri and section.extraction_result_uri.strip():
+    if (
+        not assess_again
+        and section.extraction_result_uri
+        and section.extraction_result_uri.strip()
+    ):
         try:
             logger.info(
                 f"Checking extraction results for existing assessment: {section.extraction_result_uri}"
@@ -385,8 +409,23 @@ def _handle(event, context):
                 f"failing the document."
             )
             updated_document = document
+            # A call that failed after Bedrock billed it (a reply withheld by stop
+            # reason) carries that usage on the exception.
+            updated_document.metering = merge_metering_data(
+                updated_document.metering, failure_metering(e)
+            )
             issue = degrade_section_to_no_confidence(updated_document, section_id, e)
             logger.warning(f"Recorded assessment ProcessingIssue: {issue.code}")
+            # And in the section's extraction result, which the Processing Report
+            # reads: extraction wrote it before this pass, so it still shows a
+            # Confidence stage as if the pass had scored the section. Best effort.
+            degraded = next(
+                (s for s in updated_document.sections if s.section_id == section_id),
+                None,
+            )
+            record_no_confidence_in_result(
+                degraded.extraction_result_uri if degraded else None, issue
+            )
 
     # (The optional post-assessment validation checks — previously gated behind
     # the removed `confidence.validation_enabled` toggle — are no longer run

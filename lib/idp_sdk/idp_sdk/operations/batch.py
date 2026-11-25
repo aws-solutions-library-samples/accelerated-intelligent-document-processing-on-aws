@@ -5,12 +5,14 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
+from idp_common.models import DOCUMENT_STATUS_VALUES
 from idp_sdk._core.document_processor import _section_instances
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
     IDPConfigurationError,
+    IDPError,
     IDPProcessingError,
     IDPResourceNotFoundError,
 )
@@ -63,6 +65,30 @@ def _batch_started_at(batch_info: Dict) -> Optional[datetime]:
         return None
 
 
+#: The status a one-document lookup reports for each progress bucket, in the
+#: order the buckets are read. Keyed by `DocumentBucket` and asserted to cover
+#: every member by `test_batch_operations_extended.py`, so a bucket added to the
+#: enum cannot fall through to UNKNOWN, which is what a hand-typed chain over the
+#: older four names would do to `awaiting_review` (#2022). That bucket reports
+#: `HITL_IN_PROGRESS`, the one status it holds, rather than a label no
+#: `DocumentState` defines; before it existed a held document read RUNNING.
+_SINGLE_DOCUMENT_STATUS_BY_BUCKET = (
+    (DocumentBucket.COMPLETED, "COMPLETED"),
+    (DocumentBucket.AWAITING_REVIEW, "HITL_IN_PROGRESS"),
+    (DocumentBucket.RUNNING, "RUNNING"),
+    (DocumentBucket.QUEUED, "QUEUED"),
+    (DocumentBucket.FAILED, "FAILED"),
+)
+
+
+def _single_document_status(status_data: Dict[str, Any]) -> str:
+    """The coarse status of the one document a `get_batch_status([id])` covered."""
+    for bucket, status in _SINGLE_DOCUMENT_STATUS_BY_BUCKET:
+        if status_data.get(bucket.value):
+            return status
+    return "UNKNOWN"
+
+
 class BatchOperation:
     """Batch document processing operations."""
 
@@ -88,6 +114,7 @@ class BatchOperation:
         context: Optional[str] = None,
         *,
         config_profile: Optional[str] = None,
+        attributes: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Process multiple documents through the IDP pipeline.
@@ -111,12 +138,29 @@ class BatchOperation:
             config_revision: Optional revision of that profile. Omit to process
                 under the profile's current configuration.
             context: Context for test set processing
+            attributes: Caller-supplied document attributes stored with every
+                document and returned with its results (see
+                ``docs/document-attributes.md``). A manifest row's own
+                ``attributes`` override these per key. Invalid attributes are
+                refused before anything is uploaded. Not accepted with
+                ``test_set``.
             **kwargs: Additional parameters
 
         Returns:
             BatchProcessResult with batch processing information
         """
         config_version = resolve_config_profile(config_profile, config_version)
+        if attributes:
+            from idp_sdk._core.document_attributes import validate
+
+            if test_set:
+                raise IDPConfigurationError(
+                    "attributes cannot be attached to a test set run"
+                )
+            try:
+                attributes = validate(attributes)
+            except ValueError as e:
+                raise IDPConfigurationError(str(e)) from e
         from idp_sdk._core.batch_processor import BatchProcessor
 
         name = self._client._require_stack(stack_name)
@@ -177,6 +221,8 @@ class BatchOperation:
                     and config_revision is not None
                 ):
                     manifest_kwargs["config_revision"] = config_revision
+                if attributes:
+                    manifest_kwargs["attributes"] = attributes
                 result = processor.process_batch(**manifest_kwargs)
             elif directory:
                 import inspect
@@ -197,6 +243,8 @@ class BatchOperation:
                     and config_revision is not None
                 ):
                     dir_kwargs["config_revision"] = config_revision
+                if attributes:
+                    dir_kwargs["attributes"] = attributes
                 result = processor.process_batch_from_directory(**dir_kwargs)
             else:
                 import inspect
@@ -215,6 +263,8 @@ class BatchOperation:
                     s3_kwargs["config_revision"] = config_revision
                 if "number_of_files" in sig.parameters and number_of_files:
                     s3_kwargs["number_of_files"] = number_of_files
+                if attributes:
+                    s3_kwargs["attributes"] = attributes
                 result = processor.process_batch_from_s3_uri(**s3_kwargs)
 
             return BatchProcessResult(
@@ -420,54 +470,96 @@ class BatchOperation:
 
     def reprocess(
         self,
-        step: Union[str, RerunStep],
+        step: Union[str, RerunStep] = RerunStep.BEGINNING,
         document_ids: Optional[List[str]] = None,
         batch_id: Optional[str] = None,
+        *,
+        skip: Sequence[Union[str, RerunStep]] = (),
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
         stack_name: Optional[str] = None,
         **kwargs,
     ) -> BatchReprocessResult:
-        """Reprocess existing documents from a specific step.
+        """Process existing documents again, starting at a step.
+
+        The stack's reprocess resolver does the work for each document: it
+        checks that the document can start at the step, clears the outputs the
+        run will produce again and queues it. A document that cannot be
+        processed again does not stop the others: it is reported in
+        ``results`` (and ``failed_documents``) with the reason.
 
         Args:
-            step: Pipeline step to reprocess from
+            step: The step to start at: a ``RerunStep`` or its value
+                (``beginning``, ``ocr``, ``classification``, ``extraction``,
+                ``assessment``, ``policy_rule_validation``, ``summarization``,
+                ``evaluation``, or ``resume`` for the first step with no output)
             document_ids: List of document IDs to reprocess
             batch_id: Batch ID (will reprocess all documents in batch)
+            skip: Optional steps to leave out of the run (``assessment``,
+                ``policy_rule_validation``, ``summarization``, ``evaluation``)
+            version: Configuration profile to process the documents under
+            revision: Revision of that profile
             stack_name: Optional stack name override
             **kwargs: Additional parameters
 
         Returns:
-            BatchReprocessResult with reprocess statistics
+            BatchReprocessResult with the counts and one result per document
+
+        Raises:
+            IDPConfigurationError: neither ``document_ids`` nor ``batch_id``
+            IDPValidationError: ``step`` or ``skip`` names no such step
+            IDPResourceNotFoundError: the batch does not exist, or the stack
+                has no reprocess resolver output
+            ReprocessRefusedError: the server refused the request as a whole
+            IDPProcessingError: the request failed
         """
-        from idp_sdk._core.rerun_processor import RerunProcessor
+        from idp_sdk._core import reprocess as server
 
         name = self._client._require_stack(stack_name)
-        step_str = step.value if isinstance(step, RerunStep) else step
+        start = server.step_value(step)
+        skipped = server.skip_values(skip)
 
         if not document_ids and not batch_id:
             raise IDPConfigurationError("Must specify either document_ids or batch_id")
 
+        if batch_id and not document_ids:
+            document_ids = self.get_document_ids(batch_id, stack_name=name)
+
         try:
-            processor = RerunProcessor(stack_name=name, region=self._client._region)
-
-            if batch_id and not document_ids:
-                document_ids = processor.get_batch_document_ids(batch_id)
-
-            result = processor.rerun_documents(
-                document_ids=document_ids, step=step_str, monitor=False
+            results = server.reprocess(
+                name,
+                self._client._region,
+                list(document_ids or []),
+                start,
+                skipped,
+                version=version,
+                revision=revision,
             )
-
-            return BatchReprocessResult(
-                documents_queued=result.get("documents_queued", 0),
-                documents_failed=result.get("documents_failed", 0),
-                failed_documents=result.get("failed_documents", []),
-                step=RerunStep(step_str),
-            )
+        except IDPError:
+            raise
         except Exception as e:
             raise IDPProcessingError(f"Reprocess failed: {e}") from e
 
+        not_queued = [result for result in results if not result.queued]
+        return BatchReprocessResult(
+            documents_queued=len(results) - len(not_queued),
+            documents_failed=len(not_queued),
+            failed_documents=[
+                {
+                    "object_key": result.document_id,
+                    "error": result.message or result.reason or result.status,
+                    "status": result.status,
+                    "reason": result.reason or "",
+                }
+                for result in not_queued
+            ],
+            step=RerunStep(start),
+            results=results,
+        )
+
     def rerun(
         self,
-        step: Union[str, RerunStep],
+        step: Union[str, RerunStep] = RerunStep.BEGINNING,
         document_ids: Optional[List[str]] = None,
         batch_id: Optional[str] = None,
         stack_name: Optional[str] = None,
@@ -572,7 +664,11 @@ class BatchOperation:
         stats = monitor.calculate_statistics(status_data)
 
         documents = []
-        for category in ["completed", "running", "queued", "failed"]:
+        # Every bucket the monitor fills, derived from the enum so a bucket added
+        # there cannot be dropped here: `awaiting_review` was the one a hand-typed
+        # list would have lost, taking its documents out of `documents` while the
+        # counts still included them.
+        for category in [bucket.value for bucket in DocumentBucket]:
             for doc in status_data.get(category, []):
                 start_time = doc.get("start_time") or None
                 end_time = doc.get("end_time") or None
@@ -612,6 +708,7 @@ class BatchOperation:
             failed=stats.get("failed", 0),
             in_progress=stats.get("running", 0),
             queued=stats.get("queued", 0),
+            awaiting_review=stats.get("awaiting_review", 0),
             success_rate=stats.get("success_rate", 0.0) / 100.0,
             all_complete=stats.get("all_complete", False),
         )
@@ -838,7 +935,14 @@ class BatchOperation:
                 wildcard selection pass ``pattern`` instead, where the breadth is
                 visible in what you wrote.
             pattern: Wildcard pattern to match document keys (e.g. ``"batch-123/*.pdf"``)
-            status_filter: Optional status filter (e.g., 'FAILED', 'COMPLETED')
+            status_filter: Only delete documents whose current status is exactly
+                this value. Must be one of
+                ``idp_common.models.DOCUMENT_STATUS_VALUES`` (e.g. ``'FAILED'``,
+                ``'COMPLETED'``, ``'QUEUED'``); a document still being processed
+                carries the name of its current step, such as ``'OCR'`` or
+                ``'EXTRACTING'``. Any other value raises
+                :class:`IDPConfigurationError`, because it could only ever select
+                nothing.
             stack_name: Optional stack name override
             dry_run: If True, only simulate deletion without actually deleting
             continue_on_error: If True, continue deleting other documents if one fails
@@ -859,6 +963,15 @@ class BatchOperation:
             raise IDPConfigurationError("Must specify either batch_id or pattern")
         if batch_id and pattern:
             raise IDPConfigurationError("Cannot specify both batch_id and pattern")
+        if status_filter and status_filter not in DOCUMENT_STATUS_VALUES:
+            # No tracking record carries any other value, so the scan would match
+            # nothing and the call would report zero deletions as a success.
+            raise IDPConfigurationError(
+                f"Unknown status_filter {status_filter!r}: a document's status is "
+                f"one of {', '.join(DOCUMENT_STATUS_VALUES)}. A document still being "
+                "processed carries the name of its current step (e.g. OCR, "
+                "EXTRACTING), not PROCESSING"
+            )
 
         name = self._client._require_stack(stack_name)
         resources = self._client._get_stack_resources(name)
@@ -1132,15 +1245,7 @@ class BatchOperation:
         try:
             # Get status
             status_data = monitor.get_batch_status([doc_id])
-            status = "UNKNOWN"
-            if status_data.get("completed"):
-                status = "COMPLETED"
-            elif status_data.get("running"):
-                status = "RUNNING"
-            elif status_data.get("queued"):
-                status = "QUEUED"
-            elif status_data.get("failed"):
-                status = "FAILED"
+            status = _single_document_status(status_data)
             # A rejected document (review queues) sits in the failed bucket but
             # has results; report it as REJECTED, never collapsed to FAILED.
             entries = [
@@ -1158,6 +1263,15 @@ class BatchOperation:
                     d.get("review")
                     for d in entries
                     if isinstance(d, dict) and d.get("review")
+                ),
+                None,
+            )
+            # Caller-supplied attributes snapshotted at intake (#1851).
+            attributes = next(
+                (
+                    d.get("attributes")
+                    for d in entries
+                    if isinstance(d, dict) and d.get("attributes")
                 ),
                 None,
             )
@@ -1218,7 +1332,7 @@ class BatchOperation:
                 except Exception as e:
                     logger.warning(f"Could not read results.json for {doc_id}: {e}")
 
-            return {
+            result = {
                 "document_id": doc_id,
                 "document_class": document_class,
                 "fields": fields,
@@ -1232,6 +1346,11 @@ class BatchOperation:
                 # in_review / complete / rejected (review queues); None if never routed.
                 "review_status": (review or {}).get("status"),
             }
+            # Only when the document carries any, so a result for a document
+            # uploaded without attributes has exactly the keys it always had.
+            if attributes:
+                result["attributes"] = attributes
+            return result
         except Exception as e:
             logger.warning(f"Error retrieving metadata for {doc_id}: {e}")
             return {
@@ -1301,22 +1420,26 @@ class BatchOperation:
         page_docs = document_ids[offset : offset + limit]
         has_more = offset + limit < total_in_batch
 
-        # Retrieve confidence scores for each document
+        # Retrieve confidence scores for each document. The submission time is
+        # passed for the same reason `get_status` passes it: without it a document
+        # whose tracking row has not landed yet reads FAILED instead of QUEUED.
+        started_at = _batch_started_at(batch_info)
         documents = []
 
         for doc_id in page_docs:
             try:
-                confidence_data = analyzer.get_confidence(doc_id, section_id)
-                status_data = monitor.get_batch_status([doc_id])
-                status = "UNKNOWN"
-                if status_data.get("completed"):
-                    status = "COMPLETED"
-                elif status_data.get("running"):
-                    status = "RUNNING"
-                elif status_data.get("queued"):
-                    status = "QUEUED"
-                elif status_data.get("failed"):
-                    status = "FAILED"
+                # The status comes from the tracking record whether or not the
+                # assessment file exists, so a document with no confidence yet
+                # reports where it actually is (QUEUED, RUNNING, FAILED, ...).
+                # It used to report PROCESSING, which is not a status any
+                # document carries.
+                status = _single_document_status(
+                    monitor.get_batch_status([doc_id], batch_started_at=started_at)
+                )
+                try:
+                    confidence_data = analyzer.get_confidence(doc_id, section_id)
+                except FileNotFoundError:
+                    confidence_data = {}
 
                 attributes = confidence_data.get("attributes", {})
                 documents.append(
@@ -1324,14 +1447,6 @@ class BatchOperation:
                         "document_id": doc_id,
                         "attributes": attributes,
                         "status": status,
-                    }
-                )
-            except FileNotFoundError:
-                documents.append(
-                    {
-                        "document_id": doc_id,
-                        "attributes": {},
-                        "status": "PROCESSING",
                     }
                 )
             except Exception as e:

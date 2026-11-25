@@ -2,10 +2,51 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getDocumentConfidenceAlertCount } from './confidence-alerts-utils';
-import { getDocumentProcessingIssueCount } from './processing-issues-utils';
+import { getDocumentProcessingIssueCount, type ProcessingIssue } from './processing-issues-utils';
 import { resolveMissingRequiredFieldCount } from './missing-required-fields-utils';
 import { parseMetering, parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 import { isHitlReviewFinished } from './review-status';
+import { parseCallerAttributes } from './caller-attributes';
+
+/** The routing rule that placed a document in its review queue; `ruleId` is empty for the table's default outcome. */
+export interface ReviewRoutedBy {
+  tableId: string;
+  ruleId: string;
+  ruleLabel: string;
+  /** The reason the routing rule gave, with the document's values; empty for a document placed before routing rules had one. */
+  reason: string;
+  /** How many policy rules the document failed when it was placed. */
+  policyFailureCount: number;
+}
+
+const textOf = (value: unknown): string => (typeof value === 'string' ? value : '');
+const countOf = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0);
+
+/**
+ * The document's `ReviewRoutedBy` (AWSJSON text, or the object it parses to); null when
+ * the document carries none, or something that is not a routing decision.
+ */
+export const parseReviewRoutedBy = (raw: unknown): ReviewRoutedBy | null => {
+  let value = raw;
+  if (typeof raw === 'string') {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object') return null;
+  const { tableId, ruleId, ruleLabel, reason, policyFailureCount } = value as Record<string, unknown>;
+  // A decision names its table; the rule is empty when the default outcome applied.
+  if (typeof tableId !== 'string' || !tableId) return null;
+  return {
+    tableId,
+    ruleId: textOf(ruleId),
+    ruleLabel: textOf(ruleLabel),
+    reason: textOf(reason).trim(),
+    policyFailureCount: countOf(policyFailureCount),
+  };
+};
 
 interface DocumentApiItem {
   ObjectKey: string;
@@ -37,6 +78,11 @@ interface DocumentApiItem {
   HITLReviewedBy?: string;
   HITLReviewedByEmail?: string;
   HITLReviewHistory?: string | Record<string, unknown>[];
+  /** The review queue the document is, or was last, in: its id and its name. */
+  ReviewQueue?: string | null;
+  ReviewQueueName?: string | null;
+  /** The routing rule that placed it there (AWSJSON): `{tableId, ruleId, ruleLabel, reason, policyFailures, policyFailureCount}`. */
+  ReviewRoutedBy?: string | Record<string, unknown> | null;
   ConfidenceAlertCount?: number;
   MissingRequiredFieldCount?: number | null;
   ProcessingIssueCount?: number;
@@ -62,6 +108,17 @@ interface DocumentApiItem {
   ConfigSource?: string;
   ConfigMappingPrefix?: string;
   ConfigAssignmentError?: string;
+  /**
+   * Issues recorded on the document rather than on a section. Only ingest writes
+   * these: a warning that the configuration prefix mappings could not be read, so
+   * the document was processed with no mapping applied.
+   */
+  ProcessingIssues?: ProcessingIssue[] | null;
+  /**
+   * Caller-supplied document attributes, snapshotted at intake (#1851). Absent
+   * for a document uploaded without any. Untrusted input: rendered as text only.
+   */
+  DocumentAttributes?: Record<string, unknown> | string | null;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -114,6 +171,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
     const hitlReviewedByEmail = item.HITLReviewedByEmail || '';
     // HITLReviewHistory comes as AWSJSON (string), parse with typed parser
     const hitlReviewHistory = parseHITLReviewHistory(item.HITLReviewHistory as string);
+    const reviewRoutedBy = parseReviewRoutedBy(item.ReviewRoutedBy);
 
     const formatDate = (timestamp: string | undefined): string => {
       return timestamp && timestamp !== '0' ? new Date(timestamp).toISOString() : '';
@@ -206,6 +264,9 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       hitlReviewedBy,
       hitlReviewedByEmail,
       hitlReviewHistory,
+      reviewQueue: item.ReviewQueue || null,
+      reviewQueueName: item.ReviewQueueName || null,
+      reviewRoutedBy,
       configVersion,
       configRevision,
       malwareScanStatus: item.MalwareScanStatus,
@@ -216,6 +277,8 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       configSource,
       configMappingPrefix,
       configAssignmentError,
+      documentProcessingIssues: (item.ProcessingIssues ?? []).filter(Boolean),
+      callerAttributes: parseCallerAttributes(item.DocumentAttributes),
     };
 
     return mapping;

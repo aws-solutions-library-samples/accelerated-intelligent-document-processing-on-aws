@@ -51,3 +51,8 @@ features:
   # admin picks a size tier or individual variants and starts a background job.
   # See docs/extensions/confbench-testset.md.
   - path: feature-platform/confbench-testset
+  # Decision Model: Strands Decider. Builds the decider's Lambda image in the
+  # installing account from pinned source and model commits, deploys it as
+  # GENAIIDP-decider, and installs an inactive profile selecting it for section
+  # classification. See docs/extensions/decision-model-decider.md.
+  - path: feature-platform/decision-model-decider

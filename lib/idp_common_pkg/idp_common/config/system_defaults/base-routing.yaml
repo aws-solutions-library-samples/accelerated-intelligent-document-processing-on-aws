@@ -1,0 +1,93 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# =============================================================================
+# REVIEW ROUTING
+# =============================================================================
+# One routing table decides, for each processed document, whether it is reviewed
+# and in which review queue. It is evaluated once per run, after policy rule
+# validation, in Pipeline mode and BDA mode alike. Routing rules are tried in
+# order and the first one whose conditions all hold decides the outcome.
+#
+# A routing rule has a list of actions and a reason. The only action type sends
+# the document to a review queue; an empty list means the document is not
+# reviewed. The reason is what the reviewer reads: an {input} placeholder in it
+# takes the document's value, and an empty reason shows a generated text.
+#
+# The three routing rules below are the built-in routing rules. They hold a
+# document exactly when review queues held it before routing tables existed, so
+# a profile that never changes this section routes as it always did.
+#
+# Routing holds a document only when `hitl.enabled` is on and the Default review
+# queue is enabled. Only an Admin can change this section. A profile is checked
+# when it is saved: inputs, tests, field paths, policy rule ids, queue ids and
+# reason placeholders.
+# See docs/review-routing.md.
+# =============================================================================
+
+routing:
+  tables:
+    - id: review-routing                    # The table's id (a profile holds exactly one table)
+      stage: after_policy_rule_validation   # Where the table is evaluated (the only stage)
+      hit_policy: FIRST                     # The first matching routing rule wins (the only hit policy)
+      engine: builtin                       # The decision-table engine (the only engine)
+      rules:
+        - id: builtin-extraction-failed     # Routing rule id, unique in the table
+          label: Failed extractions         # Name shown to people
+          enabled: true                     # A disabled routing rule is kept but never evaluated
+          conditions:                       # All conditions must hold
+            - input: reviewed               # True after a completed review of the document
+              path: ""                      # Unused by this input
+              aggregate: any                # any | all | count (for inputs that are lists)
+              test: "false"                 # DMN unary test the value must pass
+            - input: extraction_failed_count   # Sections whose extraction failed and left no values
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:                          # What happens to a matching document, in order; [] = not reviewed
+            - type: review_queue            # The only action type: send to a review queue
+              queue: default                # Review queue id
+          reason: "Sections whose extraction failed: {extraction_failed_count}. They have no extracted values: enter them from the document."   # Shown to the reviewer; {input} takes the document's value
+        - id: builtin-confidence-alerts
+          label: Confidence alerts
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: confidence_alert_count # Fields under their confidence threshold
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: default
+          reason: "Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them."
+        - id: builtin-missing-required
+          label: Missing required fields
+          enabled: true
+          conditions:
+            - input: reviewed
+              path: ""
+              aggregate: any
+              test: "false"
+            - input: route_missing_required_fields   # hitl.route_missing_required_fields
+              path: ""
+              aggregate: any
+              test: "true"
+            - input: missing_required_field_count    # Required fields with no extracted value
+              path: ""
+              aggregate: any
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: default
+          reason: "Required fields with no value: {missing_required_field_count}. Fill them in from the document."
+      default_outcome:                      # What happens when no routing rule matches
+        actions: []                         # [] = the document is not reviewed
+        reason: ""                          # Shown to the reviewer when the default outcome names a review queue
+  # How many times in a row a document can be placed in a review queue: the first
+  # placement, and each time a routing rule sends a reviewed document to a queue
+  # again. Above it the run continues without another review (1-10).
+  max_consecutive_placements: 3

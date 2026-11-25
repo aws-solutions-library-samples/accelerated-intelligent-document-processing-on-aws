@@ -10,14 +10,16 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from . import completeness, moved, safety
+from . import completeness, moved, safety, suppressions
 from .assets import deterministic_zip
 from .awscc_schema import AwsccSchema
 from .expand import expand, load_template, offline_placeholders
+from .hclfmt import format_hcl
 from .static_files import VERSIONS_TF, bridge_tf, label_tf
 from .translate import (
     LIFECYCLE_OVERRIDES,
     STABLE_CUSTOM_OUTPUTS,
+    TAGS_VAR,
     TranslationError,
     Translator,
     report_json,
@@ -150,7 +152,9 @@ def write_module(
         )
     out.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        (out / name).write_text(text)
+        # Laid out as `terraform fmt` would leave it, so a module vendored into a
+        # repository with a formatting gate passes `terraform fmt -check`.
+        (out / name).write_text(format_hcl(text) if name.endswith(".tf") else text)
     if tr.custom_tokens:
         # Source alongside for reading; the function deploys the zip.
         (out / "bridge").mkdir(exist_ok=True)
@@ -339,6 +343,13 @@ def main(argv: list[str] | None = None) -> int:
         "(default: terraform/translator/renames.yaml)",
     )
     ap.add_argument(
+        "--suppressions-source",
+        type=Path,
+        help="source template whose scanner suppressions are carried into the "
+        "module, with its nested templates resolved as --offline resolves them "
+        "(default with --offline: the template itself; otherwise none)",
+    )
+    ap.add_argument(
         "--survey",
         action="store_true",
         help="collect every failure and print them instead of stopping",
@@ -373,6 +384,11 @@ def main(argv: list[str] | None = None) -> int:
             nested_loader=loader,
         )
         tr.directory_readers = args.label_template is not None
+        suppression_source = args.suppressions_source or (
+            args.template if args.offline else None
+        )
+        if suppression_source is not None:
+            suppressions.attach(tr, suppressions.read_tree(suppression_source))
         files = tr.render()
         render_tree(tr)
         errors, stale_declarations, edges = tree_checks(tr)
@@ -417,6 +433,9 @@ def main(argv: list[str] | None = None) -> int:
                     "formatVersion": MANIFEST_FORMAT_VERSION,
                     "version": args.version,
                     "parameters": tr.parameter_map(),
+                    # The module's tags input; idp-cli passes --tags to it, and
+                    # refuses them for a module without one.
+                    "tagsVariable": TAGS_VAR,
                     "retainedAddresses": tr.retained_addresses(),
                     "statefulAddresses": safety.stateful_addresses(tr),
                     "customOutputEdges": [

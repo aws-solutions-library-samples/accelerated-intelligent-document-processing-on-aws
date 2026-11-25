@@ -6,6 +6,7 @@ import boto3
 import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from log_sanitizer import sanitize_event_for_logging
 from review_statuses import ReviewStatus
 import logging
@@ -47,6 +48,21 @@ def calculate_durations(timestamps):
 REVIEW_STATUS_VALUES = tuple(s.value for s in ReviewStatus)
 
 
+def _plain(value):
+    """A tracking attribute as JSON carries it.
+
+    DynamoDB returns every number as a Decimal: a whole one becomes an int, any
+    other a float, at any depth of a map or a list.
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {key: _plain(entry) for key, entry in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(entry) for entry in value]
+    return value
+
+
 def review_info(item):
     """The document's review-queue status, or None when it was never routed.
 
@@ -59,12 +75,40 @@ def review_info(item):
     return {
         'status': status,
         'queue': item.get('ReviewQueue'),
+        # The queue's name, and the routing rule that placed the document, as
+        # the tracker writes it: {tableId, ruleId, ruleLabel, reason,
+        # policyFailures: [{ruleId, policy, name, reason, pages}],
+        # policyFailureCount}. reason is what the reviewer reads; a row written
+        # before routing rules had a reason holds the first three keys only.
+        # None for a document no rule placed. The map passes through as it is
+        # stored, with its numbers (pages, policyFailureCount) as JSON numbers.
+        'queueName': item.get('ReviewQueueName'),
+        'routedBy': _plain(item.get('ReviewRoutedBy')),
         'cycleId': item.get('ReviewCycleId'),
         'statusUri': item.get('ReviewStatusUri'),
         'reviewedBy': item.get('HITLReviewedBy'),
         'disposedAt': item.get('ReviewDisposedAt'),
         'rejectReason': item.get('ReviewRejectReason'),
     }
+
+
+def _native(value):
+    """DynamoDB Decimals as int/float, so the response is JSON-serialisable."""
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+    if isinstance(value, list):
+        return [_native(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _native(v) for k, v in value.items()}
+    return value
+
+
+def document_attributes(item):
+    """The caller-supplied attributes snapshotted at intake (#1851), or None."""
+    stored = item.get('DocumentAttributes')
+    if not isinstance(stored, dict) or not stored:
+        return None
+    return _native(stored)
 
 
 def get_document_status(object_key, status_only=False):
@@ -110,6 +154,12 @@ def get_document_status(object_key, status_only=False):
             },
             'review': review_info(item),
         }
+
+        # Only when the document has any, so a response for a document uploaded
+        # without attributes is unchanged.
+        attributes = document_attributes(item)
+        if attributes:
+            result['attributes'] = attributes
 
         # A document refused at ingest (for example, outside every tenant's
         # prefixes under strict tenant isolation) never starts a workflow, so the

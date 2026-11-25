@@ -4,7 +4,7 @@
 
 Run with ``make verify-tenant-grants-federation`` against a stack deployed with
 ``TenantGrantSource=IdpClaim`` and federated to the throwaway OIDC provider in
-``oidc_provider/`` (see ``.claude/skills/live-auth-checks.md`` for standing both up).
+``oidc_provider/`` (see ``.claude/skills/live-auth-checks/SKILL.md`` for standing both up).
 
 The provider is driven to issue tokens **shaped like Microsoft Entra ID's** for an
 app registration with app roles: a ``roles`` array of app-role values (a functional

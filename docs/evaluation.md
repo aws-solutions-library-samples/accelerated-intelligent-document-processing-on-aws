@@ -16,7 +16,7 @@ The GenAIIDP solution includes a built-in evaluation framework to assess the acc
 ## Enhanced Reporting
 
 The evaluation framework runs on the pinned `stickler-eval` release
-(currently 1.0.0 — see `stickler_version.STICKLER_VERSION` for the resolved
+(the version pinned in `lib/idp_common_pkg/pyproject.toml` — see `stickler_version.STICKLER_VERSION` for the resolved
 version). Reports include confidence calibration metrics:
 
 - **📊 Confidence Calibration Metrics** - ECE (Expected Calibration Error), Brier score, and AUROC analyze how well-calibrated confidence predictions are
@@ -131,7 +131,7 @@ The evaluation framework is powered by [Stickler](https://github.com/awslabs/sti
 - **Extensible Comparators**: Support for exact, fuzzy, numeric, semantic, and LLM-based comparison
 - **Native JSON Schema Support**: Direct use of JSON Schema with custom extensions
 
-The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.0`, verified at import via `idp_common.evaluation.stickler_version`).
+The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.2`, verified at import via `idp_common.evaluation.stickler_version`).
 
 ### Architecture
 
@@ -282,7 +282,7 @@ Name-token overrides (fire on top of the type rule, using the field name):
 | `*_date`, `*_time`, `date`, `dob` | DateComparator | 0.95 |
 
 For the authoritative and current list see Stickler's release notes
-([v1.0.0](https://github.com/awslabs/stickler/releases/tag/v1.0.0)) — this
+([releases](https://github.com/awslabs/stickler/releases)) — this
 table is a summary; upstream is the source of truth. The applied comparator
 and its provenance (`configured` vs `auto-inferred`) are recorded per
 attribute in every `results.json` (`inference_source` + `inference_why`),
@@ -402,6 +402,8 @@ The dynamic schema generation uses:
 ## Evaluation Methods
 
 The framework supports multiple comparison methods. All method names in evaluation reports use **PascalCase** formatting (e.g., `Fuzzy`, `NumericExact`) to match the UI configuration interface.
+
+A score that floating-point rounding leaves within 1e-10 below its threshold counts as a match, the same tolerance Stickler applies, so a value that scores, say, 0.7999999999 against a 0.8 threshold is a match.
 
 ### Supported Methods and Their Characteristics
 
@@ -645,7 +647,7 @@ evaluation:
     temperature: "0.0"
     top_p: "0.0"         # 0 sends temperature instead of top_p
     top_k: "5"
-    max_tokens: ""       # Empty = the model's maximum output; set a value to cap it
+    max_tokens: "10000"  # Output cap; empty = the model's maximum output
     system_prompt: >-
       You are an evaluator that helps determine if the predicted and expected values match ...
     task_prompt: >-
@@ -838,6 +840,31 @@ classes:
               x-aws-idp-evaluation-method: NUMERIC_EXACT
 ```
 
+#### Lists of scalar values
+
+A list of strings, numbers or booleans (`type: array` with scalar `items`) is
+scored with **one** comparator, which is applied to each pair of elements; the
+elements are then paired by Hungarian matching. Set the method, and any
+threshold, weight or method config, on the array. The configuration editor
+writes it there.
+
+A method written on the `items` instead is accepted and means the same thing:
+the evaluation moves each evaluation key from the items to the array. The
+legacy-format conversion writes this shape for a list with a single item
+attribute. When the array and its items both set the same key, the array's
+value is used, and a different value on the items is ignored and logged as a
+warning in the Evaluation Lambda's log. The exception is a method that is
+invalid on the array, such as `HUNGARIAN`, which needs a list of objects. That
+method is removed with an `ERROR` log line and the items' method is used.
+
+```yaml
+ENDORSEMENTS:
+  type: array
+  x-aws-idp-evaluation-method: EXACT   # compares each endorsement code exactly
+  items:
+    type: string
+```
+
 ### Understanding Threshold vs Match-Threshold
 
 The evaluation framework uses **two different threshold concepts** depending on the field type:
@@ -917,6 +944,13 @@ Different evaluation methods work with different field types:
 
 Every threshold above is optional. Omitting one is accepted and the comparator
 falls back to its own default — it is not reported as a missing required value.
+
+**Amounts in non-ASCII digits.** `NUMERIC_EXACT` reads amounts written in Arabic-Indic,
+Persian, Devanagari and full-width digits, in their usual formats, when the field is
+declared `"type": "string"`: `"١٬٢٥٠٫٠٠"` matches `"1,250.00"`. A field declared
+`"type": "number"` is converted with `float()` first, which reads bare digits such as
+`"١٢٥٠"` but not their separators, so `"١٬٢٥٠٫٠٠"` scores `0.0` there. Declare amount
+fields `"type": "string"` for documents that write them in other scripts.
 
 **How a mismatch is handled**:
 
@@ -1638,7 +1672,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 
 ### Stickler Version Information
 
-The solution installs Stickler from PyPI (`stickler-eval==1.0.0`, pinned in
+The solution installs Stickler from PyPI (`stickler-eval==1.0.2`, pinned in
 `lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from
@@ -1771,6 +1805,19 @@ Three things make that true:
   `$.document` could not resolve and raised `States.Runtime` — which no `Catch`
   intercepts, failing the execution and throwing away the fully processed
   document at the very last step.
+
+A transient failure inside evaluation is retried rather than scored. When reading a
+section's extraction result, the document, or the baseline from S3 is throttled,
+answered with a 5xx or times out, and when an `LLM`-method judge call fails with a
+throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx or a read
+timeout, the evaluation step fails with `TransientError` without recording a failed
+evaluation, and the state machine retries it with its usual backoff
+([Step Functions Retry Configuration](./configuration.md#step-functions-retry-configuration)).
+So such a failure no longer appears as fields scored as misses or a judge score of
+0.0. If the retries run out, the evaluation is recorded as `FAILED` and the document
+keeps its results. A missing object or an unreadable file keeps its existing outcome,
+and a judge error a retry cannot fix (a request Bedrock rejects, a reply that is not
+JSON) still scores the field 0.0.
 
 If you see `TIMED_OUT`, the document's extraction results are intact — only its
 score is missing. Re-run evaluation for that document after reducing the

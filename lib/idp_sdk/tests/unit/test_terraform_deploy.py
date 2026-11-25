@@ -27,6 +27,23 @@ from idp_sdk.exceptions import IDPConfigurationError, IDPStackError
 
 pytestmark = pytest.mark.unit
 
+
+def _fresh_bucket_s3() -> MagicMock:
+    """An S3 client double for a bucket with nothing in it yet: every read is
+    ``NoSuchKey``, every listing is empty, and the service model is botocore's
+    real one, so the conditional-write capability check sees the real API."""
+    import botocore.session
+    from botocore.exceptions import ClientError
+
+    s3 = MagicMock()
+    s3.get_object.side_effect = ClientError(
+        {"Error": {"Code": "NoSuchKey", "Message": "absent"}}, "GetObject"
+    )
+    s3.get_paginator.return_value.paginate.return_value = [{}]
+    s3.meta.service_model = botocore.session.get_session().get_service_model("s3")
+    return s3
+
+
 REGION = "us-west-2"
 BUCKET = "tfspike-111122223333-us-west-2"
 
@@ -202,7 +219,7 @@ class TestVariantNames:
 
     def test_upload_uses_the_variant_names(self, tmp_path):
         _tree(tmp_path)
-        s3 = MagicMock()
+        s3 = _fresh_bucket_s3()
         info = tf.upload_module(
             s3,
             module_dir=tmp_path,
@@ -217,6 +234,7 @@ class TestVariantNames:
             "p/2/terraform/idp-terraform-headless-2.zip",
             "p/2/terraform/idp-terraform-headless-2.zip.sha256",
             "p/terraform/idp-terraform-headless-latest.json",
+            "p/terraform/idp-terraform-headless-versions.json",
         ]
         assert info["moduleUrl"].endswith("idp-terraform-headless-2.zip")
 
@@ -278,7 +296,7 @@ class TestZip:
 class TestUpload:
     def test_uploads_zip_checksum_and_pointer(self, tmp_path):
         _tree(tmp_path)
-        s3 = MagicMock()
+        s3 = _fresh_bucket_s3()
         info = tf.upload_module(
             s3,
             module_dir=tmp_path,
@@ -293,6 +311,7 @@ class TestUpload:
             zip_key,
             zip_key + ".sha256",
             "tfspike/terraform/idp-terraform-latest.json",
+            "tfspike/terraform/idp-terraform-versions.json",
         }
         digest = hashlib.sha256(puts[zip_key]["Body"]).hexdigest()
         assert info["sha256"] == digest
@@ -310,7 +329,7 @@ class TestUpload:
 
     def test_public_applies_the_acl(self, tmp_path):
         _tree(tmp_path)
-        s3 = MagicMock()
+        s3 = _fresh_bucket_s3()
         tf.upload_module(
             s3,
             module_dir=tmp_path,
@@ -337,6 +356,19 @@ class TestTranslatorCommand:
         assert cmd[cmd.index("--version") + 1] == "9"
         assert env["PYTHONPATH"].split(os.pathsep)[0] == str(
             tmp_path / "terraform" / "translator"
+        )
+
+    def test_suppressions_come_from_the_checkouts_source_template(self, tmp_path):
+        """The published template has no comments left, so the translator is
+        pointed at the source template for the checkov skips it carries."""
+        (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
+        (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert "--suppressions-source" not in cmd
+        (tmp_path / "template.yaml").write_text("Resources: {}\n")
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert cmd[cmd.index("--suppressions-source") + 1] == str(
+            tmp_path / "template.yaml"
         )
 
     def test_missing_translator_is_refused(self, tmp_path):
@@ -445,18 +477,18 @@ class TestRootConfig:
         assert 'provider "aws" {\n  region = "us-west-2"' in main
         assert 'provider "awscc" {\n  region = "us-west-2"' in main
         assert (
-            'source = "s3::https://s3-us-west-2.amazonaws.com/'
+            'source                   = "s3::https://s3-us-west-2.amazonaws.com/'
             f'{BUCKET}/p/1/terraform/m.zip"'
         ) in main
         assert 'variable "max_concurrent_workflows" {\n  type = number' in main
-        assert 'variable "api_key" {\n  type = string\n  sensitive = true' in main
-        assert "  stack_name = var.stack_name" in main
+        assert 'variable "api_key" {\n  type      = string\n  sensitive = true' in main
+        assert "  stack_name               = var.stack_name" in main
         assert 'backend "' not in main
         tfvars = (tmp_path / "terraform.tfvars").read_text()
-        assert 'stack_name = "tfidp"' in tfvars
+        assert 'stack_name               = "tfidp"' in tfvars
         assert "max_concurrent_workflows = 7" in tfvars
         # A template sequence is escaped, so Terraform reads it literally.
-        assert 'api_key = "$${x}"' in tfvars
+        assert 'api_key                  = "$${x}"' in tfvars
         assert tf.parse_tfvars(tfvars) == values
         assert values["api_key"] == "${x}"
         assert (tmp_path / "terraform.tfvars").stat().st_mode & 0o077 == 0
@@ -464,7 +496,8 @@ class TestRootConfig:
     def test_list_values_render_as_hcl_lists(self, tmp_path):
         _write(tmp_path, parameters={"SubnetIds": "s-1,s-2"})
         assert (
-            'subnet_ids = ["s-1", "s-2"]' in (tmp_path / "terraform.tfvars").read_text()
+            'subnet_ids  = ["s-1", "s-2"]'
+            in (tmp_path / "terraform.tfvars").read_text()
         )
         assert "type = list(string)" in (tmp_path / "main.tf").read_text()
 
@@ -587,6 +620,121 @@ class TestRootConfig:
             _write(tmp_path, stack_name="other")
 
 
+TAGGED_MANIFEST = {**MANIFEST, "tagsVariable": "tags"}
+
+#: ``main.tf`` for ``_write(tmp_path)`` as idp-cli wrote it before the module had
+#: a tags input; a deploy that passes no tags must still write exactly this.
+UNTAGGED_MAIN_TF = f"""{tf.ROOT_MARKER}
+# Rewritten on every deploy; put your own configuration (a backend block,
+# for example) in another .tf file in this directory.
+
+terraform {{
+  required_providers {{
+    aws   = {{ source = "hashicorp/aws" }}
+    awscc = {{ source = "hashicorp/awscc" }}
+  }}
+}}
+
+provider "aws" {{
+  region = "us-west-2"
+}}
+
+provider "awscc" {{
+  region = "us-west-2"
+}}
+
+variable "admin_email" {{
+  type = string
+}}
+
+variable "stack_name" {{
+  type = string
+}}
+
+module "idp" {{
+  source      = "s3::https://s3-us-west-2.amazonaws.com/{BUCKET}/p/1/terraform/m.zip"
+  admin_email = var.admin_email
+  stack_name  = var.stack_name
+}}
+"""
+
+
+class TestTags:
+    def test_no_tags_writes_the_file_it_always_wrote(self, tmp_path):
+        values = _write(tmp_path, manifest=TAGGED_MANIFEST)
+        assert (tmp_path / "main.tf").read_text() == UNTAGGED_MAIN_TF
+        assert "tags" not in (tmp_path / "terraform.tfvars").read_text()
+        assert values.tags == {} and not values.tags_kept
+
+    def test_tags_reach_the_module_and_the_aws_default_tags(self, tmp_path):
+        tags = {"CostCenter": "42", "Owner": "team a"}
+        values = _write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags)
+        main = (tmp_path / "main.tf").read_text()
+        assert (
+            'provider "aws" {\n  region = "us-west-2"\n  default_tags {\n'
+            "    tags = var.tags\n  }\n}"
+        ) in main
+        assert 'provider "awscc" {\n  region = "us-west-2"\n}' in main
+        assert 'variable "tags" {\n  type = map(string)\n}' in main
+        assert "  tags        = var.tags\n}" in main
+        tfvars = tf.parse_tfvars((tmp_path / "terraform.tfvars").read_text())
+        assert tfvars["tags"] == tags
+        # Tags are not a parameter: they are kept out of the parameter record.
+        assert "tags" not in values
+        assert "tags" not in json.loads((tmp_path / tf.PARAMETERS_FILE).read_text())
+
+    def test_a_later_deploy_without_tags_keeps_them(self, tmp_path, caplog):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
+        with caplog.at_level("INFO"):
+            values = _write(tmp_path, admin_email=None, manifest=TAGGED_MANIFEST)
+        assert values.tags == {"Owner": "a"} and values.tags_kept
+        assert "Keeping the previous deploy's tags (Owner)" in caplog.text
+        assert "Variable tags" not in caplog.text
+        assert "default_tags" in (tmp_path / "main.tf").read_text()
+
+    def test_passed_tags_replace_and_empty_tags_remove(self, tmp_path):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a", "Team": "t"})
+        values = _write(
+            tmp_path, admin_email=None, manifest=TAGGED_MANIFEST, tags={"Owner": "b"}
+        )
+        assert values.tags == {"Owner": "b"} and not values.tags_kept
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={})
+        assert (tmp_path / "main.tf").read_text() == UNTAGGED_MAIN_TF
+        assert "tags" not in tf.parse_tfvars(
+            (tmp_path / "terraform.tfvars").read_text()
+        )
+
+    def test_a_module_without_a_tags_input_refuses_tags_and_writes_nothing(
+        self, tmp_path
+    ):
+        with pytest.raises(IDPConfigurationError, match="no tags input"):
+            _write(tmp_path, tags={"Owner": "a"})
+        assert not (tmp_path / "main.tf").exists()
+        assert not (tmp_path / "terraform.tfvars").exists()
+
+    def test_kept_tags_are_refused_by_a_module_without_a_tags_input(self, tmp_path):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
+        before = (tmp_path / "main.tf").read_text()
+        with pytest.raises(IDPConfigurationError, match="previous deploy has tags"):
+            _write(tmp_path, admin_email=None)
+        assert (tmp_path / "main.tf").read_text() == before
+
+    def test_more_tags_than_an_s3_object_takes_are_refused(self, tmp_path):
+        tags = {f"k{i}": "v" for i in range(11)}
+        with pytest.raises(IDPConfigurationError, match="at most 10"):
+            _write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags)
+        assert not (tmp_path / "main.tf").exists()
+        tags.pop("k0")
+        assert len(_write(tmp_path, manifest=TAGGED_MANIFEST, tags=tags).tags) == 10
+
+    def test_set_assume_role_keeps_the_default_tags(self, tmp_path):
+        _write(tmp_path, manifest=TAGGED_MANIFEST, tags={"Owner": "a"})
+        tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
+        main = (tmp_path / "main.tf").read_text()
+        assert main.count(f'role_arn = "{ROLE}"') == 2
+        assert "  default_tags {\n    tags = var.tags\n  }" in main
+
+
 # --------------------------------------------------------------------------------------
 # Retained addresses and state
 # --------------------------------------------------------------------------------------
@@ -623,6 +771,15 @@ STATE = {
                             "mode": "managed",
                             "type": "awscc_s3_bucket",
                             "values": {"bucket_name": "tfidp-output"},
+                        },
+                        {
+                            "address": "module.idp.aws_s3_bucket.cfn_bridge",
+                            "mode": "managed",
+                            "type": "aws_s3_bucket",
+                            "values": {
+                                "bucket": "tfidp-cfnbridge-1",
+                                "force_destroy": True,
+                            },
                         },
                     ],
                     "child_modules": [
@@ -672,15 +829,332 @@ class TestRetained:
         )
         assert [b["bucket_name"] for b in buckets] == ["tfidp-input", "tfidp-output"]
 
+    def test_buckets_to_empty_leave_out_the_custom_resource_bridge_buckets(self):
+        """The bridge buckets hold each custom resource's physical ID until its
+        Delete runs; emptying one first sends every Delete in that module
+        without its ID. The fixture has the shape and the four bridge buckets
+        (root and three child modules, all ``force_destroy``) of a real
+        deployment's state."""
+        bridges = [
+            ("module.idp", "tfidp-cfnbridge-1"),
+            ("module.idp.module.documentkb[0]", "tfidp-documentkb-cfnbridge-2"),
+            ("module.idp.module.patternstack", "tfidp-patternsta-cfnbridge-3"),
+            (
+                "module.idp.module.multidocdiscoverystack",
+                "tfidp-multidocdi-cfnbridge-4",
+            ),
+        ]
+        children = [
+            {
+                "address": module,
+                "resources": [
+                    {
+                        "address": f"{module}.aws_s3_bucket.cfn_bridge",
+                        "mode": "managed",
+                        "type": "aws_s3_bucket",
+                        "values": {"bucket": name, "force_destroy": True},
+                    },
+                    {
+                        "address": f"{module}.aws_s3_bucket.data",
+                        "mode": "managed",
+                        "type": "aws_s3_bucket",
+                        "values": {"bucket": f"{name}-data", "force_destroy": False},
+                    },
+                ],
+            }
+            for module, name in bridges
+        ]
+        state = {"values": {"root_module": {"child_modules": children}}}
+        names = [b["bucket_name"] for b in tf.state_buckets(state)]
+        assert names == [f"{name}-data" for _, name in bridges]
+
     def test_report_has_the_cloudformation_shape(self):
         remove, _ = tf.retained_state_addresses(
             MANIFEST["retainedAddresses"], STATE_LIST
         )
         report = tf.retained_report(STATE, remove)
-        assert set(report) == {"dynamodb_tables", "log_groups", "s3_buckets", "other"}
+        assert set(report) == {
+            "dynamodb_tables",
+            "log_groups",
+            "s3_buckets",
+            "other",
+            "service_log_groups",
+        }
         assert [r["physical_id"] for r in report["s3_buckets"]] == ["tfidp-logging"]
         assert [r["physical_id"] for r in report["dynamodb_tables"]] == [
             "tfidp-tracking-a"
+        ]
+
+
+def _state(*resources):
+    return {
+        "values": {
+            "root_module": {
+                "child_modules": [
+                    {
+                        "address": "module.idp",
+                        "resources": [{"mode": "managed", **r} for r in resources],
+                    }
+                ]
+            }
+        }
+    }
+
+
+def _res(tf_type, label, **values):
+    return {
+        "address": f"module.idp.{tf_type}.{label}",
+        "type": tf_type,
+        "values": values,
+    }
+
+
+class TestRetainedReportNames:
+    @pytest.mark.parametrize(
+        "tf_type", ["awscc_apigateway_account", "aws_api_gateway_account"]
+    )
+    def test_the_api_gateway_account_setting_is_named_for_what_it_is(self, tf_type):
+        role = "arn:aws:iam::123456789012:role/tfidp-apigw-cw"
+        account = _res(tf_type, "acct", id="Wq3x9", cloudwatch_role_arn=role)
+        report = tf.retained_report(_state(account), [account["address"]])
+        [entry] = report["other"]
+        assert entry["physical_id"] == "Wq3x9"
+        assert entry["display_name"] == (
+            f"API Gateway account settings for this Region (CloudWatch Logs role {role})"
+        )
+
+    @pytest.mark.parametrize("tf_type", ["awscc_kms_key", "aws_kms_key"])
+    def test_the_kms_key_says_why_it_was_kept(self, tf_type):
+        key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+        key = _res(tf_type, "customer_managed_encryption_key", id=key_id, key_id=key_id)
+        [entry] = tf.retained_report(_state(key), [key["address"]])["other"]
+        assert entry["physical_id"] == key_id
+        assert entry["type"] == tf_type
+        assert entry["display_name"] == (
+            f"KMS key {key_id}, which encrypts the retained buckets"
+        )
+
+    def test_a_named_resource_gets_no_display_name(self):
+        role = _res("aws_iam_role", "r", name="tfidp-role")
+        [entry] = tf.retained_report(_state(role), [role["address"]])["other"]
+        assert entry["physical_id"] == "tfidp-role"
+        assert "display_name" not in entry
+
+
+class TestServiceLogGroups:
+    def test_a_function_without_a_declared_group_leaves_lambdas_default(self):
+        # The provider computes log_group to the default when none is set; both
+        # the computed value and an absent block mean the default group.
+        computed = _res(
+            "aws_lambda_function",
+            "a",
+            function_name="tfidp-a",
+            logging_config=[{"log_group": "/aws/lambda/tfidp-a"}],
+        )
+        absent = _res("aws_lambda_function", "b", function_name="tfidp-b")
+        groups = tf.service_log_groups(_state(computed, absent))
+        assert [(g["physical_id"], g["created_for"]) for g in groups] == [
+            ("/aws/lambda/tfidp-a", [computed["address"]]),
+            ("/aws/lambda/tfidp-b", [absent["address"]]),
+        ]
+        assert all(g["status"] == "NOT_MANAGED" for g in groups)
+
+    def test_a_declared_group_is_destroyed_so_it_is_not_listed(self):
+        fn = _res(
+            "aws_lambda_function",
+            "a",
+            function_name="tfidp-a",
+            logging_config=[{"log_group": "/aws/lambda/tfidp-a"}],
+        )
+        lg = _res("aws_cloudwatch_log_group", "a", name="/aws/lambda/tfidp-a")
+        other = _res(
+            "aws_lambda_function",
+            "b",
+            function_name="tfidp-b",
+            logging_config=[{"log_group": "/tfidp/lambda/b"}],
+        )
+        declared = _res("aws_cloudwatch_log_group", "b", name="/tfidp/lambda/b")
+        assert tf.service_log_groups(_state(fn, lg, other, declared)) == []
+
+    def test_a_group_named_elsewhere_is_not_the_deployments(self):
+        fn = _res(
+            "aws_lambda_function",
+            "a",
+            function_name="tfidp-a",
+            logging_config=[{"log_group": "/somebody/else"}],
+        )
+        assert tf.service_log_groups(_state(fn)) == []
+
+    def test_a_retained_function_keeps_its_group(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        assert tf.service_log_groups(_state(fn), [fn["address"]]) == []
+
+    def test_codebuild_default_group_unless_logging_is_off_or_declared(self):
+        default = _res("aws_codebuild_project", "a", name="tfidp-a")
+        off = _res(
+            "aws_codebuild_project",
+            "b",
+            name="tfidp-b",
+            logs_config=[{"cloudwatch_logs": [{"status": "DISABLED"}]}],
+        )
+        named = _res(
+            "aws_codebuild_project",
+            "c",
+            name="tfidp-c",
+            logs_config=[
+                {"cloudwatch_logs": [{"status": "ENABLED", "group_name": "/t/c"}]}
+            ],
+        )
+        lg = _res("aws_cloudwatch_log_group", "c", name="/t/c")
+        groups = tf.service_log_groups(_state(default, off, named, lg))
+        assert [g["physical_id"] for g in groups] == ["/aws/codebuild/tfidp-a"]
+
+    def test_a_crawler_writes_its_streams_to_glues_shared_group(self):
+        config = _res(
+            "awscc_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration={
+                "s3_encryptions": [{"s3_encryption_mode": "SSE-KMS"}],
+                "cloudwatch_encryption": None,
+            },
+        )
+        crawlers = [
+            _res(
+                "awscc_glue_crawler",
+                label,
+                name=f"tfidp-{label}",
+                role="tfidp-crawler-role",
+                crawler_security_configuration="tfidp-sec",
+            )
+            for label in ("one", "two")
+        ]
+        [group] = tf.service_log_groups(_state(config, *crawlers))
+        assert group["physical_id"] == "/aws-glue/crawlers"
+        assert group["shared"] is True
+        assert group["log_streams"] == ["tfidp-one", "tfidp-two"]
+
+    def test_a_crawler_with_encrypted_logs_has_its_own_group(self):
+        config = _res(
+            "awscc_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration={
+                "cloudwatch_encryption": {"cloudwatch_encryption_mode": "SSE-KMS"}
+            },
+        )
+        crawler = _res(
+            "awscc_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="arn:aws:iam::123456789012:role/service-role/tfidp-crawler",
+            crawler_security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers-role/tfidp-crawler-tfidp-sec"
+        assert group["shared"] is False
+        assert "log_streams" not in group
+
+    def test_disabled_log_encryption_means_the_shared_group(self):
+        config = _res(
+            "awscc_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration={
+                "cloudwatch_encryption": {"cloudwatch_encryption_mode": "DISABLED"}
+            },
+        )
+        crawler = _res(
+            "awscc_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="tfidp-crawler",
+            crawler_security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers"
+
+    def test_an_awscc_log_group_counts_as_declared(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        lg = _res("awscc_logs_log_group", "a", log_group_name="/aws/lambda/tfidp-a")
+        assert tf.service_log_groups(_state(fn, lg)) == []
+
+    def test_a_log_group_read_as_data_is_not_declared(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        data = dict(
+            _res("aws_cloudwatch_log_group", "a", name="/aws/lambda/tfidp-a"),
+            mode="data",
+        )
+        state = _state(fn)
+        state["values"]["root_module"]["child_modules"][0]["resources"].append(data)
+        assert [g["physical_id"] for g in tf.service_log_groups(state)] == [
+            "/aws/lambda/tfidp-a"
+        ]
+
+    def test_groups_are_listed_by_name(self):
+        late = _res("aws_lambda_function", "z", function_name="tfidp-z")
+        early = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        groups = tf.service_log_groups(_state(late, early))
+        assert [g["physical_id"] for g in groups] == [
+            "/aws/lambda/tfidp-a",
+            "/aws/lambda/tfidp-z",
+        ]
+
+    def test_the_aws_provider_crawler_reads_security_configuration(self):
+        config = _res(
+            "aws_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration=[
+                {"cloudwatch_encryption": [{"cloudwatch_encryption_mode": "SSE-KMS"}]}
+            ],
+        )
+        crawler = _res(
+            "aws_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="tfidp-crawler",
+            security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers-role/tfidp-crawler-tfidp-sec"
+        assert group["created_for"] == [crawler["address"]]
+
+    def test_a_function_read_as_data_is_not_reported(self):
+        fn = dict(
+            _res("aws_lambda_function", "a", function_name="tfidp-a"), mode="data"
+        )
+        assert tf.service_log_groups(_state(fn)) == []
+
+    def test_codebuild_naming_its_default_group_is_still_the_services(self):
+        project = _res(
+            "aws_codebuild_project",
+            "a",
+            name="tfidp-a",
+            logs_config=[
+                {
+                    "cloudwatch_logs": [
+                        {"status": "ENABLED", "group_name": "/aws/codebuild/tfidp-a"}
+                    ]
+                }
+            ],
+        )
+        groups = tf.service_log_groups(_state(project))
+        assert [g["physical_id"] for g in groups] == ["/aws/codebuild/tfidp-a"]
+
+    def test_the_delete_report_leaves_out_a_retained_functions_group(self):
+        kept = _res("aws_lambda_function", "k", function_name="tfidp-k")
+        gone = _res("aws_lambda_function", "g", function_name="tfidp-g")
+        report = tf.retained_report(_state(kept, gone), [kept["address"]])
+        assert [g["physical_id"] for g in report["service_log_groups"]] == [
+            "/aws/lambda/tfidp-g"
+        ]
+
+    def test_the_delete_report_carries_them(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        report = tf.retained_report(_state(fn), [])
+        assert [g["physical_id"] for g in report["service_log_groups"]] == [
+            "/aws/lambda/tfidp-a"
         ]
 
 
@@ -778,6 +1252,69 @@ class TestDeployOperation:
                 pointer_url="https://x.test/ptr.json",
                 terraform_dir=str(tmp_path),
             )
+
+    def _index_fetch(self, data, sha256):
+        """A fetch serving a versions index with 0.6.14 and 0.6.15, and the
+        module zip at the URL the index entry resolves to."""
+        base = "https://s3.us-west-2.amazonaws.com/b/p"
+        index = {
+            "schemaVersion": tf.VERSIONS_INDEX_SCHEMA,
+            "versions": [
+                tf.build_index_entry("0.6.14", "p/0.6.14/old.zip", "1" * 64, "d"),
+                tf.build_index_entry("0.6.15", "p/0.6.15/pinned.zip", sha256, "d"),
+            ],
+        }
+        fetched = []
+
+        def fetch(url, s3_factory=None):
+            fetched.append(url)
+            if url == f"{base}/terraform/idp-terraform-versions.json":
+                return json.dumps(index).encode()
+            if url == f"{base}/0.6.15/pinned.zip":
+                return data
+            raise AssertionError(f"unexpected fetch {url}")
+
+        return fetch, fetched, f"{base}/terraform/idp-terraform-latest.json"
+
+    def test_a_module_version_is_resolved_through_the_index(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        data = _module_zip()
+        fetch, fetched, pointer_url = self._index_fetch(
+            data, hashlib.sha256(data).hexdigest()
+        )
+        monkeypatch.setattr(tf, "fetch_url", fetch)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: f"/usr/bin/{b}")
+        calls = _Calls({SHOW_PLAN: json.dumps({"resource_changes": []})})
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        result = client.stack.deploy_terraform(
+            admin_email="a@example.com",
+            pointer_url=pointer_url,
+            module_version="0.6.15",
+            terraform_dir=str(tmp_path),
+        )
+        # The pointer itself is never read; the zip is the pinned version's.
+        assert pointer_url not in fetched
+        assert fetched[-1].endswith("/0.6.15/pinned.zip")
+        assert "/0.6.15/pinned.zip" in (tmp_path / "main.tf").read_text()
+        assert result.success
+
+    def test_a_module_version_whose_bytes_differ_from_the_index_is_refused(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        fetch, _, pointer_url = self._index_fetch(_module_zip(), "2" * 64)
+        monkeypatch.setattr(tf, "fetch_url", fetch)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        with pytest.raises(IDPConfigurationError, match="but the versions index says"):
+            client.stack.deploy_terraform(
+                admin_email="a@example.com",
+                pointer_url=pointer_url,
+                module_version="0.6.15",
+                terraform_dir=str(tmp_path),
+            )
+        assert list(tmp_path.iterdir()) == []
 
     def test_a_cloudformation_stack_of_that_name_is_refused(
         self, monkeypatch, tmp_path

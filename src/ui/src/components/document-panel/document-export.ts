@@ -21,8 +21,18 @@ export interface ExportProgress {
   completed: number;
   /** Total expected step count. */
   total: number;
-  /** Human-readable description of the currently-processing file. */
+  /**
+   * The file being processed, as its path in the archive; empty while `stage` is set. A caller
+   * reporting a phase of its own (the document list's hydration) puts its own text here.
+   */
   currentFile: string;
+  /**
+   * A stage of the export with no file to show, which the progress dialog words: pre-signing
+   * the asset URLs (`preparing`), building the ZIP (`generating`) and finished (`done`).
+   */
+  stage?: 'preparing' | 'generating' | 'done';
+  /** How far the ZIP is built, 0–100 and unrounded, as JSZip reports it; only with `stage: 'generating'`. */
+  percent?: number;
   /** Soft-errors encountered so far (fetch failures recorded in manifest). */
   errors: ExportErrorEntry[];
   /** Number of documents in this export (1 for a single-document export). */
@@ -115,6 +125,9 @@ export interface ExportableDocument {
   hitlReviewOwnerEmail?: string;
   hitlReviewedBy?: string;
   hitlReviewedByEmail?: string;
+  reviewQueue?: string | null;
+  reviewQueueName?: string | null;
+  reviewRoutedBy?: { tableId: string; ruleId: string; ruleLabel: string; reason?: string; policyFailureCount?: number } | null;
   [key: string]: unknown;
 }
 
@@ -296,6 +309,11 @@ const buildPlan = (doc: ExportableDocument, settings: ExportSettings | undefined
     hitlReviewOwnerEmail: doc.hitlReviewOwnerEmail ?? null,
     hitlReviewedBy: doc.hitlReviewedBy ?? null,
     hitlReviewedByEmail: doc.hitlReviewedByEmail ?? null,
+    // Which review queue the document went to, and the routing rule that sent it there
+    // with the reason it gave and the number of policy rules the document failed.
+    reviewQueue: doc.reviewQueue ?? null,
+    reviewQueueName: doc.reviewQueueName ?? null,
+    reviewRoutedBy: doc.reviewRoutedBy ?? null,
   };
   syntheticFiles.push({
     zipPath: 'document-attributes.json',
@@ -613,11 +631,14 @@ export const exportDocuments = async (
   const allErrors = (): ExportErrorEntry[] => [...preflightErrors, ...prepared.flatMap((entry) => entry.errors)];
   /** Preflight failures belonging to one document, so its own manifest carries them too. */
   const preflightErrorsFor = (key: string): ExportErrorEntry[] => preflightErrors.filter((e) => e.document === key);
-  const emit = (currentFile: string) => {
+  /** Reports the file being processed, or a stage of the export (with an empty `currentFile`). */
+  const emit = (currentFile: string, stage?: ExportProgress['stage'], percent?: number) => {
     opts.onProgress?.({
       completed,
       total: totalSteps,
       currentFile,
+      ...(stage === undefined ? {} : { stage }),
+      ...(percent === undefined ? {} : { percent }),
       errors: allErrors(),
       documentsTotal: prepared.length,
       documentsCompleted,
@@ -627,7 +648,8 @@ export const exportDocuments = async (
   const progressLabel = (entry: PreparedDocument, zipPath: string): string => (isBulk ? `${entry.rootFolder}/${zipPath}` : zipPath);
 
   throwIfAborted();
-  emit(allTasks.length === 0 ? 'Generating archive…' : progressLabel(allTasks[0].entry, allTasks[0].task.zipPath));
+  if (allTasks.length === 0) emit('', 'generating');
+  else emit(progressLabel(allTasks[0].entry, allTasks[0].task.zipPath));
 
   // Pre-sign each document's assets in ONE call rather than one per asset. The
   // single-object form also issues a `head_object` per call, so a 27-page
@@ -654,7 +676,7 @@ export const exportDocuments = async (
   // than an idle bar: for a large selection this is one round trip per document
   // before any bytes are fetched.
   if (!opts.presignFn && allTasks.length > 0) {
-    emit('Preparing download…');
+    emit('', 'preparing');
     await runWithConcurrency(
       prepared.map((entry) => async () => {
         throwIfAborted();
@@ -748,20 +770,11 @@ export const exportDocuments = async (
     zip.file('manifest.json', JSON.stringify(bulkManifest, null, 2));
   }
 
-  emit('Generating archive…');
-  const blob = await zip.generateAsync({ type: 'blob' }, (meta) => {
-    opts.onProgress?.({
-      completed,
-      total: totalSteps,
-      currentFile: `Generating archive… ${Math.round(meta.percent)}%`,
-      errors: allErrors(),
-      documentsTotal: prepared.length,
-      documentsCompleted,
-    });
-  });
+  emit('', 'generating');
+  const blob = await zip.generateAsync({ type: 'blob' }, (meta) => emit('', 'generating', meta.percent));
 
   completed += 1;
-  emit('Done');
+  emit('', 'done');
 
   const suffix = opts.scope === 'all' ? 'export' : opts.scope;
   const filename = isBulk ? `documents_${prepared.length}docs_${suffix}.zip` : `${prepared[0].rootFolder}_${suffix}.zip`;

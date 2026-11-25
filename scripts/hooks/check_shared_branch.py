@@ -21,10 +21,19 @@ refuses three commands:
   a bare push follows ``push.default``, so the two settings that pick one of the
   branch name and the upstream do not also get the other; and ``--tags`` with no
   refspec has no branch destination at all.
-* ``gh pr merge`` for a pull request that has a **failing** check. The pull request
-  is read past the options that take a separate value, and ``--repo`` is honoured
-  on either side of the subcommand, because misreading either one leaves the check
-  unable to run and so allows the merge with nothing printed.
+* ``gh pr merge`` for a pull request that has a **failing** check, or whose base is
+  a shared branch and whose head is **not yet verified**: no check has concluded on
+  it, or one is still running (#2115). The
+  pull request is read past the options that take a separate value, and ``--repo``
+  is honoured on either side of the subcommand, because misreading either one
+  leaves the check unable to run and so allows the merge with nothing printed.
+  The second refusal is scoped twice over: a pull request into any other base (a
+  batch branch such as ``backlog/staging``, which gets no CI by design) is not
+  judged, and a pull request from a **fork** whose head carries no check that is
+  still running is allowed with a line on stderr saying nothing verified it. Some
+  fork pull requests here get no GitHub CI at all, and refusing those would block
+  their only route; a fork whose checks *are* running is held like any other. See
+  ``read_merge_route``.
 
 It also *says something without refusing anything*, in one case: when another session
 has been running git commands in the same working directory, or when the branch there
@@ -32,8 +41,9 @@ moved between two of this session's commands. That is advice rather than a verdi
 why it is only advice is in the co-tenancy item of the uncovered list below.
 
 Overrides, because each refusal has a legitimate case: set
-``ALLOW_SHARED_BRANCH=1`` for the first two and ``ALLOW_RED_MERGE=1`` for the
-third. Both are read from an inline assignment on the command itself
+``ALLOW_SHARED_BRANCH=1`` for the first two, ``ALLOW_RED_MERGE=1`` for a merge
+with a failing check, and ``ALLOW_UNCHECKED_MERGE=1`` for a merge into a shared
+branch whose head is not yet verified. All three are read from an inline assignment on the command itself
 (``ALLOW_SHARED_BRANCH=1 git push origin develop``) and from the environment.
 Inline is the form to reach for, because it applies to one command: a variable
 exported in the assistant's Bash tool is gone by the next call, but one exported
@@ -56,8 +66,15 @@ checkout and *knowingly merging red* through ``gh``. It is not a substitute for
 required status checks, and these are the routes it does not see:
 
 * A merge performed in the browser.
-* A pull request whose checks never ran at all (a fork PR gets no GitHub CI
-  here, and refusing those would block the only route they have).
+* A **fork** pull request whose checks never ran at all (a fork PR gets no GitHub
+  CI here, and refusing those would block the only route they have). It is
+  allowed with a note on stderr; a same-repository one into a shared branch is
+  refused.
+* A check that never *starts*. A workflow whose run was never created contributes
+  no entry to the head's rollup, so a head whose quick checks all finished while a
+  gate workflow failed to queue at all reads as verified. Telling gate checks from
+  the rest would mean a second copy of the workflow inventory
+  ``check_branch_protection.py`` derives.
 * ``git push --no-verify``, which also skips the companion ``pre-push`` hook.
 * Anything that reaches ``git`` other than as the first word of a segment: a
   script file (``sh deploy.sh``), ``bash -c``, ``eval``, ``xargs``, a wrapper that
@@ -108,7 +125,7 @@ Two behaviours that are deliberate rather than oversights:
   repository whose working branch is ``main``, a commit there is refused. The
   override is the answer for that.
 
-The two override variables are not registered in
+The three override variables are not registered in
 ``scripts/tests/gate_exemptions.json``, and that is a decision rather than an
 omission. That registry governs places where a **gate** is turned off for a file,
 a line or a rule, and it exists because such a reason is written once and then
@@ -146,6 +163,7 @@ import subprocess  # noqa: S404 - fixed argv, no shell; see _git/_gh
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 #: Branches that changes reach through a pull request rather than directly.
 SHARED_BRANCHES = frozenset({"develop", "main"})
@@ -156,6 +174,33 @@ ALLOW_SHARED_BRANCH = "ALLOW_SHARED_BRANCH"
 #: Environment (or inline) variable that permits merging a pull request whose
 #: checks are failing.
 ALLOW_RED_MERGE = "ALLOW_RED_MERGE"
+
+#: Environment (or inline) variable that permits merging a pull request into a
+#: shared branch although its head is not yet verified (#2115).
+ALLOW_UNCHECKED_MERGE = "ALLOW_UNCHECKED_MERGE"
+
+#: Check-run conclusions that mean the check ran to a verdict on the head. The
+#: others GitHub reports -- ``SKIPPED``, ``CANCELLED``, ``STALE`` -- say that a
+#: check exists without anything having been verified, so a head carrying only
+#: those is as unverified as one carrying none.
+VERDICT_CONCLUSIONS = frozenset(
+    {
+        "SUCCESS",
+        "FAILURE",
+        "NEUTRAL",
+        "TIMED_OUT",
+        "ACTION_REQUIRED",
+        "STARTUP_FAILURE",
+    }
+)
+
+#: Commit-status states (the older API beside check runs) that are a verdict.
+VERDICT_STATES = frozenset({"SUCCESS", "FAILURE", "ERROR"})
+
+#: Commit-status states that mean the status has not settled. Every check-run
+#: status other than ``COMPLETED`` (``QUEUED``, ``IN_PROGRESS``, ``WAITING``, ...)
+#: is unsettled too, without needing a list.
+UNSETTLED_STATES = frozenset({"PENDING", "EXPECTED"})
 
 #: Override values that mean "yes". Anything else -- including ``0`` and
 #: ``false`` -- leaves the guard on, so spelling out a refusal of the override
@@ -185,10 +230,23 @@ GIT_GLOBAL_WITH_VALUE = frozenset(
 )
 
 #: ``git push`` options that take a separate value, so the value is not mistaken
-#: for a remote or a refspec.
+#: for a remote or a refspec. ``--recurse-submodules check origin`` is the case a
+#: reader would not guess: its value is separate, and reading ``check`` as the
+#: remote turns ``origin`` into a refspec naming no shared branch.
 PUSH_FLAGS_WITH_VALUE = frozenset(
-    {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
+    {
+        "-o",
+        "--push-option",
+        "--receive-pack",
+        "--exec",
+        "--repo",
+        "--recurse-submodules",
+    }
 )
+
+#: ``git push`` options that send every local branch. ``--branches`` is an alias
+#: of ``--all`` (git 2.46), so naming only ``--all`` misses a spelling of it.
+PUSH_EVERYTHING_FLAGS = frozenset({"--all", "--branches", "--mirror"})
 
 #: ``gh`` options that may sit *before* the subcommand and take a separate value.
 #: ``--repo`` is registered on gh's root command, so ``gh -R owner/name pr merge
@@ -276,8 +334,102 @@ CREATE_FLAGS = frozenset(
     {"-c", "-C", "--create", "--force-create", "-b", "-B", "--orphan"}
 )
 
+#: ``switch`` / ``checkout`` options that take a value, so the value is not read as
+#: the branch: the create options above plus two whose value is something else.
+SWITCH_FLAGS_WITH_VALUE = CREATE_FLAGS | {"--conflict", "--pathspec-from-file"}
+
+#: ``switch`` / ``checkout`` short options whose value is optional, and so can only
+#: be attached: ``-t`` is ``--track[=(direct|inherit)]``. Inside a bundle it takes
+#: the rest of the bundle as that value, which is why git rejects ``-tb x``.
+SWITCH_SHORTS_OPTIONAL_VALUE = frozenset({"-t"})
+
+#: Every long option ``git push``, ``git switch`` and ``git checkout`` list in
+#: ``-h``, by subcommand. git accepts any **unique prefix** of a long option
+#: (``--mirr`` is ``--mirror``, ``--det`` is ``--detach``), so a spelling cannot be
+#: judged without knowing every name it might abbreviate. ``option_walk`` resolves
+#: a prefix against this set the way parse-options does, and
+#: ``test_git_long_options_cover_git`` derives it from the installed git. A name
+#: missing here can only make a prefix look unique where git calls it ambiguous,
+#: and git refuses an ambiguous one, so the command does not run either way.
+GIT_LONG_OPTIONS = {
+    "push": frozenset(
+        {
+            "--all",
+            "--atomic",
+            "--branches",
+            "--delete",
+            "--dry-run",
+            "--exec",
+            "--follow-tags",
+            "--force",
+            "--force-if-includes",
+            "--force-with-lease",
+            "--ipv4",
+            "--ipv6",
+            "--mirror",
+            "--no-verify",
+            "--porcelain",
+            "--progress",
+            "--prune",
+            "--push-option",
+            "--quiet",
+            "--receive-pack",
+            "--recurse-submodules",
+            "--repo",
+            "--set-upstream",
+            "--signed",
+            "--tags",
+            "--thin",
+            "--verbose",
+            "--verify",
+        }
+    ),
+    "switch": frozenset(
+        {
+            "--conflict",
+            "--create",
+            "--detach",
+            "--discard-changes",
+            "--force",
+            "--force-create",
+            "--guess",
+            "--ignore-other-worktrees",
+            "--merge",
+            "--orphan",
+            "--overwrite-ignore",
+            "--progress",
+            "--quiet",
+            "--recurse-submodules",
+            "--track",
+        }
+    ),
+    "checkout": frozenset(
+        {
+            "--conflict",
+            "--detach",
+            "--force",
+            "--guess",
+            "--ignore-other-worktrees",
+            "--ignore-skip-worktree-bits",
+            "--merge",
+            "--orphan",
+            "--ours",
+            "--overlay",
+            "--overwrite-ignore",
+            "--patch",
+            "--pathspec-file-nul",
+            "--pathspec-from-file",
+            "--progress",
+            "--quiet",
+            "--recurse-submodules",
+            "--theirs",
+            "--track",
+        }
+    ),
+}
+
 #: Per-subprocess timeout. A single command can spend several of these -- one
-#: `git` call per reading, plus a `gh pr checks` -- so the total can exceed the
+#: `git` call per reading, or a `gh pr checks` plus a `gh pr view` -- so the total can exceed the
 #: 15 s the hook is given in ``.claude/settings.json``. Being killed there is not
 #: a hazard: the harness treats a hook that does not answer as no answer, which
 #: allows the command, the same direction every other unknown takes here. The
@@ -578,6 +730,96 @@ def command_repo(tokens: list[str], base: Path) -> Path:
     return repo
 
 
+def _expand_long(name: str, long_names: frozenset[str]) -> str:
+    """The long option git reads ``name`` as: itself, or the one it abbreviates.
+
+    parse-options takes an exact name first, then a prefix matching exactly one
+    option, and a ``--no-`` form of either. A prefix matching several is an error
+    in git, so it is returned unchanged -- the command does not run.
+    """
+    if not long_names or name in long_names:
+        return name
+    matches = {option for option in long_names if option.startswith(name)}
+    if name.startswith("--no-"):
+        matches |= {
+            "--no-" + option[2:]
+            for option in long_names
+            if option.startswith("--" + name[5:])
+        }
+    return matches.pop() if len(matches) == 1 else name
+
+
+def option_walk(
+    args: list[str],
+    with_value: frozenset[str],
+    optional_value: frozenset[str] = frozenset(),
+    *,
+    pflag: bool = False,
+    long_names: frozenset[str] = frozenset(),
+) -> list[tuple[str | None, str | None]]:
+    """Split ``args`` the way the program's option parser does.
+
+    Returns ``(option, value)`` per option given and ``(None, word)`` per
+    positional, in order. The part that is easy to get wrong is a **bundle** of
+    short options: ``-sb text`` is ``-s -b text``, and reading the bundle as one
+    unknown flag leaves ``text`` looking like the positional -- for ``gh pr merge``
+    that is the pull request number, ``gh pr checks text`` errors, and the merge is
+    allowed with nothing printed. So the rule is implemented rather than spellings
+    listed. Walking a bundle left to right, a short option that takes a value takes
+    the **rest of the bundle** if there is any (``-btext``, ``-sbtext``) and the
+    next argument otherwise; one whose value is optional (``optional_value``) takes
+    the rest of the bundle or nothing; any other is a switch and the walk moves on.
+
+    Two parsers differ in one place, selected by ``pflag``. Go's pflag, which gh
+    uses, reads ``-b=text`` as the value ``text`` for any short option, a switch
+    included (``-s=true``). git's parse-options has no such rule: ``git checkout
+    -b=x`` creates a branch called ``=x``. A long option is the same in both:
+    ``--name=value``, or ``--name value`` when it takes a value. ``--`` ends the
+    options and a lone ``-`` is a positional. The one other difference is that
+    git accepts a unique prefix of a long option and pflag does not (``gh pr merge
+    --sub x`` is "unknown flag"), so ``long_names`` -- every long option the git
+    subcommand has -- is given for git only, and an abbreviation is reported under
+    the full name.
+    """
+    out: list[tuple[str | None, str | None]] = []
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--":
+            out.extend((None, word) for word in rest)
+            break
+        if not arg.startswith("-") or arg == "-":
+            out.append((None, arg))
+            continue
+        if arg.startswith("--"):
+            name, separator, attached = arg.partition("=")
+            name = _expand_long(name, long_names)
+            if separator:
+                out.append((name, attached))
+            elif name in with_value:
+                out.append((name, rest.pop(0) if rest else None))
+            else:
+                out.append((name, None))
+            continue
+        bundle = arg[1:]
+        while bundle:
+            option, bundle = "-" + bundle[0], bundle[1:]
+            if pflag and len(bundle) > 1 and bundle[0] == "=":
+                out.append((option, bundle[1:]))
+                break
+            if option in with_value:
+                if bundle:
+                    out.append((option, bundle))
+                else:
+                    out.append((option, rest.pop(0) if rest else None))
+                break
+            if option in optional_value:
+                out.append((option, bundle or None))
+                break
+            out.append((option, None))
+    return out
+
+
 def switch_target(args: list[str]) -> tuple[bool, str | None]:
     """``(moves_head, branch)`` for a ``git switch`` / ``git checkout``.
 
@@ -592,32 +834,39 @@ def switch_target(args: list[str]) -> tuple[bool, str | None]:
         # with nothing after it does switch branches, and is read here as a
         # restore; a bare trailing `--` is not a shape anyone types by accident.
         return False, None
-    if any(arg in ("--detach", "-d") for arg in rest):
+    walked = option_walk(
+        rest,
+        SWITCH_FLAGS_WITH_VALUE,
+        SWITCH_SHORTS_OPTIONAL_VALUE,
+        long_names=GIT_LONG_OPTIONS.get(args[0], frozenset()),
+    )
+    options = [option for option, _ in walked if option is not None]
+    if any(option in ("--detach", "-d") for option in options):
         # `git switch --detach develop` names a branch but lands on no branch, so a
         # commit after it is not on develop. Reading the positional would refuse it
         # -- a false refusal, and the kind that makes a guard look wrong.
         return True, None
-    tracks = any(arg == "-t" or arg.startswith("--track") for arg in rest)
+    tracks = any(option in ("-t", "--track") for option in options)
     # A create option's *value* is the branch, so it is read from the option
     # wherever the option sits -- and the whole argument list is searched before
     # any positional is considered, because in `git checkout -t origin/x -b
     # develop` the start point comes first. A value-less create flag is a
     # malformed command; naming no branch leaves the following segments unjudged
     # rather than judged against the wrong one.
-    for index, arg in enumerate(rest):
-        if arg in CREATE_FLAGS:
-            return True, rest[index + 1] if index + 1 < len(rest) else None
-        flag, separator, attached = arg.partition("=")
-        if separator and flag in CREATE_FLAGS:
-            return True, attached or None
-    for arg in rest:
-        if not arg.startswith("-"):
+    for option, value in walked:
+        if option in CREATE_FLAGS:
+            return True, value or None
+    for option, word in walked:
+        if option is None and word is not None:
+            if word == "-":
+                # `git switch -` is the previous branch, which this cannot name.
+                return True, None
             if tracks:
                 # `git switch --track origin/develop` and `git checkout -t
                 # origin/develop` name no new branch: git takes the remote ref's
                 # leaf, so HEAD lands on local `develop`.
-                return True, _branch_part(arg)
-            return True, arg
+                return True, _branch_part(word)
+            return True, word
     return True, None
 
 
@@ -644,21 +893,17 @@ def push_destinations(
     positionals: list[str] = []
     pushes_everything = False
     tags_only = False
-    rest = list(args)
-    while rest:
-        arg = rest[0]
-        if arg == "--":
-            positionals.extend(rest[1:])
-            break
-        if arg.startswith("-"):
-            if arg in ("--all", "--mirror"):
-                pushes_everything = True
-            if arg == "--tags":
-                tags_only = True
-            rest = rest[2:] if arg in PUSH_FLAGS_WITH_VALUE else rest[1:]
-            continue
-        positionals.append(arg)
-        rest = rest[1:]
+    walked = option_walk(
+        args, PUSH_FLAGS_WITH_VALUE, long_names=GIT_LONG_OPTIONS["push"]
+    )
+    for option, word in walked:
+        if option is None:
+            if word is not None:
+                positionals.append(word)
+        elif option in PUSH_EVERYTHING_FLAGS:
+            pushes_everything = True
+        elif option == "--tags":
+            tags_only = True
 
     if pushes_everything:
         # Every local branch goes, so any shared branch that exists locally is a
@@ -756,6 +1001,152 @@ def failing_checks(
     ]
 
 
+class MergeRoute(NamedTuple):
+    """What a merge needs to know about a pull request besides its failures."""
+
+    base: str
+    fork: bool
+    head: str
+    concluded: int
+    #: Checks on the head that have not finished yet, by name.
+    running: tuple[str, ...] = ()
+
+    @property
+    def verified(self) -> bool:
+        """Whether the head's checks have all finished and at least one reached a verdict.
+
+        One concluded check is not enough on its own. Measured on a pull request into
+        ``develop``: the dependency audit, CodeQL and the docs build finish within a
+        minute of a push, while the unit, package and coverage suites and the SRT scan
+        -- the gates #2115 was about -- run for several more, and SRT then failed. A
+        rule satisfied by the first finished check would have allowed that merge.
+        """
+        return self.concluded > 0 and not self.running
+
+
+def read_merge_route(
+    pr: str | None, repo: Path, selector: str | None = None
+) -> MergeRoute | None:
+    """The base, origin and number of concluded checks of ``pr``, or ``None``.
+
+    One ``gh pr view`` answers all of it, and against the pull request's *current*
+    head: ``statusCheckRollup`` is the head commit's rollup, so a head pushed after
+    the last run carries no result from that run. That is the case behind #2115 --
+    a pull request that had conflicted with its base, and so had no checks, was
+    resolved, pushed and merged before the new run reported anything.
+
+    Measured on gh 2.105.0: a pull request GitHub ran no check for answers
+    ``"statusCheckRollup": []`` with exit 0, whereas ``gh pr checks`` exits 1
+    with "no checks reported" on stderr and nothing on stdout -- which is why the
+    failing-check reader cannot tell "no checks" from "cannot read", and this
+    reader exists rather than a second reading of that one.
+
+    ``None`` for anything that does not parse, so the caller fails open.
+    """
+    argv = ["gh", "pr", "view"]
+    if pr:
+        argv.append(pr)
+    if selector:
+        argv += ["--repo", selector]
+    argv += ["--json", "baseRefName,isCrossRepository,headRefOid,statusCheckRollup"]
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            argv,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        view = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(view, dict):
+        return None
+    base = view.get("baseRefName")
+    fork = view.get("isCrossRepository")
+    head = view.get("headRefOid")
+    rollup = view.get("statusCheckRollup")
+    if not (
+        isinstance(base, str)
+        and base
+        and isinstance(fork, bool)
+        and isinstance(rollup, list)
+    ):
+        return None
+    concluded = 0
+    running: list[str] = []
+    for item in rollup:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("context") or "?")
+        if item.get("__typename") == "StatusContext":
+            state = item.get("state")
+            concluded += state in VERDICT_STATES
+            if state in UNSETTLED_STATES:
+                running.append(name)
+        elif item.get("status") == "COMPLETED":
+            concluded += item.get("conclusion") in VERDICT_CONCLUSIONS
+        else:
+            running.append(name)
+    return MergeRoute(
+        base,
+        fork,
+        head if isinstance(head, str) else "",
+        concluded,
+        tuple(running),
+    )
+
+
+def _unchecked_merge_reason(route: MergeRoute) -> str:
+    head = f" ({route.head[:12]})" if route.head else ""
+    if route.running:
+        what = (
+            f"this pull request's head{head} still has checks running, and it merges "
+            f"into {route.base}, which is a shared branch:\n"
+            + "\n".join(f"  - {name}" for name in route.running)
+            + "\n\n"
+        )
+    else:
+        what = (
+            f"no check has concluded on this pull request's head{head}, and it "
+            f"merges into {route.base}, which is a shared branch.\n\n"
+        )
+    return (
+        f"Blocked: {what}"
+        "The commit that would land is verified only once every check on it has "
+        "finished: the quick checks finish within a minute of a push, and the "
+        'test suites and the security scan several minutes later. "no checks '
+        'reported" usually means the pull request conflicted with its base, so '
+        "GitHub ran nothing; after the conflict is resolved and pushed, the new run "
+        "has to finish before the head is verified (#2115).\n"
+        "Wait for the checks to conclude, or run the CI gate set locally with:\n"
+        "  make premerge\n"
+        "or re-run with the override in front of the command if you are merging "
+        "an unverified head deliberately:\n"
+        f"  {ALLOW_UNCHECKED_MERGE}=1 <your command>\n"
+        "A pull request from a fork with no check still running is not refused "
+        "here, since some fork pull requests get no GitHub CI in this repository, "
+        "and neither is one into a branch "
+        f"other than {' or '.join(sorted(SHARED_BRANCHES))}."
+    )
+
+
+def _fork_unchecked_note(route: MergeRoute) -> str:
+    return (
+        "shared-branch guard: this pull request comes from a fork and its head has "
+        "no finished set of checks, so nothing verified what merges into "
+        f"{route.base}. "
+        "Some fork pull requests get no GitHub CI here; `make premerge` on a checkout of "
+        "the head is the local substitute."
+    )
+
+
 def gh_repo_selector(tokens: list[str]) -> str | None:
     """The ``--repo``/``-R`` a ``gh`` command names, or ``None`` for "this one".
 
@@ -773,23 +1164,23 @@ def gh_repo_selector(tokens: list[str]) -> str | None:
     -Rfoo/bar``'s "argument required when using the `--repo` flag" as a rejection of
     the attached form was wrong: that message is about the missing pull request
     argument, which ``gh pr checks`` requires as soon as ``--repo`` is given.
+
+    The command is walked with ``gh pr merge``'s own option set, because cobra
+    parses every option in the command -- those before the subcommand included --
+    with the leaf command's flags. That is what finds ``-R`` at the end of a bundle
+    (``-sR owner/name``) and stops a value such as ``--body -Rx`` from being read
+    as a selector. Measured on gh 2.105.0: ``gh pr merge -sR cli/cli <n>`` and
+    ``-sRcli/cli`` both resolve against ``cli/cli``, and of two ``-R`` options the
+    last is the one used.
     """
-    rest = list(tokens)
-    while rest:
-        arg = rest[0]
-        flag, separator, attached = arg.partition("=")
-        if separator and flag in GH_GLOBAL_WITH_VALUE:
-            return attached or None
-        if arg in GH_GLOBAL_WITH_VALUE and len(rest) > 1:
-            return rest[1]
-        if (
-            len(arg) > 2
-            and not arg.startswith("--")
-            and arg[:2] in GH_GLOBAL_WITH_VALUE
-        ):
-            return arg[2:]
-        rest = rest[1:]
-    return None
+    selector: str | None = None
+    for option, value in option_walk(
+        tokens[1:], GH_MERGE_FLAGS_WITH_VALUE | GH_GLOBAL_WITH_VALUE, pflag=True
+    ):
+        if option in GH_GLOBAL_WITH_VALUE:
+            # pflag keeps the last value given, so a repeated --repo is the last.
+            selector = value or None
+    return selector
 
 
 def merge_target(args: list[str]) -> str | None:
@@ -799,19 +1190,35 @@ def merge_target(args: list[str]) -> str | None:
     "chore: x" 1055`` would otherwise be checked as pull request ``chore: x``,
     and since ``gh pr checks`` errors on that, the failure reads as "cannot tell"
     and the merge is allowed with nothing printed. Same class as
-    ``PUSH_FLAGS_WITH_VALUE``.
+    ``PUSH_FLAGS_WITH_VALUE``. A bundle is where that hides: measured on gh
+    2.105.0, ``gh pr merge -sb text <n>``, ``-sbtext`` and ``-sb=text`` all merge
+    pull request ``<n>`` with ``text`` as the body -- see ``option_walk``.
     """
-    rest = list(args[1:])  # args[0] is "merge"
-    while rest:
-        arg = rest[0]
-        if arg.startswith("-"):
-            if "=" not in arg and arg in GH_MERGE_FLAGS_WITH_VALUE and len(rest) > 1:
-                rest = rest[2:]
-                continue
-            rest = rest[1:]
-            continue
-        return arg
-    return None
+    return gh_merge(["gh", "pr", *args])[1]  # args[0] is "merge"
+
+
+def gh_merge(argv: list[str]) -> tuple[bool, str | None]:
+    """``(is_merge, pull_request)`` for a ``gh`` command line.
+
+    The words are read with the whole command walked as ``gh pr merge`` parses it,
+    because an option may sit at any level: ``gh -R x pr merge 1``, ``gh pr -R x
+    merge 1`` and ``gh pr merge -R x 1`` are the same request. Measured on gh
+    2.105.0: ``gh pr -R cli/cli merge <n>`` resolves ``<n>`` against ``cli/cli``.
+    Looking for ``merge`` straight after ``pr`` missed the middle form, which
+    then was not a merge at all and so had no checks read.
+    """
+    if not argv or argv[0] != "gh":
+        return False, None
+    words = [
+        word
+        for option, word in option_walk(
+            argv[1:], GH_MERGE_FLAGS_WITH_VALUE | GH_GLOBAL_WITH_VALUE, pflag=True
+        )
+        if option is None
+    ]
+    if words[:2] != ["pr", "merge"]:
+        return False, None
+    return True, words[2] if len(words) > 2 else None
 
 
 def repo_root(payload: dict[str, object]) -> Path:
@@ -1080,30 +1487,33 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
                     )
                 continue
 
-        gh_args = subcommand(argv, "gh", GH_GLOBAL_WITH_VALUE)
-        if gh_args and gh_args[:2] == ["pr", "merge"]:
+        is_merge, pull_request = gh_merge(argv)
+        if is_merge:
+            selector = gh_repo_selector(argv)
             if _allowed(ALLOW_RED_MERGE, inline):
                 note(_waived(ALLOW_RED_MERGE, "this pull request's checks"))
+            else:
+                failures = failing_checks(pull_request, base, selector)
+                if failures:
+                    return _red_merge_reason(failures)
+            # The two refusals are separate decisions with separate overrides:
+            # waiving a known-unrelated red check says nothing about whether the
+            # head was checked at all.
+            if _allowed(ALLOW_UNCHECKED_MERGE, inline):
+                note(
+                    _waived(
+                        ALLOW_UNCHECKED_MERGE,
+                        "whether this pull request's head has any concluded check",
+                    )
+                )
                 continue
-            failures = failing_checks(
-                merge_target(gh_args[1:]), base, gh_repo_selector(argv)
-            )
-            if not failures:
+            route = read_merge_route(pull_request, base, selector)
+            if route is None or route.base not in SHARED_BRANCHES or route.verified:
                 continue
-            return (
-                "Blocked: this pull request has failing checks.\n\n"
-                + "\n".join(f"  - {name}" for name in failures)
-                + "\n\nNo check on this repository is a *required* status check, so "
-                "GitHub will let this merge proceed — which is exactly how 12 HIGH "
-                "security findings reached develop once before (see the header of "
-                ".github/workflows/security-checks.yml).\n"
-                "Fix the failures, or re-run with the override in front of the "
-                "command if the failure is known-unrelated and you are merging "
-                f"deliberately:\n  {ALLOW_RED_MERGE}=1 <your command>\n"
-                "Only concluded failures are counted here; a pending or skipped check "
-                "is not one, and a pull request whose checks never ran is not refused "
-                "at all."
-            )
+            if route.fork and not route.running:
+                note(_fork_unchecked_note(route))
+                continue
+            return _unchecked_merge_reason(route)
 
     if tenancy_repo is not None:
         for line in tenancy_notices(
@@ -1112,6 +1522,23 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
             note(line)
 
     return None
+
+
+def _red_merge_reason(failures: list[str]) -> str:
+    return (
+        "Blocked: this pull request has failing checks.\n\n"
+        + "\n".join(f"  - {name}" for name in failures)
+        + "\n\nNo check on this repository is a *required* status check, so "
+        "GitHub will let this merge proceed — which is exactly how 12 HIGH "
+        "security findings reached develop once before (see the header of "
+        ".github/workflows/security-checks.yml).\n"
+        "Fix the failures, or re-run with the override in front of the "
+        "command if the failure is known-unrelated and you are merging "
+        f"deliberately:\n  {ALLOW_RED_MERGE}=1 <your command>\n"
+        "Only concluded failures are counted here; a pending or skipped check "
+        "is not one. A head with no concluded check is refused separately "
+        f"(override {ALLOW_UNCHECKED_MERGE}=1)."
+    )
 
 
 def main() -> int:

@@ -299,6 +299,10 @@ CSV_COLS = [
     # ranking power, and `calibration_observations` is what says whether either is
     # thick enough to read (30 / 100 are the shipped floors).
     "calibration_observations",
+    # How many of those observations are empty predictions, and how many of them
+    # were wrong (#2052): every calibration figure includes them, and these say so.
+    "calibration_empty_observations",
+    "calibration_empty_wrong",
     "calibration_ece",
     "calibration_ece_mean_conf",
     "calibration_auroc",

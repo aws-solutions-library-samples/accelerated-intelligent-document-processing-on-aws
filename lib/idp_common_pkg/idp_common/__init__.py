@@ -33,6 +33,9 @@ _LAZY_SUBMODULES = frozenset(
         "delete_documents",
         "notifications",
         "review_queues",
+        "decision_model",
+        "run_plan",
+        "decision_tables",
     }
 )
 
@@ -100,6 +103,9 @@ __all__ = [
     "delete_documents",
     "notifications",
     "review_queues",
+    "decision_model",
+    "run_plan",
+    "decision_tables",
     "get_config",
     "IDPConfig",
     "Document",

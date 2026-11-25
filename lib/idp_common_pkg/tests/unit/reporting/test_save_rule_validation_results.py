@@ -208,6 +208,46 @@ class TestDocumentSummaryRecord:
         )
         assert record["information_not_found_count"] == 7
 
+    def test_the_normalised_counts_are_used_when_the_summary_has_them(self, saver):
+        """`verdict_counts` counts "pass" and "Pass" alike; the label counts do not."""
+        record = self._record(
+            saver,
+            _payload(
+                overall_statistics={
+                    "total_rules": 6,
+                    "recommendation_counts": {
+                        "Pass": 1,
+                        "pass": 2,
+                        "Fail": 1,
+                        "Approve": 2,
+                    },
+                    "verdict_counts": {
+                        "pass": 3,
+                        "fail": 1,
+                        "not_found": 0,
+                        "unknown": 2,
+                    },
+                }
+            ),
+        )
+
+        assert record["pass_count"] == 3
+        assert record["fail_count"] == 1
+        assert record["information_not_found_count"] == 0
+
+    def test_a_summary_with_no_verdict_counts_falls_back_to_the_labels(self, saver):
+        record = self._record(
+            saver,
+            _payload(
+                overall_statistics={
+                    "total_rules": 3,
+                    "recommendation_counts": {"Pass": 1, "pass": 2},
+                }
+            ),
+        )
+
+        assert record["pass_count"] == 1
+
     def test_a_missing_statistics_block_yields_zeros_not_an_error(self, saver):
         record = self._record(saver, _payload(overall_statistics={}))
         assert record["total_rules"] == 0
@@ -399,6 +439,73 @@ class TestRuleDetailRecords:
         records, _ = self._records(saver, {"Lending": {}})
         assert records == []
 
+    def test_a_rules_id_and_verdict_are_written(self, saver):
+        """What a query groups and filters on: the description can be shared by two
+        rules and edited, and the recommendation is free text."""
+        records, _ = self._records(
+            saver,
+            {
+                "invoice_controls": {
+                    "rules": [
+                        {
+                            "rule_id": "invoice_controls.total_matches_lines",
+                            "z3_rule_id": None,
+                            "rule": "The amounts agree",
+                            "recommendation": "Fail",
+                            "verdict": "fail",
+                        },
+                        {
+                            "rule_id": "invoice_controls.tax_matches_rate",
+                            "rule": "The amounts agree",
+                            "recommendation": "pass",
+                            "verdict": "pass",
+                        },
+                    ]
+                }
+            },
+        )
+
+        assert [(r["rule_id"], r["verdict"]) for r in records] == [
+            ("invoice_controls.total_matches_lines", "fail"),
+            ("invoice_controls.tax_matches_rate", "pass"),
+        ]
+        # The recommendation stays the label as configured.
+        assert [r["recommendation"] for r in records] == ["Fail", "pass"]
+
+    def test_a_summary_written_before_ids_existed_writes_nulls(self, saver):
+        records, _ = self._records(saver)
+
+        assert [r["rule_id"] for r in records] == [None, None, None]
+        assert [r["verdict"] for r in records] == [None, None, None]
+
+    def test_the_two_columns_are_the_last_of_the_details_table(self, saver):
+        """Appended, so a query written against the earlier columns still reads them
+        in the same positions."""
+        self._records(saver)
+        (schema,) = [
+            call.args[2]
+            for call in saver._save_records_as_parquet.call_args_list
+            if call.args[1].startswith("rule_validation_details/")
+        ]
+
+        assert schema.names == [
+            "document_id",
+            "policy_type",
+            "rule",
+            "recommendation",
+            "reasoning",
+            "supporting_pages",
+            "validation_date",
+            "rule_id",
+            "verdict",
+        ]
+        (registered,) = [
+            call.args[1]
+            for call in saver._create_or_update_rule_validation_glue_table.call_args_list
+            if call.args[0] == "rule_validation_details"
+        ]
+        assert registered.names == schema.names
+
     def test_the_status_line_counts_the_rules_written(self, saver):
         with patch(
             f"{MODULE}.get_json_content",
@@ -459,6 +566,8 @@ class TestRuleValidationGlueTable:
 
     def test_an_existing_table_with_all_the_columns_is_left_alone(self):
         # Calling update_table on every document would be a needless write per document.
+        # Nothing was created or updated, so the helper reports False, as its
+        # docstring and the document sections helper both say.
         saver = self._saver()
         saver.glue_client.get_table.return_value = {
             "Table": {
@@ -471,7 +580,7 @@ class TestRuleValidationGlueTable:
             saver._create_or_update_rule_validation_glue_table(
                 "rule_validation_summary", self.SCHEMA
             )
-            is True
+            is False
         )
         saver.glue_client.update_table.assert_not_called()
         saver.glue_client.create_table.assert_not_called()

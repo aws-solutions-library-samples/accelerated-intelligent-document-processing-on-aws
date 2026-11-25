@@ -17,6 +17,7 @@ from .bootstrap_tools import (
     refine_schema,
     request_document_generation,
     search_catalog,
+    set_processing_options,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "generate_from_existing_config",
     "list_available_extensions",
     "list_sample_documents",
+    "set_processing_options",
 ]

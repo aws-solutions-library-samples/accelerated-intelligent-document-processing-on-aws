@@ -18,7 +18,7 @@ When to use this guide:
 • You want to ensure exact tool versions match project specifications  
 
 # What you'll achieve: 
-A fully functional local development environment with Python 3.13, AWS CLI, Docker Desktop, VS Code with AI extensions, and integrated development tools - all configured through a single automated setup script. This document provides a step-by-step guide to setting up a development environment on macOS. It covers installing essential tools such as VS Code, Python 3.13.x, AWS CLI, SAM CLI, Node.js, Docker Desktop, Miniconda, Cline for VS Code, and Amazon Q in Terminal.
+A fully functional local development environment with Python 3.12, AWS CLI, Docker Desktop, VS Code with AI extensions, and integrated development tools - all configured through a single automated setup script. This document provides a step-by-step guide to setting up a development environment on macOS. It covers installing essential tools such as VS Code, Python 3.12.x, AWS CLI, SAM CLI, Node.js, Docker Desktop, Miniconda, Cline for VS Code, and Amazon Q in Terminal.
 
 # Prerequisites
 
@@ -110,7 +110,8 @@ if ! grep -q 'pyenv init' ~/.zshrc 2>/dev/null; then
     echo 'eval "$(pyenv init -)"' >> ~/.zshrc
 fi
 
-# Use pyenv to install and set Python 3.12 (adjust if you prefer 3.11, etc.)
+# Use pyenv to install and set Python 3.12. 3.13 also works; the packages
+# require Python 3.12 or 3.13 (requires-python >=3.12,<3.14), so not 3.11 or 3.14
 eval "$(pyenv init -)"
 pyenv install -s 3.12.5
 pyenv global 3.12.5
@@ -148,7 +149,7 @@ sam --version
 ```
 
 
-## 7) Node.js via nvm (Node 22 LTS)
+## 7) Node.js via nvm (Node 26 LTS)
 
 Use nvm to manage Node versions. This mirrors your Linux section but uses zsh-friendly profile updates.
 
@@ -162,9 +163,9 @@ fi
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-# Install Node 22 LTS
-nvm install 22
-nvm alias default 22
+# Install Node 26 LTS
+nvm install 26
+nvm alias default 26
 
 # Test
 node -v
@@ -257,7 +258,7 @@ make setup-venv
 source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies. When Node.js 26 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker, which lint, type checking and the UI tests need; without Node it prints a warning and finishes, since deploying does not need Node. `make setup-node` installs the Node side on its own and fails on any error. Run it again after a `git pull` that changes `src/ui/package-lock.json`.
 
 ## **13) Configure AWS CLI**
 ### Refer this link for AWS configure

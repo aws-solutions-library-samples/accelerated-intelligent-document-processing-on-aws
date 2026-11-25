@@ -14,11 +14,13 @@ installed; in CI they always are, so there it never skips (#1390's rule).
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,16 @@ def _load_module():
 
 
 MODULE = _load_module()
+
+#: The catalog tool the gate takes its stale rule from, as the gate imported it; its
+#: ``drop-stale`` is the fix the gate's stale failure names.
+CATALOG_TOOL = sys.modules["ui_i18n_catalog"]
+
+
+def _translation(message: str, english: str) -> dict[str, str]:
+    """An entry translated from ``english``, with that English's ``sourceHash``."""
+    digest = hashlib.sha256(unicodedata.normalize("NFC", english).encode("utf-8"))
+    return {"message": message, "sourceHash": digest.hexdigest()[:16]}
 
 
 def _tree(
@@ -256,6 +268,132 @@ def test_a_translation_catalog_the_build_would_reject_fails(tmp_path, monkeypatc
     assert [c[2] for c in calls if c[0] == "node"] == ["en-XA", "fr-CA"]
 
 
+def test_a_dead_translation_names_the_command_that_deletes_it(tmp_path, monkeypatch):
+    """A removed message leaves its translation dead. The build names the id and says to
+    delete it; the line under the build's message names the command that does, for the
+    catalog that holds one and no other (issue #2080)."""
+    dead = {"i18n.gone": _translation("Parti", "Gone")}
+    layout = _tree(tmp_path, catalogs={"es.json": "{}", "fr-CA.json": json.dumps(dead)})
+    build = (
+        'fr-CA.json: "i18n.gone" is not in en.json (a dead translation: delete it, or '
+        "re-extract if the message exists)\n"
+        "fr-CA.json: 1 problem(s); a build with this catalog would fail"
+    )
+    _fake_run(
+        monkeypatch,
+        broken={
+            "es": "es.json: 1 problem(s); a build with this catalog would fail",
+            "fr-CA": build,
+        },
+    )
+    other, failure = _check(layout)
+    assert failure == (
+        f"src/ui/src/i18n/fr-CA.json would fail the UI build (exit 1):\n{build}\n"
+        "Delete the 1 dead translation(s), which en.json no longer has: "
+        "'make ui-i18n-drop-stale LOCALE=fr-CA'."
+    )
+    assert other.startswith("src/ui/src/i18n/es.json would fail the UI build")
+    assert "drop-stale" not in other
+
+
+def test_a_stale_translation_fails_naming_each_id_and_both_fixes(tmp_path, monkeypatch):
+    """The English changed after the entry was translated. The build compiles and ships
+    it, so the gate is what fails, and it names both fixes (issue #2080)."""
+    stale = {"i18n.switcher.label": _translation("Langues", "Languages")}
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": json.dumps(stale)})
+    _fake_run(monkeypatch)
+    (failure,) = _check(layout)
+    assert failure.startswith("src/ui/src/i18n/fr-CA.json holds 1 stale translation(s)")
+    assert "\n    i18n.switcher.label\n" in failure
+    assert "'make ui-i18n-todo LOCALE=fr-CA' lists them" in failure
+    assert "'make ui-i18n-ingest LOCALE=fr-CA FILE=<list>'" in failure
+    assert "'make ui-i18n-drop-stale LOCALE=fr-CA'" in failure
+
+
+def test_a_current_translation_passes(tmp_path, monkeypatch):
+    current = {"i18n.switcher.label": _translation("Langue", "Language")}
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": json.dumps(current)})
+    _fake_run(monkeypatch)
+    assert _check(layout) == []
+
+
+def test_drop_stale_clears_the_stale_failure(tmp_path, monkeypatch, capsys):
+    stale = {"i18n.switcher.label": _translation("Langues", "Languages")}
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": json.dumps(stale)})
+    _fake_run(monkeypatch)
+    assert _check(layout)
+
+    tool_layout = CATALOG_TOOL.review.Layout(tmp_path)
+    assert tool_layout.catalog_dir == layout.catalog_dir
+    assert (
+        CATALOG_TOOL.main(["drop-stale", "--locale", "fr-CA"], layout=tool_layout) == 0
+    )
+    assert _check(layout) == []
+    assert json.loads((layout.catalog_dir / "fr-CA.json").read_text("utf-8")) == {}
+
+
+def test_a_stale_translation_that_no_longer_compiles_is_named_by_both_checks(
+    tmp_path, monkeypatch
+):
+    """A reworded message that gained an argument: the build rejects the old French,
+    and the stale failure says how to clear it."""
+    broken = {"i18n.switcher.label": _translation("Langue {x}", "Languages")}
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": json.dumps(broken)})
+    _fake_run(
+        monkeypatch,
+        broken={
+            "fr-CA": "fr-CA.json: i18n.switcher.label: the translation has argument(s) {x}"
+        },
+    )
+    compiled, stale = _check(layout)
+    assert compiled.startswith("src/ui/src/i18n/fr-CA.json would fail the UI build")
+    assert "'make ui-i18n-drop-stale LOCALE=fr-CA'" in stale
+
+
+@pytest.mark.parametrize(
+    ("entries", "stale"),
+    [
+        (
+            {"i18n.gone": _translation("Parti", "Gone")},
+            False,
+        ),  # dead: compiling says so
+        ({"i18n.switcher.label": {"message": "Langue"}}, True),  # no sourceHash at all
+    ],
+)
+def test_a_dead_entry_is_not_called_stale_and_one_with_no_hash_is(
+    tmp_path, monkeypatch, entries, stale
+):
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": json.dumps(entries)})
+    _fake_run(monkeypatch)
+    failures = _check(layout)
+    assert bool(failures) is stale
+    assert all("stale translation(s)" in failure for failure in failures)
+
+
+def test_the_stale_check_still_runs_where_the_cli_cannot(tmp_path, monkeypatch, capsys):
+    """Only the English re-extraction needs the CLI's native binary; the stale check,
+    like the compile check, reads the committed catalogs, so it is not skipped."""
+    stale = {"i18n.switcher.label": _translation("Langues", "Languages")}
+    _tree(tmp_path, catalogs={"fr-CA.json": json.dumps(stale)})
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    _fake_run(monkeypatch, extract_rc=1, extract_stderr=NO_NATIVE_BINARY)
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "src/ui/src/i18n/fr-CA.json holds 1 stale translation(s)" in out
+    assert "the English catalog was not re-measured" in out
+    assert "SKIPPED" not in out
+
+
+def test_an_unreadable_catalog_is_reported_by_the_compile_check_alone(
+    tmp_path, monkeypatch
+):
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": "{"})
+    _fake_run(monkeypatch, broken={"fr-CA": "Unexpected end of JSON input"})
+    (failure,) = _check(layout)
+    assert "would fail the UI build" in failure
+
+
 def test_only_locale_named_json_files_are_catalogs(tmp_path, monkeypatch):
     layout = _tree(
         tmp_path,
@@ -324,7 +462,8 @@ def test_an_absent_toolchain_skips_off_ci_and_says_so(tmp_path, monkeypatch, cap
     assert MODULE.main([]) == 0
     out = capsys.readouterr().out
     assert (
-        "⏭️  check-ui-i18n-catalog SKIPPED (not a pass: run make ui-lint first)" in out
+        "⏭️  check-ui-i18n-catalog SKIPPED (not a pass: run make setup-node first)"
+        in out
     )
     assert "✅" not in out
     assert calls == []
@@ -491,3 +630,44 @@ def test_the_real_repository_satisfies_the_gate(capsys):
     out = capsys.readouterr().out
     assert status == 0, out
     assert "✅ check-ui-i18n-catalog" in out
+
+
+def _stale_install(ui_root: Path) -> None:
+    """A lockfile that names a package the hidden lockfile of the install lacks."""
+    wanted = {
+        "packages": {"": {}, "node_modules/@formatjs/cli": {"version": "6.16.36"}}
+    }
+    (ui_root / "package-lock.json").write_text(json.dumps(wanted), encoding="utf-8")
+    (ui_root / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": {}}), encoding="utf-8"
+    )
+
+
+def test_a_stale_install_skips_off_ci_and_names_the_remedy(
+    tmp_path, monkeypatch, capsys
+):
+    layout = _tree(tmp_path)
+    _stale_install(layout.ui_root)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    calls = _fake_run(monkeypatch)
+    assert MODULE.main([]) == 0
+    out = capsys.readouterr().out
+    assert "SKIPPED (not a pass: UI dependencies are out of date)" in out
+    assert "@formatjs/cli" in out
+    assert "make setup-node" in out
+    assert "✅" not in out
+    assert calls == [], "a stale install must not reach formatjs"
+
+
+def test_a_stale_install_fails_in_ci(tmp_path, monkeypatch, capsys):
+    layout = _tree(tmp_path)
+    _stale_install(layout.ui_root)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    monkeypatch.setenv("GITLAB_CI", "true")
+    _fake_run(monkeypatch)
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "❌ check-ui-i18n-catalog" in out
+    assert "SKIPPED" not in out

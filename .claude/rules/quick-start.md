@@ -43,13 +43,16 @@ chat agent, so [agents.md](agents.md) applies too.
 
 ## Must
 - Say in the PR description whether the change affects Quick Start and how you
-  checked: open it, describe a document, review the drafted fields, approve, and
-  see the profile created and activated.
+  checked. A change to the journey, or to a contract it calls, is checked on a
+  stack: open Quick Start, describe a document, review the drafted fields,
+  approve, and see the profile created and activated. For any other change under
+  these paths, the offline suites under **Verify with** are the check; say so.
 - Change Quick Start's callers in the same change as any contract it shares with
   another page: the discovery uploads, the configuration profile API, the chat
   route and stream, and chat sessions. The stack wiring it reads counts too: the
   `EnableQuickStartWidget` parameter in `template.yaml`, which sets the UI's
-  `VITE_ENABLE_QUICK_START_WIDGET`, and the
+  `VITE_ENABLE_QUICK_START_WIDGET` and, as `QUICK_START_ENABLED`, the switch the
+  agent chat resolver and both chat processors refuse a Quick Start turn on, and the
   `/<stack>/feature-platform/installed-features-table` SSM parameter the agent
   finds extensions through.
 - When you rename a page, a navigation item or a product term, update the agent's
@@ -68,15 +71,16 @@ chat agent, so [agents.md](agents.md) applies too.
   the user it is talking to.
 
 ## Verify with
-- `cd lib/idp_common_pkg && make test-unit`
+- `make test`, which runs every offline Python suite, including those of the Lambda
+  handlers and the Test Set Generator extension under these paths
 - `make ui-test`
 - `make ai-ux-test-stories-local STORY=draft-setup-from-a-description AS=platform-admin`,
-  against the review stack
+  against the review stack, for a change to the journey or to a contract it calls
 
 ## Sources
 - [docs/quick-start.md](../../docs/quick-start.md): the user journey, the CLI form
   and the optional test-set generator
 - [lib/idp_common_pkg/idp_common/agents/README.md](../../lib/idp_common_pkg/idp_common/agents/README.md):
   how agents are built, registered and given memory
-- [.claude/skills/ux-test-stories.md](../skills/ux-test-stories.md): writing and
+- [.claude/skills/ux-test-stories/SKILL.md](../skills/ux-test-stories/SKILL.md): writing and
   running first-time-user stories

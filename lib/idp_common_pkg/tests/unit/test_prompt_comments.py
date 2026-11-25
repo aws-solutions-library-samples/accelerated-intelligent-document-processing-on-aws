@@ -8,14 +8,13 @@ import io
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 
 from idp_common.bedrock.client import BedrockClient
 from idp_common.classification.service import ClassificationService
 from idp_common.config import ConfigurationReader
 from idp_common.config.merge_utils import (
-    get_system_defaults_dir,
     load_system_defaults,
+    load_system_defaults_file,
     validate_config,
 )
 from idp_common.config.models import IDPConfig
@@ -222,9 +221,7 @@ class TestShippedDefaults:
                     yield from TestShippedDefaults._prompts(value, here)
 
     def test_every_default_classification_prompt_documents_its_contract(self):
-        raw = yaml.safe_load(
-            (get_system_defaults_dir() / "base-classification.yaml").read_text()
-        )
+        raw = load_system_defaults_file("base-classification.yaml")
         prompts = dict(self._prompts(raw))
         assert prompts, "no default classification prompts found"
         for path, prompt in prompts.items():

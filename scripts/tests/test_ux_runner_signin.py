@@ -731,11 +731,16 @@ def test_a_sidebar_that_never_appears_gives_no_facts_once_the_wait_is_over() -> 
 @pytest.mark.unit
 def test_the_links_read_are_the_ones_the_ui_source_renders() -> None:
     """Each fact's ``href`` and label are those navigation.tsx gives the
-    Deployment Info item, so a change to either there fails here first."""
+    Deployment Info item, so a change to either there fails here first. The
+    label is the English of a message (``defaultMessage: 'Stack Name:
+    {stackName}'``) and the item formats that message with that argument."""
     source = NAVIGATION_TSX.read_text(encoding="utf-8")
     for href, label in signin.DEPLOYMENT_INFO_LINKS.values():
         item = (
-            rf"text: `{re.escape(label)} \$\{{settings\.\w+\}}`,\s*"
+            rf"(?P<key>\w+): \{{\s*id: '[\w.]+',\s*"
+            rf"defaultMessage: '{re.escape(label)} \{{(?P<arg>\w+)\}}',"
+            r"[\s\S]*?"
+            r"text: intl\.formatMessage\(messages\.(?P=key), \{ (?P=arg): [^}]+ \}\),\s*"
             rf"href: '{re.escape(href)}'"
         )
         assert re.search(item, source), f"navigation.tsx renders no {label} {href}"
@@ -749,7 +754,7 @@ IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTI
 #: it, and a ``querySelector`` that reads ``tag[attr="value"]`` and throws on any
 #: other selector, so one the stub cannot read fails the test instead of matching
 #: nothing. ``window`` and ``location`` stand in with the values ``_facts_of``
-#: assumes.
+#: assumes, and ``document.documentElement.lang`` is the input's ``lang``.
 FACTS_HARNESS_JS = r"""
 const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 class Text {
@@ -784,6 +789,7 @@ const matcher = (selector) => {
 const answers = input.pages.map((page) => {
   const root = new Element(page);
   globalThis.document = {
+    documentElement: { lang: input.lang || '' },
     querySelector: (selector) => {
       const test = matcher(selector);
       for (const el of root.elements()) { if (test(el)) { return el; } }
@@ -848,3 +854,285 @@ def test_the_facts_script_reads_the_sidebar_links_under_node(
         "0.6.12",
         "2026-10-16",
     )
+
+
+LOCALES_TS = SCRIPTS.parent / "src" / "ui" / "src" / "i18n" / "locales.ts"
+#: The sidebar's stack-name link as each review locale renders it once its catalog
+#: has arrived: French from a draft catalog, and the pseudo-locale's accents.
+LOCALIZED_STACK_LABELS = {
+    "fr-CA": "Nom de la pile : idp-ux-nightly",
+    "en-XA": "[Ŝŧȧȧƈķ Ƞȧȧḿḗḗ: idp-ux-nightly]",
+}
+_SET_ITEM_RE = re.compile(r"localStorage\.setItem\((\"[^\"]*\"), (\"[^\"]*\")\)")
+
+
+class LocalePage:
+    """A signed-in page whose locale the next reload switches, as DevTools sees it.
+
+    ``offered`` is whether the build holds the stored locale's catalog; without it
+    the UI falls back to English. Under the new ``lang`` the sidebar still reads in
+    English for ``catalog_polls`` reads, while the catalog loads, and for good when
+    ``catalog_polls`` is None, as when the load fails. ``sidebar`` false is a page
+    with no stack-name link. ``throw_on`` makes one kind of evaluation raise in the
+    page with the given description.
+    """
+
+    def __init__(
+        self,
+        *,
+        offered: bool = True,
+        catalog_polls: int | None = 2,
+        survives_reload: bool = True,
+        sidebar: bool = True,
+        throw_on: tuple[str, str] | None = None,
+        loading_polls: int = 1,
+    ) -> None:
+        self.offered = offered
+        self.catalog_polls = catalog_polls
+        self.survives_reload = survives_reload
+        self.sidebar = sidebar
+        self.throw_on = throw_on
+        self.loading_polls = loading_polls
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.storage: dict[str, str] = {f"{STORAGE_PREFIX}.LastAuthUser": "user-id"}
+        self.href = "http://localhost:3000/#/documents"
+        self.lang = "en"
+        self.flagged = False
+        self.loading = 0
+        self.reads = 0
+
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0
+    ) -> dict[str, Any]:
+        params = params or {}
+        self.calls.append((method, params))
+        if method == "Runtime.evaluate":
+            kind = self._kind(params["expression"])
+            if self.throw_on is not None and self.throw_on[0] == kind:
+                details = {
+                    "text": "Uncaught",
+                    "exception": {"description": self.throw_on[1]},
+                }
+                return {"exceptionDetails": details}
+            return {"result": {"value": self._evaluate(kind, params["expression"])}}
+        if method == "Page.reload":
+            if not self.survives_reload:
+                self.storage.clear()
+            stored = self.storage.get(signin.LOCALE_STORAGE_KEY)
+            self.lang = stored if self.offered and stored else "en"
+            self.flagged = False
+            self.loading = self.loading_polls
+            self.reads = 0
+        return {}
+
+    @staticmethod
+    def _kind(expression: str) -> str:
+        if "document.readyState" in expression:
+            return "loaded"
+        if "__uxRunnerOldDocument = true" in expression:
+            return "mark"
+        if "LastAuthUser" in expression:
+            return "state"
+        if "localStorage.setItem" in expression:
+            return "set-locale"
+        if "documentElement.lang" in expression:
+            return "locale"
+        raise AssertionError(f"unexpected expression: {expression}")
+
+    def _evaluate(self, kind: str, expression: str) -> Any:
+        signed_in = any(key.endswith(".LastAuthUser") for key in self.storage)
+        if kind == "mark":
+            self.flagged = True
+            return True
+        if kind == "loaded":
+            if self.loading > 0:
+                self.loading -= 1
+                return False
+            return False if self.flagged else self.href
+        if kind == "state":
+            return {"passwordField": not signed_in, "authed": signed_in, "alert": ""}
+        if kind == "set-locale":
+            found = _SET_ITEM_RE.fullmatch(expression)
+            assert found, expression
+            self.storage[json.loads(found.group(1))] = json.loads(found.group(2))
+            return None
+        self.reads += 1
+        if not self.sidebar:
+            return {"lang": self.lang, "label": None}
+        english = "Stack Name: idp-ux-nightly"
+        loading = self.catalog_polls is None or self.reads <= self.catalog_polls
+        label = english if self.lang == "en" or loading else None
+        return {"lang": self.lang, "label": label or LOCALIZED_STACK_LABELS[self.lang]}
+
+    def kinds(self) -> list[str]:
+        return [
+            self._kind(params["expression"]) if method == "Runtime.evaluate" else method
+            for method, params in self.calls
+        ]
+
+
+def _set_locale(
+    page: LocalePage, locale: str = "fr-CA", timeout: float = 5.0
+) -> FakeTime:
+    fake = FakeTime()
+    signin.set_locale(page, locale, timeout=timeout, sleep=fake.sleep, clock=fake.clock)
+    return fake
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "locale", ["fr", "en", "de-DE", "FR-CA", "", "fr-CA'); alert(1); //", "en-XA "]
+)
+def test_a_locale_outside_the_allow_list_is_refused_before_the_session_is_used(
+    locale: str,
+) -> None:
+    page = LocalePage()
+    with pytest.raises(signin.SignInError, match="must be one of fr-CA, en-XA"):
+        _set_locale(page, locale)
+    assert page.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locale", signin.REVIEW_LOCALES)
+def test_the_locale_is_written_then_the_page_reloads_once_then_shows_it(
+    locale: str,
+) -> None:
+    page = LocalePage(catalog_polls=0)
+    _set_locale(page, locale)
+    kinds = page.kinds()
+    assert kinds[:3] == ["Page.enable", "Runtime.enable", "set-locale"]
+    assert kinds.count("Page.reload") == 1
+    assert kinds[kinds.index("Page.reload") - 1] == "mark"
+    assert page.calls[kinds.index("Page.reload")][1] == {"ignoreCache": True}
+    after = kinds[kinds.index("Page.reload") + 1 :]
+    assert after[-2:] == ["state", "locale"]
+    assert set(after[:-2]) == {"loaded"}
+    assert page.storage[signin.LOCALE_STORAGE_KEY] == locale
+
+
+@pytest.mark.unit
+def test_the_key_and_the_locale_reach_the_page_only_as_json_literals() -> None:
+    page = LocalePage(catalog_polls=0)
+    _set_locale(page, "en-XA")
+    writes = [
+        params["expression"]
+        for method, params in page.calls
+        if method == "Runtime.evaluate" and "setItem" in params["expression"]
+    ]
+    assert writes == ['localStorage.setItem("idp-locale", "en-XA")']
+
+
+@pytest.mark.unit
+def test_english_under_the_new_lang_is_waited_out_until_the_catalog_arrives() -> None:
+    """``<html lang>`` changes before the catalog has loaded, and the UI shows
+    English until it has, so the new ``lang`` alone does not end the wait."""
+    page = LocalePage(catalog_polls=3, loading_polls=0)
+    fake = _set_locale(page)
+    assert page.kinds().count("locale") == 4
+    assert fake.now == pytest.approx(3 * signin._POLL_SECONDS)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("page", "problem"),
+    [
+        (LocalePage(catalog_polls=None), "the sidebar still reads in English"),
+        (LocalePage(offered=False), "<html lang> is not fr-CA"),
+        (LocalePage(sidebar=False), "the sidebar shows no stack name"),
+    ],
+    ids=["catalog-never-arrives", "locale-not-in-build", "no-sidebar"],
+)
+def test_a_page_that_never_shows_the_locale_fails_naming_what_it_lacks(
+    page: LocalePage, problem: str
+) -> None:
+    with pytest.raises(signin.SignInError) as caught:
+        _set_locale(page, timeout=2.0)
+    assert str(caught.value) == (
+        f"the UI did not switch to fr-CA within 2 s ({problem}); "
+        "is fr-CA in this build?"
+    )
+    assert page.kinds().count("Page.reload") == 1
+
+
+@pytest.mark.unit
+def test_a_session_lost_on_the_reload_fails_the_switch() -> None:
+    page = LocalePage(survives_reload=False)
+    with pytest.raises(signin.SignInError, match="did not survive the reload"):
+        _set_locale(page)
+    assert "locale" not in page.kinds()
+
+
+@pytest.mark.unit
+def test_a_page_that_never_finishes_reloading_times_out() -> None:
+    page = LocalePage(loading_polls=10**6)
+    with pytest.raises(signin.SignInError, match="did not load within 1 s"):
+        _set_locale(page, timeout=1.0)
+
+
+@pytest.mark.unit
+def test_what_the_page_throws_is_reported_bounded_and_printable() -> None:
+    page = LocalePage(throw_on=("locale", "TypeError:\n" + "x" * 500 + "\u202e"))
+    with pytest.raises(signin.SignInError) as caught:
+        _set_locale(page)
+    text = str(caught.value)
+    assert text.startswith("switching the UI to fr-CA failed: ChromeError: ")
+    assert text.isprintable()
+    assert len(text) <= len("switching the UI to fr-CA failed: ChromeError: ") + 160
+
+
+@pytest.mark.unit
+def test_the_storage_key_and_the_locales_are_the_ones_the_ui_reads() -> None:
+    source = LOCALES_TS.read_text(encoding="utf-8")
+    assert f"export const LOCALE_STORAGE_KEY = '{signin.LOCALE_STORAGE_KEY}';" in source
+    known = re.search(r"export const KNOWN_LOCALES = \[([^\]]*)\] as const;", source)
+    assert known, "locales.ts declares no KNOWN_LOCALES"
+    names = re.findall(r"'([^']+)'", known.group(1))
+    assert set(signin.REVIEW_LOCALES) <= set(names) - {"en"}
+
+
+@pytest.fixture(scope="module")
+def locale_under_node(tmp_path_factory: pytest.TempPathFactory) -> list[Any]:
+    """``signin._LOCALE_JS`` as shipped, run under node with ``lang`` fr-CA over
+    the English sidebar, a French one and the spinner; skipped without node,
+    except in CI."""
+    if not HAS_NODE:
+        reason = "node is not on PATH, and this test runs the locale script under it"
+        if IN_CI:
+            pytest.fail(f"{reason}. CI must run it, so give this job node.")
+        pytest.skip(reason)
+    harness = tmp_path_factory.mktemp("locale") / "harness.js"
+    harness.write_text(FACTS_HARNESS_JS, encoding="utf-8")
+    french = DEPLOYMENT_INFO_HTML.replace(
+        "Stack Name: idp-ux-nightly", LOCALIZED_STACK_LABELS["fr-CA"]
+    )
+    pages = [
+        _Dom(markup).root for markup in (DEPLOYMENT_INFO_HTML, french, SPINNER_HTML)
+    ]
+    done = subprocess.run(
+        ["node", str(harness)],
+        input=json.dumps(
+            {"script": signin._LOCALE_JS, "pages": pages, "lang": "fr-CA"}
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if done.returncode != 0:
+        pytest.fail(f"node could not run the locale script: {done.stderr.strip()}")
+    return json.loads(done.stdout)
+
+
+@pytest.mark.unit
+def test_the_locale_script_reads_lang_and_the_stack_link_under_node(
+    locale_under_node: list[Any],
+) -> None:
+    english, french, spinner = locale_under_node
+    assert english == {"lang": "fr-CA", "label": "Stack Name: idp-ux-nightly"}
+    assert french == {"lang": "fr-CA", "label": LOCALIZED_STACK_LABELS["fr-CA"]}
+    assert spinner == {"lang": "fr-CA", "label": None}
+    assert [signin._locale_problem(value, "fr-CA") for value in locale_under_node] == [
+        "the sidebar still reads in English",
+        "",
+        "the sidebar shows no stack name",
+    ]

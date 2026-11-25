@@ -3,6 +3,36 @@
 
 import React from 'react';
 import { Box, Popover, SpaceBetween } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { useFormatters } from '../../i18n/format';
+
+const messages = defineMessages<{
+  header: NoMessageValues;
+  considered: NoMessageValues;
+  sourceNote: NoMessageValues;
+  why: NoMessageValues;
+}>({
+  header: {
+    id: 'documents.classConfidence.header',
+    defaultMessage: 'Why this class?',
+    description: "Heading of the popover that explains a page's class: the classifier's reasoning and the other classes it considered.",
+  },
+  considered: {
+    id: 'documents.classConfidence.considered',
+    defaultMessage: 'Considered',
+    description: 'Label above the ranked list of classes the classifier considered for the page.',
+  },
+  sourceNote: {
+    id: 'documents.classConfidence.sourceNote',
+    defaultMessage: "The classifier's own explanation, recorded at classification time.",
+    description: 'Note at the foot of the class explanation popover, saying where the explanation comes from.',
+  },
+  why: {
+    id: 'documents.classConfidence.why',
+    defaultMessage: 'Why?',
+    description: 'Link that opens the class explanation of a page that has no confidence score.',
+  },
+});
 
 interface ClassCandidate {
   Class?: string | null;
@@ -20,9 +50,6 @@ interface ClassConfidenceProps {
    */
   candidates?: (ClassCandidate | null)[] | null;
 }
-
-/** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
-const asPercent = (confidence: number): string => `${(confidence * 100).toFixed(1)}%`;
 
 /**
  * "Not scored" — deliberately an em-dash rather than a blank cell or a zero.
@@ -61,6 +88,10 @@ const NotScored = (): React.JSX.Element => (
  * calibrated traffic light. See docs/benchmarking/classification-confidence.md.
  */
 const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProps): React.JSX.Element => {
+  const intl = useIntl();
+  const { formatPercent } = useFormatters();
+  /** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
+  const asPercent = (value: number): string => formatPercent(value, { fractionDigits: 1 });
   const hasConfidence = typeof confidence === 'number';
   const hasReason = typeof reason === 'string' && reason.trim().length > 0;
   const ranked = (candidates ?? []).filter((c): c is ClassCandidate => !!c && !!c.Class);
@@ -83,7 +114,7 @@ const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProp
       position="top"
       size="large"
       triggerType="text"
-      header="Why this class?"
+      header={intl.formatMessage(messages.header)}
       content={
         <SpaceBetween size="xs">
           {hasReason && <Box variant="p">{reason}</Box>}
@@ -91,7 +122,9 @@ const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProp
               which is the question a suspicious classification actually raises. */}
           {ranked.length > 0 && (
             <SpaceBetween size="xxs">
-              <Box variant="awsui-key-label">Considered</Box>
+              <Box variant="awsui-key-label">
+                <FormattedMessage {...messages.considered} />
+              </Box>
               {ranked.map((candidate) => (
                 <Box key={candidate.Class}>
                   {candidate.Class}
@@ -101,12 +134,12 @@ const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProp
             </SpaceBetween>
           )}
           <Box variant="small" color="text-body-secondary">
-            The classifier&apos;s own explanation, recorded at classification time.
+            <FormattedMessage {...messages.sourceNote} />
           </Box>
         </SpaceBetween>
       }
     >
-      {hasConfidence ? asPercent(confidence as number) : 'Why?'}
+      {hasConfidence ? asPercent(confidence as number) : <FormattedMessage {...messages.why} />}
     </Popover>
   );
 };

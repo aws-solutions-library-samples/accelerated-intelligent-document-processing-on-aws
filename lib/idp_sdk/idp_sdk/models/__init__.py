@@ -34,6 +34,7 @@ from .batch import (
 from .chat import ChatResponse
 from .config import (
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -64,7 +65,10 @@ from .document import (
     DocumentRerunResult,
     DocumentStatus,
     DocumentUploadResult,
+    ReprocessOption,
+    ReprocessStepOption,
     ReviewInfo,
+    ReviewPolicyFailure,
 )
 from .evaluation import (
     BaselineInfo,
@@ -76,9 +80,11 @@ from .evaluation import (
     FieldComparison,
     UseAsBaselineResult,
 )
+from .fit_check import FitCheckResult
 from .manifest import ManifestDocument, ManifestResult, ManifestValidationResult
 from .mcp import McpCredential, McpCredentialIssued
 from .publish import PublishResult, TemplateTransformResult
+from .review_queues import ReviewQueueDefinition, ReviewQueuePage
 from .search import SearchCitation, SearchDocumentReference, SearchResult
 from .stack import (
     BucketInfo,
@@ -159,11 +165,14 @@ __all__ = [
     # Document models
     "DocumentStatus",
     "ReviewInfo",
+    "ReviewPolicyFailure",
     "ReviewStatus",
     "DocumentUploadResult",
     "DocumentDownloadResult",
     "DocumentRerunResult",
     "DocumentReprocessResult",
+    "ReprocessOption",
+    "ReprocessStepOption",
     "DocumentDeletionResult",
     "DocumentMetadata",
     "DocumentInfo",
@@ -179,6 +188,7 @@ __all__ = [
     "ConfigListResult",
     "ConfigRevisionInfo",
     "ConfigRevisionListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     # Discovery models
@@ -211,6 +221,7 @@ __all__ = [
     "FieldComparison",
     "EvaluationMetrics",
     "UseAsBaselineResult",
+    "FitCheckResult",
     "DeleteResult",
     # Publish models
     "PublishResult",
@@ -221,6 +232,9 @@ __all__ = [
     "AssessmentGeometryResult",
     "AssessmentFieldGeometry",
     "AssessmentMetrics",
+    # Review queue models
+    "ReviewQueueDefinition",
+    "ReviewQueuePage",
     # Tenancy models
     "TenantApplyResult",
     "TenantAuditFinding",

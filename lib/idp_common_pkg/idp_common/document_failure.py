@@ -199,8 +199,8 @@ def failure_is_transient(error: BaseException) -> bool:
     under one class name: ``raise_if_transient`` re-raises any transient cause as
     ``TransientError``, and every task state whose handler can do that lists exactly
     that name. Extraction and assessment have worked this way since #787; the three
-    rule-validation states (``PolicyClassificationStep``, ``RuleValidationStep``,
-    ``RuleValidationOrchestration``) joined them in #1101, which is what closed the
+    rule-validation states (``PolicyClassificationStep``, ``PolicyRuleValidationStep``,
+    ``PolicyRuleConsolidationStep``) joined them in #1101, which is what closed the
     gap this docstring used to describe.
 
     The class names that would agree *anyway* are the ones botocore derives from a

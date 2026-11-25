@@ -13,6 +13,39 @@ from log_sanitizer import sanitize_event_for_logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+
+def _run_step_catalog():
+    """The pipeline's steps, as ``scripts/generate_run_step_catalog.py`` writes them.
+
+    The declaration is ``idp_common.run_plan.steps``. This function is packaged
+    without that library, so the generator writes the list beside this module as
+    ``run_steps.json`` and ``scripts/tests/test_run_step_catalog.py`` holds the two
+    together.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_steps.json")
+    with open(path, encoding="utf-8") as catalog:
+        return json.load(catalog)
+
+
+_RUN_STEPS = _run_step_catalog()
+
+# What the reprocess tool's `step` accepts: the step ids, the aliases, and resume.
+REPROCESS_START_VALUES = [
+    *(step["id"] for step in _RUN_STEPS["steps"]),
+    *_RUN_STEPS["aliases"],
+    _RUN_STEPS["resume"],
+]
+# What its `skip` accepts: the steps a run can leave out.
+REPROCESS_SKIP_VALUES = [
+    step["id"] for step in _RUN_STEPS["steps"] if not step["required"]
+]
+
+# A tool schema property takes `type`, `description`, `properties`, `required` and
+# `items`, and nothing else: the gateway's schema has no `enum`, and a key it does
+# not have fails the request that creates or updates the target. So the values a
+# property accepts are written into its description, and the MCP handler checks
+# them (tools/batch_reprocess.py).
+
 # Tool schema for the IDPTools Lambda target. Single source of truth:
 # used when the gateway target is CREATED and re-applied when the target
 # is UPDATED (see update_gateway_target_if_needed) so schema changes in
@@ -64,13 +97,30 @@ IDP_TOOLS_SCHEMA = [
     },
     {
         "name": "reprocess",
-        "description": "Reprocess documents from a specific pipeline step. Supports classification or extraction reprocessing. Returns batch ID for status tracking.",
+        "description": "Process documents again, starting at a pipeline step. The run produces the output of that step and of every later step again; what earlier steps produced is kept. Returns each document's result: queued, or refused with the reason.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "step": {
                     "type": "string",
-                    "description": "Pipeline step to reprocess from (classification or extraction)"
+                    "description": (
+                        "Pipeline step to start at. One of: "
+                        + ", ".join(REPROCESS_START_VALUES)
+                        + ". 'ocr' is the beginning; 'resume' starts each document at"
+                        " the first step it has no output for. In BDA mode"
+                        " 'classification' and 'extraction' mean the beginning, and"
+                        " 'assessment' does not exist."
+                    )
+                },
+                "skip": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional steps to leave out of the run; their existing"
+                        " output is kept. Any of: "
+                        + ", ".join(REPROCESS_SKIP_VALUES)
+                        + "."
+                    )
                 },
                 "document_ids": {
                     "type": "string",
@@ -90,7 +140,7 @@ IDP_TOOLS_SCHEMA = [
     },
     {
         "name": "status",
-        "description": "Get processing status for a batch of documents. Returns progress, timing, and error information.",
+        "description": "Get processing status for a batch of documents. Returns progress, timing, and error information. all_complete is true once nothing is queued or running; documents held for human review are counted in status.awaiting_review and have no final result until a reviewer completes or rejects them.",
         "inputSchema": {
             "type": "object",
             "properties": {

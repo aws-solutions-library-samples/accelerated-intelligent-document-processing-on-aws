@@ -41,6 +41,7 @@ from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
     SOURCE_REJECTED,
     PrefixMappingStore,
+    is_internal_producer,
     resolve_config_assignment,
 )
 from idp_common.config.tenants import (
@@ -49,10 +50,18 @@ from idp_common.config.tenants import (
     is_strict_isolation,
 )
 from idp_common.docs_service import create_document_service
+from idp_common.document_attributes import ISSUE_ATTRIBUTES_DROPPED, is_sidecar_key
 from idp_common.document_versions import delete_current_output_objects
 from idp_common.job_completion import finalize_job_file, parse_job_document_id
 from idp_common.job_service import create_job_service
-from idp_common.models import Document, Status
+from idp_common.models import (
+    Document,
+    ProcessingIssue,
+    Status,
+    serialize_issue_list,
+)
+from idp_common.run_plan.models import RunKind, RunPlan
+from idp_common.run_plan.sender import EVENT_DOCUMENT_QUEUED, send_run
 from idp_common.testrun_status import RUN_STATUS_TERMINAL
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -453,6 +462,50 @@ def _emit(metric_name, dimensions=None):
         pass  # telemetry must not affect document ingest
 
 
+#: The processing issue recorded on a document whose prefix-mapping lookup failed at
+#: ingest (#597). The lookup still fails OPEN -- see `resolve_configuration` -- and
+#: this is what makes that visible on the document itself rather than only on a
+#: metric an operator has to correlate with it.
+ISSUE_PREFIX_MAPPING_LOOKUP_FAILED = "config_prefix_mapping_lookup_failed"
+
+
+def _record_lookup_failure(document, root_cause):
+    """Flag ``document`` as having been routed with no prefix mapping consulted.
+
+    ``root_cause`` is the exception's *type* (and AWS error code), never its
+    message: the issue is shown to anyone who can see the document, and an AWS
+    error message can carry a role ARN and so an account id.
+
+    Not recorded for one of this deployment's own producers: mappings never apply
+    to those, so "no mapping was applied, reprocess to apply it" would be false.
+    """
+    if is_internal_producer(document.submission_source):
+        return
+    document.processing_issues.append(
+        ProcessingIssue(
+            stage="ingest",
+            severity="warning",
+            code=ISSUE_PREFIX_MAPPING_LOOKUP_FAILED,
+            message=(
+                "The configuration prefix mappings could not be read when this "
+                "document arrived, so no mapping was applied to it. It was "
+                "processed under the profile its upload named, or the active "
+                "profile if it named none. Reprocess it once the mappings are "
+                "readable to apply the mapping for its folder."
+            ),
+            root_cause=root_cause,
+        )
+    )
+
+
+def _error_kind(error):
+    """``ClientError: <Code>`` for an AWS error, else the exception's type name."""
+    if isinstance(error, ClientError):
+        code = error.response.get("Error", {}).get("Code") or "Unknown"
+        return f"ClientError: {code}"
+    return type(error).__name__
+
+
 def resolve_configuration(document, object_key):
     """Decide the Configuration Profile and revision for one incoming document.
 
@@ -487,6 +540,7 @@ def resolve_configuration(document, object_key):
             object_key,
         )
         _emit("PrefixMappingLookupFailed")
+        _record_lookup_failure(document, "CONFIG_TABLE is not set")
         return None
 
     table = _config_table(config_table_name)
@@ -507,6 +561,7 @@ def resolve_configuration(document, object_key):
             e,
         )
         _emit("PrefixMappingLookupFailed")
+        _record_lookup_failure(document, _error_kind(e))
 
     manager = _config_manager(config_table_name)
 
@@ -548,12 +603,30 @@ def resolve_configuration(document, object_key):
         profile_exists=profile_exists,
     )
 
+    if document.submission_source and not is_internal_producer(
+        document.submission_source
+    ):
+        # Not refused and not exempted: an unrecognised value is an ordinary upload
+        # (#597). Logged because a producer of this repository's own that was added
+        # without a matching entry in INTERNAL_SUBMISSION_SOURCES lands here.
+        logger.warning(
+            "%s carries submission-source %r, which is not one of this "
+            "deployment's own producers; prefix mappings apply to it as to any "
+            "upload",
+            object_key,
+            document.submission_source,
+        )
+
     logger.info("Configuration for %s: %s", object_key, assignment.reason)
     if assignment.unresolvable:
+        # Refused, since #597, rather than falling through -- but still its own
+        # metric, so the alarm that names a stale mapping keeps firing for it and
+        # `PrefixMappingRejected` keeps meaning a conflict refusal.
         _emit("PrefixMappingUnresolvable")
         logger.warning("Stale prefix mapping for %s: %s", object_key, assignment.reason)
     if assignment.rejected:
-        _emit("PrefixMappingRejected")
+        if not assignment.unresolvable:
+            _emit("PrefixMappingRejected")
         logger.warning("Refusing %s: %s", object_key, assignment.reason)
         return assignment
     if assignment.mapping_prefix:
@@ -668,21 +741,24 @@ def enforce_tenant_boundary(document, object_key, assignment):
     )
 
 
-def _send_to_queue(document, object_key, event_type="DocumentQueued"):
-    """Hand a document to the processing queue."""
-    doc_json = document.to_json()
-    message = {
-        "QueueUrl": queue_url,
-        "MessageBody": doc_json,
-        "MessageAttributes": {
-            "EventType": {"StringValue": event_type, "DataType": "String"},
-            "ObjectKey": {"StringValue": object_key, "DataType": "String"},
-        },
-    }
+def _send_to_queue(document, object_key, event_type=EVENT_DOCUMENT_QUEUED):
+    """Hand a document to the processing queue, to run from the beginning.
+
+    A new upload, or one the malware gate admitted. The body is the document's
+    JSON: a document that has not been processed has no pages or sections to
+    store elsewhere.
+    """
     logger.info(f"Sending document to SQS queue: {object_key}")
-    response = sqs.send_message(**message)
-    logger.info(f"SQS response: {response}")
-    return response
+    message_id = send_run(
+        sqs,
+        queue_url,
+        document=document,
+        plan=RunPlan(kind=RunKind.NEW_UPLOAD, start="beginning"),
+        event_type=event_type,
+        working_bucket=None,
+    )
+    logger.info(f"SQS message id: {message_id}")
+    return message_id
 
 
 def _purge_stale_outputs(output_bucket, object_key):
@@ -791,6 +867,16 @@ def handle_object_created(event):
             "skipped": "malware_validation_object",
         }
 
+    # A document-attributes sidecar (`<key>.idp-attributes.json`) is read by the
+    # intake of the document that names it, and is not a document itself (#1851).
+    if is_sidecar_key(object_key):
+        logger.info(f"Skipping document-attributes sidecar: {object_key}")
+        return {
+            "statusCode": 200,
+            "detail": detail,
+            "skipped": "document_attributes_sidecar",
+        }
+
     # Get output bucket from environment for the document
     output_bucket = os.environ.get("OUTPUT_BUCKET", "")
     if output_bucket == "":
@@ -845,6 +931,8 @@ def handle_object_created(event):
             "refused": (
                 "tenant_boundary"
                 if assignment is not resolved
+                else "config_prefix_mapping_unresolvable"
+                if assignment.unresolvable
                 else "config_prefix_mapping_conflict"
             ),
         }
@@ -941,6 +1029,15 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
         logger.info("Scan result for the GuardDuty validation object; ignoring")
         return {"statusCode": 200, "skipped": "malware_validation_object"}
 
+    if is_sidecar_key(object_key):
+        # The plan scans the whole input bucket, so a sidecar gets a verdict too.
+        # It has no tracking row (the upload path skipped it), and treating its
+        # verdict as one for a document would raise ScanVerdictBeforeIngestError
+        # on every retry and feed the verdicts-not-applied alarm. It is only ever
+        # parsed as JSON by the intake of the document that names it.
+        logger.info("Scan result for a document-attributes sidecar; ignoring")
+        return {"statusCode": 200, "skipped": "document_attributes_sidecar"}
+
     if not MALWARE_SCANNING_ENABLED:
         # Reachable if a stack was switched to DISABLED while a verdict was in
         # flight, or if an externally managed plan still points here. Admitting
@@ -993,16 +1090,19 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
             "time": verdict_time,
         },
         output_bucket,
+        # The attributes were snapshotted at upload and are on the row; re-reading
+        # them here would let a sidecar edited during the scan change them.
+        read_attributes=False,
     )
     # Same resolver the upload path uses, so a prefix-mapped profile survives the
-    # gate. ⚠️ A `rejected` assignment is NOT acted on here, and that is
-    # deliberate: the upload path already refused such a document as FAILED
-    # before the gate could hold it, so a rejection reaching this point means the
-    # mapping changed while the scan was in flight. Re-refusing would overwrite
-    # the malware verdict — the stronger statement about this file — with a
-    # routing complaint, and the document is terminal either way. The admission
-    # below is what must not happen, and it cannot: a rejected assignment leaves
-    # `config_version` unpinned, not the status QUEUED.
+    # gate. The upload path already refused a rejected document as FAILED before
+    # the gate could hold it, so a rejection reaching this point means the mapping
+    # (or the profile it names) changed while the scan was in flight. It is acted
+    # on below only when the verdict would ADMIT the document: a quarantine or a
+    # scan failure is the stronger statement about this file and is not
+    # overwritten with a routing complaint, but admitting a rejected document
+    # would process it unpinned -- under the active profile -- which is the
+    # fall-through #597 removed.
     try:
         assignment = resolve_configuration(document, object_key)
     except Exception as e:  # noqa: BLE001
@@ -1038,6 +1138,15 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
         existing.submission_source or document.submission_source
     )
     document.test_set_id = existing.test_set_id or document.test_set_id
+    # The intake snapshot of the caller's attributes, and the warning recorded if
+    # intake dropped any, both come from the row: the verdict pass does not read
+    # them (`read_attributes=False` above).
+    document.attributes = dict(existing.attributes)
+    document.processing_issues.extend(
+        issue
+        for issue in existing.processing_issues
+        if issue.code == ISSUE_ATTRIBUTES_DROPPED
+    )
 
     # Strict isolation re-checks the tenant boundary here, because the
     # configuration was just re-resolved: a tenant or mapping change while the scan
@@ -1070,10 +1179,18 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
     new_status, reason = decide_admission(
         scan_status, result_status, policy["allow_unscannable"]
     )
+    config_refusal = (
+        assignment.reason if assignment is not None and assignment.rejected else None
+    )
     if tenant_refusal and new_status == Status.QUEUED:
         new_status = Status.FAILED
         reason = "tenant boundary"
         document.config_assignment_error = tenant_refusal
+        document.config_source = SOURCE_REJECTED
+    elif config_refusal and new_status == Status.QUEUED:
+        new_status = Status.FAILED
+        reason = "configuration prefix mapping"
+        document.config_assignment_error = config_refusal
         document.config_source = SOURCE_REJECTED
     document.status = new_status
     logger.info(
@@ -1101,13 +1218,21 @@ def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
     }
     if threat_name:
         extra_attributes["MalwareScanThreat"] = threat_name
-    if new_status == Status.FAILED and tenant_refusal:
+    if new_status == Status.FAILED and document.config_assignment_error:
         # Written with the verdict, in the same conditional update, so the
         # document shows why it was refused the way an upload-time refusal does.
-        extra_attributes["ConfigAssignmentError"] = tenant_refusal
+        extra_attributes["ConfigAssignmentError"] = document.config_assignment_error
         extra_attributes["ConfigSource"] = SOURCE_REJECTED
     if reasons:
         extra_attributes["MalwareScanReasons"] = reasons
+    # The configuration was re-resolved above, so the ingest-time record of how it
+    # was resolved is replaced by this one, in the same conditional write: the
+    # document is admitted under THIS resolution, and an upload-time lookup failure
+    # that this pass did not repeat must not stay on the row describing it.
+    extra_attributes["ProcessingIssues"] = serialize_issue_list(
+        document.processing_issues
+    )
+    extra_attributes["ProcessingIssueCount"] = len(document.processing_issues)
 
     # The version clause is what stops a clean verdict for one upload admitting a
     # different one: re-uploading the same key while a scan is in flight gives

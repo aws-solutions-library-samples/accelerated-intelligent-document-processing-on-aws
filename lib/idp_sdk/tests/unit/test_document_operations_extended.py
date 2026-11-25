@@ -6,10 +6,11 @@
 ``DocumentOperation`` is the public single-document namespace on ``IDPClient``:
 ``process`` uploads a local file into the stack's input bucket, ``get_status``
 reads one document out of the batch-status monitor, ``download_results`` and
-``download_source`` pull objects back out of S3, ``reprocess``/``rerun`` requeue a
-document from a pipeline step, ``delete`` removes a document and everything
-derived from it, and ``get_metadata`` reads one section's extracted fields.
-``tests/unit/test_document_list_operation.py`` already covers ``list``.
+``download_source`` pull objects back out of S3, ``delete`` removes a document
+and everything derived from it, and ``get_metadata`` reads one section's
+extracted fields. ``tests/unit/test_document_list_operation.py`` covers ``list``,
+and ``tests/unit/test_reprocess_server_path.py`` covers ``reprocess``,
+``reprocess_options`` and ``rerun``, which ask the stack's reprocess resolver.
 
 **What shaped these tests.** Four of these methods are S3-shaped, and an S3 key
 is exactly the kind of thing a ``MagicMock`` will accept while being wrong: a
@@ -20,10 +21,9 @@ S3 and DynamoDB paths here run against ``moto``, on top of a real (moto)
 CloudFormation stack that ``idp_sdk._core.stack_info.StackInfo`` discovers for
 itself — the resource names the operations use are read out of stack outputs, not
 handed to them — and the assertions read the bucket and the table back
-afterwards. The two methods that delegate to a ``_core`` processor
-(``reprocess``, ``get_metadata``) are covered by asserting the arguments the
-processor received *and* the values the wrapper returned from a realistic
-processor return value.
+afterwards. The method that delegates to a ``_core`` processor
+(``get_metadata``) is covered by asserting the arguments the processor received
+*and* the values the wrapper returned from a realistic processor return value.
 
 Two defects are pinned rather than fixed; each is marked in the test's own
 docstring.
@@ -32,7 +32,6 @@ docstring.
 import json
 import os
 import re
-import warnings
 
 import boto3
 import pytest
@@ -46,13 +45,13 @@ from idp_sdk.exceptions import (
     IDPResourceNotFoundError,
 )
 from idp_sdk.models import (
+    DocumentBucket,
     DocumentDownloadResult,
     DocumentMetadata,
-    DocumentReprocessResult,
     DocumentStatus,
     DocumentUploadResult,
-    RerunStep,
     ReviewInfo,
+    ReviewPolicyFailure,
 )
 
 pytestmark = pytest.mark.unit
@@ -140,13 +139,53 @@ class TestProcess:
 
         assert isinstance(result, DocumentUploadResult)
         assert result.status == "queued"
-        # "single-doc-YYYYmmdd-HHMMSS/invoice.pdf"
+        # "single-doc-YYYYmmdd-HHMMSS-<8 hex>/invoice.pdf"
         assert re.fullmatch(
-            r"single-doc-\d{8}-\d{6}/invoice\.pdf", result.document_id
+            r"single-doc-\d{8}-\d{6}-[0-9a-f]{8}/invoice\.pdf", result.document_id
         ), result.document_id
 
         stored = _s3(aws_region).get_object(Bucket=INPUT_BUCKET, Key=result.document_id)
         assert stored["Body"].read() == b"%PDF-1.7 invoice"
+
+    def test_two_uploads_of_one_file_name_in_the_same_second_both_survive(
+        self, idp_stack, aws_region, tmp_path, monkeypatch
+    ):
+        """#2113: with a timestamp-only prefix the second upload landed on the
+        first one's key and replaced it. The clock is frozen in both the id helper
+        and this module, so the test still freezes it if `process` goes back to
+        reading the time itself."""
+        from datetime import datetime, timezone
+
+        from idp_sdk._core import ids
+        from idp_sdk.operations import document as document_ops
+
+        frozen = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        monkeypatch.setattr(ids, "datetime", _FrozenDatetime)
+        monkeypatch.setattr(document_ops, "datetime", _FrozenDatetime)
+
+        first_dir, second_dir = tmp_path / "one", tmp_path / "two"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        (first_dir / "invoice.pdf").write_bytes(b"%PDF-1.7 first")
+        (second_dir / "invoice.pdf").write_bytes(b"%PDF-1.7 second")
+
+        first = idp_stack.document.process(file_path=str(first_dir / "invoice.pdf"))
+        second = idp_stack.document.process(file_path=str(second_dir / "invoice.pdf"))
+
+        assert first.document_id != second.document_id
+        assert first.document_id.startswith("single-doc-20260102-030405-")
+        s3 = _s3(aws_region)
+        bodies = [
+            s3.get_object(Bucket=INPUT_BUCKET, Key=r.document_id)["Body"].read()
+            for r in (first, second)
+        ]
+        assert bodies == [b"%PDF-1.7 first", b"%PDF-1.7 second"]
 
     def test_a_custom_document_id_is_silently_discarded(
         self, idp_stack, aws_region, tmp_path
@@ -206,7 +245,13 @@ class TestProcess:
 #: category key present, timings as empty strings when the document has none,
 #: ``duration`` a float in seconds, and no page or section counts at all.
 def _status_summary(**categories):
-    summary = {"completed": [], "running": [], "queued": [], "failed": []}
+    summary = {
+        "completed": [],
+        "running": [],
+        "queued": [],
+        "failed": [],
+        "awaiting_review": [],
+    }
     summary.update(categories)
     summary["total"] = sum(len(v) for v in summary.values() if isinstance(v, list))
     summary["all_complete"] = not (summary["running"] or summary["queued"])
@@ -240,6 +285,36 @@ def _patch_monitor(monkeypatch, status_summary):
 
 
 class TestGetStatus:
+    def test_a_document_held_for_review_is_returned_not_reported_missing(
+        self, aws_credentials, monkeypatch
+    ):
+        """A document in a review queue exists; it must not read as not found.
+
+        The lookup walked a hand-typed list of four buckets, so once the monitor
+        put `HITL_IN_PROGRESS` in its own bucket the document matched nothing and
+        `get_status` raised `IDPResourceNotFoundError` (#2022).
+        """
+        _patch_monitor(
+            monkeypatch,
+            _status_summary(
+                awaiting_review=[
+                    {
+                        "document_id": "batch-1/held.pdf",
+                        "status": "HITL_IN_PROGRESS",
+                        "start_time": "",
+                        "end_time": "",
+                        "duration": 30.0,
+                    }
+                ]
+            ),
+        )
+
+        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
+        status = client.document.get_status("batch-1/held.pdf")
+
+        assert status.status == "HITL_IN_PROGRESS"
+        assert status.bucket is DocumentBucket.AWAITING_REVIEW
+
     def test_a_completed_document_maps_every_field(self, aws_credentials, monkeypatch):
         calls = _patch_monitor(
             monkeypatch,
@@ -356,6 +431,14 @@ class TestGetStatus:
                             "reviewedBy": "reviewer@example.com",
                             "disposedAt": "2024-01-15T11:00:00Z",
                             "rejectReason": "illegible",
+                            "queueName": "Claims",
+                            "routedBy": {
+                                "tableId": "review-routing",
+                                "ruleId": "claims-over-1000",
+                                "ruleLabel": "Claims over 1000",
+                                "placedQueue": "claims",
+                                "fallbackReason": "",
+                            },
                         },
                     }
                 ]
@@ -366,6 +449,14 @@ class TestGetStatus:
         status = client.document.get_status("batch-1/claim.pdf")
 
         assert isinstance(status.review, ReviewInfo)
+        assert status.review.queue_name == "Claims"
+        assert status.review.routed_by == {
+            "tableId": "review-routing",
+            "ruleId": "claims-over-1000",
+            "ruleLabel": "Claims over 1000",
+            "placedQueue": "claims",
+            "fallbackReason": "",
+        }
         assert status.review.status == ReviewStatus.REJECTED
         assert status.review.queue == "claims"
         assert status.review.cycle_id == "cycle-7"
@@ -376,6 +467,153 @@ class TestGetStatus:
         assert status.review.disposed_at == "2024-01-15T11:00:00Z"
         assert status.review.reject_reason == "illegible"
         assert status.review_status == ReviewStatus.REJECTED
+
+    def test_a_review_block_from_a_stack_without_routing_has_no_routing_fields(self):
+        """A stack that does not record what placed the document sends neither
+        field; both are None, not missing attributes."""
+        review = ReviewInfo.from_lookup({"status": "in_review", "queue": "default"})
+
+        assert review is not None
+        assert (review.queue_name, review.routed_by) == (None, None)
+        assert (review.reason, review.policy_failures, review.policy_failure_count) == (
+            None,
+            [],
+            0,
+        )
+
+    def test_a_routed_document_carries_its_reason_and_failed_policy_rules(
+        self, aws_credentials, monkeypatch
+    ):
+        """What the reviewer reads, and the policy rules the document failed, come
+        with the status: the routed-by map of the lookup function holds them, so
+        no second call is made for them."""
+        routed_by = {
+            "tableId": "review-routing",
+            "ruleId": "claims-over-1000",
+            "ruleLabel": "Claims over 1000",
+            "reason": "Total 1200 is over 1000",
+            "policyFailures": [
+                {
+                    "ruleId": "claims.max_amount",
+                    "policy": "claims",
+                    "name": "max_amount",
+                    "reason": "The amount is over the policy limit.",
+                    "pages": [2, 3],
+                },
+                {
+                    "ruleId": "kyc.id_match",
+                    "policy": "kyc",
+                    "name": "id_match",
+                    "reason": "The names differ.",
+                    "pages": [],
+                },
+            ],
+            "policyFailureCount": 14,
+        }
+        _patch_monitor(
+            monkeypatch,
+            _status_summary(
+                completed=[
+                    {
+                        "document_id": "batch-1/claim.pdf",
+                        "status": "COMPLETED",
+                        "start_time": "",
+                        "end_time": "",
+                        "duration": 0,
+                        "review": {
+                            "status": "in_review",
+                            "queue": "claims",
+                            "queueName": "Claims",
+                            "routedBy": routed_by,
+                        },
+                    }
+                ]
+            ),
+        )
+
+        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
+        review = client.document.get_status("batch-1/claim.pdf").review
+
+        assert review.reason == "Total 1200 is over 1000"
+        assert review.policy_failures == [
+            ReviewPolicyFailure(
+                rule_id="claims.max_amount",
+                policy="claims",
+                name="max_amount",
+                reason="The amount is over the policy limit.",
+                pages=[2, 3],
+            ),
+            ReviewPolicyFailure(
+                rule_id="kyc.id_match",
+                policy="kyc",
+                name="id_match",
+                reason="The names differ.",
+                pages=[],
+            ),
+        ]
+        # The count is of every failed policy rule; the list holds the first.
+        assert review.policy_failure_count == 14
+        # The map itself is still there, as the lookup function returned it.
+        assert review.routed_by == routed_by
+
+    def test_the_policy_failure_model_is_public(self):
+        import idp_sdk
+
+        assert idp_sdk.ReviewPolicyFailure is ReviewPolicyFailure
+        assert "ReviewPolicyFailure" in idp_sdk.__all__
+
+    def test_a_routed_by_map_written_before_reasons_has_none(self):
+        """A tracking row written by an earlier release holds three keys."""
+        review = ReviewInfo.from_lookup(
+            {
+                "status": "in_review",
+                "routedBy": {"tableId": "t", "ruleId": "r", "ruleLabel": "R"},
+            }
+        )
+
+        assert review is not None
+        assert (review.reason, review.policy_failures, review.policy_failure_count) == (
+            None,
+            [],
+            0,
+        )
+
+    def test_numbers_that_arrive_as_floats_are_whole_numbers(self):
+        """DynamoDB numbers can reach a caller as ``3.0``; a page is still page 3."""
+        review = ReviewInfo.from_lookup(
+            {
+                "status": "in_review",
+                "routedBy": {
+                    "reason": "r",
+                    "policyFailures": [{"ruleId": "p.a", "pages": [3.0, 4, 2.5, "7"]}],
+                    "policyFailureCount": 2.0,
+                },
+            }
+        )
+
+        assert review is not None
+        assert review.policy_failures[0].pages == [3, 4]
+        assert review.policy_failure_count == 2
+        assert type(review.policy_failure_count) is int
+
+    @pytest.mark.parametrize(
+        "routed_by",
+        [
+            {},
+            {"reason": "", "policyFailures": None, "policyFailureCount": None},
+            {"reason": None, "policyFailures": "none", "policyFailureCount": "many"},
+            {"policyFailures": ["not an entry", None], "policyFailureCount": True},
+        ],
+    )
+    def test_a_routed_by_map_of_another_shape_reads_as_nothing(self, routed_by):
+        review = ReviewInfo.from_lookup({"status": "in_review", "routedBy": routed_by})
+
+        assert review is not None
+        assert (review.reason, review.policy_failures, review.policy_failure_count) == (
+            None,
+            [],
+            0,
+        )
 
     @pytest.mark.parametrize("review", [None, {}, {"queue": "claims"}])
     def test_a_document_without_a_review_status_has_no_review(
@@ -626,130 +864,6 @@ class TestDownloadSource:
             idp_stack.document.download_source(
                 document_id="invoice.pdf", output_path=str(tmp_path / "sub" / "x.pdf")
             )
-
-
-# ---------------------------------------------------------------------------
-# reprocess() / rerun()
-# ---------------------------------------------------------------------------
-
-
-def _patch_rerun_processor(monkeypatch, return_value=None, raises=None):
-    calls = {}
-
-    class FakeRerunProcessor:
-        def __init__(self, stack_name, region=None, **kwargs):
-            calls["init"] = {"stack_name": stack_name, "region": region}
-
-        def rerun_documents(self, document_ids, step, monitor):
-            calls["rerun"] = {
-                "document_ids": document_ids,
-                "step": step,
-                "monitor": monitor,
-            }
-            if raises is not None:
-                raise raises
-            return return_value
-
-    monkeypatch.setattr(
-        "idp_sdk._core.rerun_processor.RerunProcessor", FakeRerunProcessor
-    )
-    return calls
-
-
-class TestReprocess:
-    def test_a_queued_document_reports_its_step_and_arguments(
-        self, aws_credentials, monkeypatch
-    ):
-        calls = _patch_rerun_processor(
-            monkeypatch, return_value={"documents_queued": 1, "documents_failed": 0}
-        )
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        result = client.document.reprocess("batch-1/invoice.pdf", step="classification")
-
-        assert isinstance(result, DocumentReprocessResult)
-        assert result.queued is True
-        assert result.step is RerunStep.CLASSIFICATION
-        assert result.document_id == "batch-1/invoice.pdf"
-        # Exactly one document, never monitored — the SDK call is synchronous and
-        # returns; a monitor=True here would block the caller.
-        assert calls["rerun"] == {
-            "document_ids": ["batch-1/invoice.pdf"],
-            "step": "classification",
-            "monitor": False,
-        }
-        assert calls["init"] == {"stack_name": STACK_NAME, "region": "us-east-1"}
-
-    def test_a_rerunstep_enum_is_passed_through_as_its_value(
-        self, aws_credentials, monkeypatch
-    ):
-        """The processor takes a string. Passing the enum object would reach it as
-        ``RerunStep.EXTRACTION`` and not match any step name."""
-        calls = _patch_rerun_processor(
-            monkeypatch, return_value={"documents_queued": 1}
-        )
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        result = client.document.reprocess("invoice.pdf", step=RerunStep.EXTRACTION)
-
-        assert calls["rerun"]["step"] == "extraction"
-        assert isinstance(calls["rerun"]["step"], str)
-        assert result.step is RerunStep.EXTRACTION
-
-    def test_zero_queued_is_reported_as_not_queued_rather_than_as_an_error(
-        self, aws_credentials, monkeypatch
-    ):
-        _patch_rerun_processor(monkeypatch, return_value={"documents_queued": 0})
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        result = client.document.reprocess("invoice.pdf", step="extraction")
-
-        assert result.queued is False
-
-    def test_a_missing_queue_count_defaults_to_not_queued(
-        self, aws_credentials, monkeypatch
-    ):
-        _patch_rerun_processor(monkeypatch, return_value={})
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        assert client.document.reprocess("invoice.pdf", step="extraction").queued is (
-            False
-        )
-
-    def test_an_unknown_step_name_is_a_processing_error(
-        self, aws_credentials, monkeypatch
-    ):
-        """``RerunStep("ocr")`` raises inside the try, so an invalid step arrives
-        as the SDK's own error type with the offending value in the message."""
-        _patch_rerun_processor(monkeypatch, return_value={"documents_queued": 1})
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        with pytest.raises(IDPProcessingError, match="ocr"):
-            client.document.reprocess("invoice.pdf", step="ocr")
-
-    def test_a_processor_failure_is_wrapped(self, aws_credentials, monkeypatch):
-        _patch_rerun_processor(monkeypatch, raises=RuntimeError("state machine gone"))
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        with pytest.raises(IDPProcessingError, match="state machine gone"):
-            client.document.reprocess("invoice.pdf", step="extraction")
-
-    def test_rerun_warns_and_forwards_to_reprocess(self, aws_credentials, monkeypatch):
-        """``rerun`` is the deprecated spelling. The warning matters as much as
-        the forwarding: without it callers never learn to move."""
-        calls = _patch_rerun_processor(
-            monkeypatch, return_value={"documents_queued": 1}
-        )
-
-        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = client.document.rerun("invoice.pdf", step="extraction")
-
-        assert [w.category for w in caught] == [DeprecationWarning]
-        assert "reprocess()" in str(caught[0].message)
-        assert result.queued is True
-        assert calls["rerun"]["document_ids"] == ["invoice.pdf"]
 
 
 # ---------------------------------------------------------------------------

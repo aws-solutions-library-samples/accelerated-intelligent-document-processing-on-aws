@@ -152,6 +152,60 @@ def test_clean_claim_written_to_table(stack):
     assert row["executionArn"].endswith("run-1")
 
 
+def test_the_row_says_whether_the_document_was_reviewed_and_what_run_wrote_it(stack):
+    _put_summary({"Pass": 7})  # nosec B105 - rule counter fixture
+    event = {**_event(_document()), "runKind": "new_upload", "reviewed": False}
+
+    stack.lambda_handler(event, None)
+
+    row = _get_row()
+    assert row["reviewed"] is False
+    assert row["runKind"] == "new_upload"
+
+
+def test_the_run_after_a_review_replaces_the_row_written_before_it(stack):
+    """A held document reaches the hook twice. The run after the completed
+    review validates the corrected values, and its row replaces the first."""
+    _put_summary({"Pass": 4, "Fail": 3})  # nosec B105 - rule counter fixture
+    stack.lambda_handler(
+        {**_event(_document()), "runKind": "new_upload", "reviewed": False}, None
+    )
+    before = _get_row()
+    assert (before["status"], before["reviewed"]) == ("REVIEW_REQUIRED", False)
+
+    _put_summary({"Pass": 7})  # nosec B105 - rule counter fixture
+    after_review = {
+        **_event(_document()),
+        "executionArn": "arn:aws:states:us-east-1:111:execution:wf:run-2",
+        "runKind": "review_completed",
+        "reviewed": True,
+    }
+    stack.lambda_handler(after_review, None)
+
+    row = _get_row()
+    assert (row["status"], row["reviewed"], row["runKind"]) == (
+        "CLEAN_CLAIM",
+        True,
+        "review_completed",
+    )
+    assert row["failCount"] == 0
+    assert row["executionArn"].endswith("run-2")
+
+
+@pytest.mark.parametrize(
+    "more", [{}, {"runKind": None, "reviewed": None}, {"runKind": ""}]
+)
+def test_an_event_without_the_run_fields_is_not_reviewed_and_unplanned(stack, more):
+    """An older host's dispatcher sends neither field."""
+    _put_summary({"Pass": 7})  # nosec B105 - rule counter fixture
+
+    stack.lambda_handler({**_event(_document()), **more}, None)
+
+    row = _get_row()
+    assert row["reviewed"] is False
+    assert row["runKind"] == "unplanned"
+
+
 def test_failed_rules_mark_review_required(stack):
     _put_summary({"Pass": 4, "Fail": 2, "Information Not Found": 1})  # nosec B105 - rule counter fixture
     result = stack.lambda_handler(_event(_document()), None)

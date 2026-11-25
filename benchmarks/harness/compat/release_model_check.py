@@ -273,6 +273,59 @@ def _flat_keys() -> frozenset:
     return frozenset(FLAT_KEYS | {"classificationMethod"})
 
 
+#: Sub-blocks read only when the sibling ``method`` selects them, keyed by the
+#: block's path under ``classification`` and the method values that read it.
+_METHOD_SELECTED_BLOCKS: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
+    (
+        ("split_then_classify", "section_classification", "decision_model"),
+        ("decision_model",),
+    ),
+    (
+        ("split_then_classify", "section_classification", "embeddings"),
+        ("embeddings",),
+    ),
+    (
+        ("split_then_classify", "section_classification", "low_confidence"),
+        ("decision_model", "embeddings"),
+    ),
+)
+
+
+def _unselected_method_block(classification: Dict[str, Any], path: str) -> bool:
+    """Whether ``path`` lies in a method-selected block the cell does not select."""
+    parts = tuple(path.split(".")[1:])
+    for block, methods in _METHOD_SELECTED_BLOCKS:
+        if parts[: len(block)] != block:
+            continue
+        selected = _get(classification, block[:-1] + ("method",))
+        return (selected or "llm") not in methods
+    return False
+
+
+#: Keys added after a release whose value here is what every release WITHOUT the
+#: key already does, keyed by the key's path under ``classification`` and that
+#: value. The shipped defaults spell such a key out, so every generated cell
+#: carries it; dropping it on an older release runs that release's only behaviour,
+#: which is the same one, so the cell measures the same thing on both sides. A
+#: cell that sets any OTHER value asks for behaviour the release does not have and
+#: still fails.
+#:
+#: * ``document_shape.pageOrder: scan`` (#623): a release that predates the key
+#:   classifies pages in scan order, which is what ``scan`` names.
+_INERT_AT_PRIOR_BEHAVIOUR: Tuple[Tuple[Tuple[str, ...], Any], ...] = (
+    (("document_shape", "pageOrder"), "scan"),
+)
+
+
+def _inert_at_prior_behaviour(classification: Dict[str, Any], path: str) -> bool:
+    """Whether ``path`` is a newer key set to what a release without it does."""
+    parts = tuple(path.split(".")[1:])
+    for key, prior in _INERT_AT_PRIOR_BEHAVIOUR:
+        if parts == key:
+            return _get(classification, key) == prior
+    return False
+
+
 def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     """Errors for ``cfg`` against the release whose ``idp_common`` is at ``lib_root``.
 
@@ -308,6 +361,15 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
         root = path.split(".")[1]
         if has_flat and root in V09_BLOCKS:
             continue  # carried by the flat keys; compared value by value below
+        if _unselected_method_block(classification, path):
+            # A block only its own `method` value reads, in a cell that does not
+            # select that method: inert on both releases, so dropping it changes
+            # nothing the cell measures. A cell that DOES select it still fails.
+            continue
+        if _inert_at_prior_behaviour(classification, path):
+            # A newer key at the value an older release runs anyway: dropping it
+            # changes nothing the cell measures. Any other value still fails.
+            continue
         errors.append(
             f"{path} is not read by this release: its IDPConfig drops the key and "
             f"runs the code default instead"

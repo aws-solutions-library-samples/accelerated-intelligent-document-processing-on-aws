@@ -16,7 +16,7 @@ import JobsPage from '../components/review-bulk/JobsPage';
 import JobDetailPage from '../components/review-bulk/JobDetailPage';
 import { JobToolsPanel, JobsToolsPanel, MyQueuesToolsPanel, TasksToolsPanel } from '../components/home/home-tools-panels';
 import RequireRole from './RequireRole';
-import { HOME_CRUMB, JOBS_CRUMB, MY_QUEUES_CRUMB, TASKS_CRUMB } from '../components/review-queues/breadcrumbs';
+import { homeCrumb, jobsCrumb, myQueuesCrumb, tasksCrumb } from '../components/review-queues/breadcrumbs';
 import { MY_TASKS_PATH } from './constants';
 
 const messages = defineMessages<{ jobCrumb: NoMessageValues }>({
@@ -29,6 +29,8 @@ const messages = defineMessages<{ jobCrumb: NoMessageValues }>({
 
 /** The Cognito groups that see Home › Jobs (group names, not display text). */
 const JOBS_ROLES = ['Admin', 'Reviewer'] as const;
+/** The Cognito groups that see Home › Tasks and Home › Queues (group names, not display text). */
+const WORK_ROLES = ['Annotator', 'Reviewer'] as const;
 
 const JobsRoutes = (): React.JSX.Element => {
   const intl = useIntl();
@@ -38,7 +40,7 @@ const JobsRoutes = (): React.JSX.Element => {
         <Route
           index
           element={
-            <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB]} tools={<JobsToolsPanel />}>
+            <ReviewQueuesLayout trail={[homeCrumb(intl), jobsCrumb(intl)]} tools={<JobsToolsPanel />}>
               <JobsPage />
             </ReviewQueuesLayout>
           }
@@ -47,7 +49,7 @@ const JobsRoutes = (): React.JSX.Element => {
           path=":jobId"
           element={
             <ReviewQueuesLayout
-              trail={[HOME_CRUMB, JOBS_CRUMB, { text: intl.formatMessage(messages.jobCrumb), href: '#' }]}
+              trail={[homeCrumb(intl), jobsCrumb(intl), { text: intl.formatMessage(messages.jobCrumb), href: '#' }]}
               tools={<JobToolsPanel />}
             >
               <JobDetailPage />
@@ -59,39 +61,42 @@ const JobsRoutes = (): React.JSX.Element => {
   );
 };
 
-const MyWorkRoutes = (): React.JSX.Element => (
-  <div>
-    <GenAIIDPTopNavigation />
-    <Routes>
-      <Route path="jobs/*" element={<JobsRoutes />} />
-      <Route
-        path="*"
-        element={
-          <RequireRole roles={['Annotator', 'Reviewer']}>
-            <Routes>
-              <Route
-                path="tasks"
-                element={
-                  <ReviewQueuesLayout trail={[HOME_CRUMB, TASKS_CRUMB]} tools={<TasksToolsPanel />}>
-                    <MyTasksPage />
-                  </ReviewQueuesLayout>
-                }
-              />
-              <Route
-                path="queues"
-                element={
-                  <ReviewQueuesLayout trail={[HOME_CRUMB, MY_QUEUES_CRUMB]} tools={<MyQueuesToolsPanel />}>
-                    <MyQueuesPage />
-                  </ReviewQueuesLayout>
-                }
-              />
-              <Route path="*" element={<Navigate to={MY_TASKS_PATH} replace />} />
-            </Routes>
-          </RequireRole>
-        }
-      />
-    </Routes>
-  </div>
-);
+const MyWorkRoutes = (): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <div>
+      <GenAIIDPTopNavigation />
+      <Routes>
+        <Route path="jobs/*" element={<JobsRoutes />} />
+        <Route
+          path="*"
+          element={
+            <RequireRole roles={WORK_ROLES}>
+              <Routes>
+                <Route
+                  path="tasks"
+                  element={
+                    <ReviewQueuesLayout trail={[homeCrumb(intl), tasksCrumb(intl)]} tools={<TasksToolsPanel />}>
+                      <MyTasksPage />
+                    </ReviewQueuesLayout>
+                  }
+                />
+                <Route
+                  path="queues"
+                  element={
+                    <ReviewQueuesLayout trail={[homeCrumb(intl), myQueuesCrumb(intl)]} tools={<MyQueuesToolsPanel />}>
+                      <MyQueuesPage />
+                    </ReviewQueuesLayout>
+                  }
+                />
+                <Route path="*" element={<Navigate to={MY_TASKS_PATH} replace />} />
+              </Routes>
+            </RequireRole>
+          }
+        />
+      </Routes>
+    </div>
+  );
+};
 
 export default MyWorkRoutes;

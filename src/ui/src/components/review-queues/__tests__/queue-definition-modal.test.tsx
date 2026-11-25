@@ -13,6 +13,7 @@
 
 import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import type { FormFieldWrapper } from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +47,12 @@ const queue = (over: Partial<ReviewQueueDefinition> = {}): ReviewQueueDefinition
   ...over,
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const open = (props: Partial<React.ComponentProps<typeof QueueDefinitionModal>> = {}) => {
   const onSaved = vi.fn();
   render(
@@ -59,6 +66,7 @@ const open = (props: Partial<React.ComponentProps<typeof QueueDefinitionModal>> 
       onSaved={onSaved}
       {...props}
     />,
+    { wrapper: English },
   );
   return onSaved;
 };
@@ -78,6 +86,7 @@ const field = (label: string): FormFieldWrapper => {
 };
 
 const setInput = (label: string, value: string) => field(label).findControl()!.findInput()!.setInputValue(value);
+const placeholder = (label: string) => field(label).findControl()!.findInput()!.findNativeInput().getElement().placeholder;
 /** The footer's last button: Create or Save. */
 const primary = () => modal().findFooter()!.findAllButtons().at(-1)!;
 const clickSave = () => fireEvent.click(primary().getElement());
@@ -198,7 +207,7 @@ describe("a save over someone else's change (#1727)", () => {
       onDismiss: () => undefined,
       onSaved: vi.fn(),
     };
-    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />);
+    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />, { wrapper: English });
     setInput('Priority', '3');
     clickSave();
     await waitFor(() => expect(changedAlert()).toBeTruthy());
@@ -266,6 +275,37 @@ describe('the queue dialog', () => {
     expect(field('Queue id').findDescription()!.getElement().textContent).not.toMatch(/hitl\.review_queues/);
   });
 
+  it('shows an example name and an example id', () => {
+    open();
+    expect(placeholder('Name')).toBe('e.g. High-value claims');
+    expect(placeholder('Queue id')).toBe('e.g. claims-high-value');
+  });
+
+  it('words the example name in the UI language and keeps the example id as it is', () => {
+    render(
+      <IntlProvider
+        locale="fr-CA"
+        defaultLocale="en"
+        messages={{
+          'reviewQueues.queueSettings.example': 'p. ex. {example}',
+          'reviewQueues.queueSettings.nameExample': 'Réclamations de grande valeur',
+        }}
+      >
+        <QueueDefinitionModal
+          visible
+          queue={null}
+          existingIds={[]}
+          annotators={[]}
+          annotatorsLoading={false}
+          onDismiss={() => undefined}
+          onSaved={vi.fn()}
+        />
+      </IntlProvider>,
+    );
+    expect(placeholder('Name')).toBe('p. ex. Réclamations de grande valeur');
+    expect(placeholder('Queue id')).toBe('p. ex. claims-high-value');
+  });
+
   it('has no confidence threshold field', () => {
     open({ queue: queue() });
     const labels = createWrapper(document.body)
@@ -274,10 +314,31 @@ describe('the queue dialog', () => {
     expect(labels).not.toContain('Confidence threshold');
   });
 
-  it('describes the Default queue as where documents with confidence alerts arrive', () => {
+  it('describes the Default queue as what the built-in rules and a missing or disabled queue send documents to', () => {
     open({ queue: queue({ id: 'default', name: 'Default', isDefaultQueue: true }) });
-    expect(modal().findContent().getElement().textContent).toContain(
-      'Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.',
+    const text = modal().findContent().getElement().textContent ?? '';
+    expect(text).toContain(
+      'The built-in routing rules send documents here, and so does a routing rule whose own queue is missing or disabled. Documents are held for review only while this queue is enabled.',
+    );
+    expect(text).not.toContain('HITL');
+    expect(field('Enabled').findConstraint()!.getElement().textContent).toBe(
+      'While the Default queue is off, no document is held for review.',
+    );
+  });
+
+  it('says of another queue that routing rules name it by its id, and where its documents go while it is off', () => {
+    open({ queue: queue() });
+    expect(alerts()).toHaveLength(0);
+    expect(field('Queue id').findConstraint()!.getElement().textContent).toBe('Routing rules name the queue by this id.');
+    expect(field('Enabled').findConstraint()!.getElement().textContent).toBe(
+      'Documents a routing rule sends to a disabled queue go to the Default queue instead.',
+    );
+  });
+
+  it('does not say that priority waits for a second queue', () => {
+    open({ queue: queue() });
+    expect(field('Priority').findConstraint()!.getElement().textContent).toBe(
+      'A whole number. For information: orders the queues and Next item.',
     );
   });
 

@@ -6,7 +6,7 @@
  * h1, "<document> (<status>)" over the object key, whose bar reads, left to right, the
  * Details | Source switch, Reports, More Actions, Refresh, Troubleshoot, Start Review
  * (where it applies) and Edit, the primary action; Reports lists Summary, Evaluation
- * Report, Rule Validation Summary and Processing Flow, each disabled with its reason when
+ * Report, Policy Rule Validation Summary and Processing Flow, each disabled with its reason when
  * it doesn't apply, and each opens its dialog; More Actions holds the changes, then the
  * downloads as one group, then Reprocess, Abort and Delete as another, Delete last; Source shows the source
  * document in place of the page's widgets, which stay mounted; Refresh re-reads the
@@ -63,9 +63,9 @@ vi.mock('../../document-panel/DocumentVersionsPanel', () => ({ default: () => nu
 vi.mock('../../document-panel/DocumentDownloadModals', () => ({ DownloadOptionsModal: () => null, DownloadProgressModal: () => null }));
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
-  MarkdownReport: ({ title, emptyMessage, reportUri }: { title: string; emptyMessage: string; reportUri: string }) => (
+  MarkdownReport: ({ report, emptyMessage, reportUri }: { report: string; emptyMessage: string; reportUri: string }) => (
     <div data-testid="markdown-report">
-      {title}|{emptyMessage}|{reportUri}
+      {report}|{emptyMessage}|{reportUri}
     </div>
   ),
 }));
@@ -197,15 +197,23 @@ describe('the document page header', () => {
 });
 
 describe('Reports', () => {
-  it('lists Summary, Evaluation Report, Rule Validation Summary, Estimated Cost and Processing Flow', () => {
+  it('lists Summary, Evaluation Report, Policy Rule Validation Summary, Estimated Cost and Processing Flow', () => {
     renderPanel(doc({ metering: { 'OCR/textract/pages': { pages: 1 } } }));
     expect(detailBar.menuItems('Reports')).toEqual([
       { text: 'Summary', disabled: false, disabledReason: null },
       { text: 'Evaluation Report', disabled: false, disabledReason: null },
-      { text: 'Rule Validation Summary', disabled: false, disabledReason: null },
+      { text: 'Policy Rule Validation Summary', disabled: false, disabledReason: null },
       { text: 'Estimated Cost', disabled: false, disabledReason: null },
       { text: 'Processing Flow', disabled: false, disabledReason: null },
     ]);
+  });
+
+  it('names the rule report as the Policy Schema tab and the processing step do', () => {
+    renderPanel();
+    const reports = detailBar.findMenu('Reports')!;
+    act(() => reports.openDropdown());
+    // The helpers find an item by its id, so the words on screen are read here.
+    expect(reports.findItemById('rule-validation')!.getElement().textContent).toBe('Policy Rule Validation Summary');
   });
 
   it('keeps Estimated Cost for a document with no metering yet, disabled with its reason', () => {
@@ -231,15 +239,15 @@ describe('Reports', () => {
       disabled: true,
       disabledReason: NO_EVALUATION_REPORT_REASON,
     });
-    expect(items.find((i) => i.text === 'Rule Validation Summary')).toMatchObject({ disabledReason: NO_RULE_VALIDATION_REASON });
+    expect(items.find((i) => i.text === 'Policy Rule Validation Summary')).toMatchObject({ disabledReason: NO_RULE_VALIDATION_REASON });
   });
 
   it.each([
-    ['Summary', 'Document Summary', 'Document Summary|Summary report not available for this document|s3://o/in/a.pdf/summary.md'],
+    ['Summary', 'Document Summary', 'summary|Summary report not available for this document|s3://o/in/a.pdf/summary.md'],
     [
-      'Rule Validation Summary',
-      'Rule Validation Summary',
-      'Rule Validation Summary|Rule validation summary not available for this document|s3://o/in/a.pdf/rules.md',
+      'Policy Rule Validation Summary',
+      'Policy Rule Validation Summary',
+      'ruleValidation|Policy rule validation summary not available for this document|s3://o/in/a.pdf/rules.md',
     ],
   ])('%s opens its dialog', async (item, title, content) => {
     renderPanel();

@@ -23,6 +23,7 @@ from idp_common.review_queues.queue_defs import DEFAULT_QUEUE_ID, QueueDefinitio
 from idp_common.review_queues.send_to_review import SENT_EVENT, SendToReviewService
 from idp_common.review_queues.service import ReviewQueueService
 from idp_common.review_queues.store import ReviewStore
+from idp_common.run_plan.restart import layout_of
 
 from ._table import REGION
 
@@ -43,7 +44,10 @@ def _document(key):
         input_key=key,
         config_version="claims",
         config_revision=3,
-        sections=[SimpleNamespace(section_id="1"), SimpleNamespace(section_id="2")],
+        sections=[
+            SimpleNamespace(section_id="1", page_ids=["1", "2"]),
+            SimpleNamespace(section_id="2", page_ids=["3"]),
+        ],
         metering=dict(USAGE),
         metering_baseline={},
     )
@@ -136,6 +140,28 @@ class TestSend:
         _send(env, "v.pdf")
         view = item_view(env.store.get_item("v.pdf")).dump()
         assert view["sentToReview"]["reason"] == "Spot check"
+
+    def test_an_item_sent_by_hand_records_no_processing_mode(self, env):
+        """No run placed it, so no mode is known; the field is there and null."""
+        from idp_common.review_queues.service import item_view
+
+        _row(env, "m.pdf")
+        _send(env, "m.pdf")
+        item = env.store.get_item("m.pdf")
+        assert item.processing_mode is None
+        view = item_view(item).dump()
+        assert "processingMode" in view and view["processingMode"] is None
+
+    def test_an_item_sent_by_hand_records_the_documents_sections(self, env):
+        """The layout a regrouped section is told apart against when the review
+        is completed, as a placement by a run records it."""
+        _row(env, "l.pdf")
+        _send(env, "l.pdf")
+        item = env.store.get_item("l.pdf")
+        assert item.placed_layout == layout_of(_document("l.pdf"))
+        assert sorted(item.placed_layout) == ["1", "2"]
+        assert item.placed_layout["1"] != item.placed_layout["2"]
+        assert (item.restart_step, item.restart_sections) == (None, [])
 
     def test_the_default_queue_off_refuses_every_key(self, env):
         env.store.queue_defs.put(

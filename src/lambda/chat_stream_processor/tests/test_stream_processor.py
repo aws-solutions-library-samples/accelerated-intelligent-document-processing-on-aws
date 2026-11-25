@@ -366,3 +366,18 @@ def test_nothing_reads_an_identity_from_the_request_body():
             assert node.target.id != "callerSub", (
                 f"app.py line {node.lineno} declares a callerSub request field"
             )
+
+
+@pytest.mark.unit
+def test_agent_route_hands_the_gate_the_requested_method():
+    """The processor's gate refuses a Quick Start turn to a non-Admin, which it can
+    only do if the route tells it which method was asked for."""
+    fn = _route_functions(_app_ast())["POST /chat/agent"]
+    (call,) = _calls_named(fn, "_enforce_groups_or_403")
+    method = call.args[1]
+    assert any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "method"
+        and getattr(node.value, "id", None) == "body"
+        for node in ast.walk(method)
+    ), "the gate must be given body.method"

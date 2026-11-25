@@ -77,7 +77,7 @@ Mode B fits central-network-account topologies where one team manages all VPC en
 
 ### 1. Build tools
 
-See [Deployment Guide → Dependencies](./deployment.md#dependencies) for AWS CLI, SAM CLI, Python 3.12+, Node.js 22+. Docker is **not** required locally — images are built in AWS by CodeBuild.
+See [Deployment Guide → Dependencies](./deployment.md#dependencies) for AWS CLI, SAM CLI, Python 3.12+, Node.js 26+. Docker is **not** required locally — images are built in AWS by CodeBuild.
 
 > **Note**: When `DeployInVPC=true`, all CodeBuild projects (WebUI build, Docker image builds, SDLC pipeline) run inside the VPC. They require either a **NAT Gateway** for public registry access or an **internal artifact repository** (JFrog Artifactory, AWS CodeArtifact, etc.) for air-gapped builds. See [Dependency Mirroring](./dependency-mirroring.md) for generating the full dependency manifest.
 
@@ -87,7 +87,7 @@ See [Deployment Guide → Dependencies](./deployment.md#dependencies) for AWS CL
 - **DNS resolution enabled** on the VPC — `enableDnsSupport=true` and `enableDnsHostnames=true`.
 - **An `execute-api` Interface VPC Endpoint** with `PrivateDnsEnabled: true`, passed as `ApiGatewayVpcEndpointId`. This is what makes the regional `execute-api.<region>.amazonaws.com` hostname resolve to private IPs inside the VPC — it fronts **both the Web UI and the data API**.
 - **(Mode B only) DNS resolution for the BYO S3 Interface VPCE** — `PrivateDnsEnabled` is **off** for S3 VPCEs by AWS design; bucket-vhost addressing routes via the per-endpoint `bucket.<vpce-id>-<random>.s3.<region>.vpce.amazonaws.com` name. **VPC DNS resolution is what makes that name resolvable** for in-VPC clients (Lambdas). Browsers only need to resolve this name when `S3PresignedUrlViaVpcEndpoint=true`; with the default (`false`), browsers use `s3.amazonaws.com` via NAT.
-- **A Lambda security group** allowing outbound HTTPS, passed as `LambdaSecurityGroupId` (or let the stack create one).
+- **A Lambda security group** allowing outbound HTTPS, passed as `LambdaSecurityGroupId`. It is required: the stack refuses `DeployInVPC=true` without it.
 - **No `0.0.0.0/0 → IGW` or `→ NAT` route** on the Lambda subnet — proves no public-internet egress (verify after deployment).
 
 > **Don't have a VPC?** A ready-made, self-contained test VPC (NAT egress + one execute-api
@@ -144,6 +144,7 @@ https://<region>.console.aws.amazon.com/cloudformation/home?region=<region>#/sta
 | `PrivateSubnetIds` | subnet-a,subnet-b *(comma-separated, 2+ AZs)* |
 | `LambdaSubnetIds` | subnet-a,subnet-b *(can match `PrivateSubnetIds`)* |
 | `ApiGatewayVpcEndpointId` | vpce-xxx *(execute-api interface endpoint, `PrivateDnsEnabled: true`)* |
+| `LambdaSecurityGroupId` | sg-xxx *(allows outbound HTTPS; required when `DeployInVPC=true`)* |
 | `EnableMCP` | `false` |
 | `DocumentKnowledgeBase` | `DISABLED` |
 
@@ -151,8 +152,7 @@ https://<region>.console.aws.amazon.com/cloudformation/home?region=<region>#/sta
 
 | Parameter | When to set |
 |-----------|-------------|
-| `LambdaSecurityGroupId` | BYO Lambda SG. Empty = stack creates one. |
-| `WAFAllowedIPv4Ranges` | Restrict the API stage (UI + API) to specific CIDRs via the built-in WAFv2 IP allow-list. Empty = no IP restriction. |
+| `WAFAllowedIPv4Ranges` | Restrict the API stage (UI + API) to specific CIDRs via the built-in WAFv2 IP allow-list. Needs at least one CIDR; the default, `0.0.0.0/0`, turns the WAF off and allows every IP. |
 | `S3PresignedUrlViaVpcEndpoint` | Set to `true` to route browser S3 uploads through a BYO S3 VPCE instead of global S3. Default `false` (uses NAT). |
 | `ArtifactsBucketKmsKeyArn` | Required if artifact bucket is KMS-encrypted. |
 
@@ -180,8 +180,8 @@ Once that post-stack step completes, the UI is reachable from any VPN/DC client 
 ## Step 1: Build and publish artifacts
 
 ```bash
-export PATH="/opt/homebrew/opt/node@22/bin:$PATH"  # macOS with brew node@22
-node --version  # must be v22.x or later
+export PATH="/opt/homebrew/opt/node@26/bin:$PATH"  # macOS with brew node@26
+node --version  # must be v26.x or later
 
 idp-cli publish \
   --source-dir . \
@@ -270,8 +270,8 @@ S3VpcEndpointDnsNameOverride=$DNS_NAME"
 | `PrivateSubnetIds` | subnet ids | Private subnets (2+ AZs) |
 | `LambdaSubnetIds` | subnet ids | Subnets where Lambdas run (can match `PrivateSubnetIds`) |
 | `ApiGatewayVpcEndpointId` | `vpce-...` | execute-api Interface VPCE (`PrivateDnsEnabled: true`); fronts UI + API |
-| `LambdaSecurityGroupId` | (optional) sg-id | BYO Lambda SG; stack creates one if empty |
-| `WAFAllowedIPv4Ranges` | (optional) CIDRs | Stage-level WAFv2 IP allow-list (UI + API). Empty = no IP restriction |
+| `LambdaSecurityGroupId` | sg-id | Lambda SG allowing outbound HTTPS; required when `DeployInVPC=true` |
+| `WAFAllowedIPv4Ranges` | (optional) CIDRs | Stage-level WAFv2 IP allow-list (UI + API). Default `0.0.0.0/0` = WAF off, no IP restriction |
 | `S3PresignedUrlViaVpcEndpoint` | (optional) `true`/`false` | Route browser S3 uploads via BYO VPCE (`true`) or global S3 via NAT (`false`, default) |
 | `S3VpcEndpointIdOverride` | (Mode B) `vpce-...` | BYO S3 VPCE id |
 | `S3VpcEndpointDnsNameOverride` | (Mode B) full DNS w/ suffix | BYO S3 VPCE DNS name (required if id override is set) |
@@ -345,7 +345,7 @@ app bucket is additionally pinned to the VPCE via an `aws:sourceVpce` condition 
 
 ## Security group matrix
 
-The Lambdas attach to `LambdaSecurityGroupId` (BYO or stack-created). The service endpoints in
+The Lambdas attach to `LambdaSecurityGroupId`, which you supply; in PRIVATE mode some of them attach instead to `<StackName>-lambda-sg`, which the stack creates with outbound 443 only. The service endpoints in
 `scripts/vpc-endpoints.yaml` use a shared endpoint SG with ingress 443 from the Lambda SG. The
 **execute-api** endpoint you supply must allow ingress 443 from both the Lambdas and the
 browser's source network:
@@ -963,7 +963,7 @@ VPC that hosts the private API; the Route 53 private-hosted-zone A-alias avoids 
 | Issue | Resolution |
 |-------|-----------|
 | `ModuleNotFoundError: No module named 'boto3'` | Use venv Python. `make setup && source .venv/bin/activate` then retry. |
-| `npm error engine Unsupported engine` | Node.js 22.12+ required. `brew install node@22 && export PATH="/opt/homebrew/opt/node@22/bin:$PATH"` |
+| `npm error engine Unsupported engine` | Node.js 26+ required. `brew install node@26 && export PATH="/opt/homebrew/opt/node@26/bin:$PATH"` |
 | Stack fails with `conflicting DNS domain` | A VPC endpoint already exists for that service. Re-run `deploy-vpc-endpoints.py` — it auto-detects and skips existing ones. |
 | **Browser upload fails: `ERR_NAME_NOT_RESOLVED` on `bucket.vpce-...vpce.amazonaws.com`** | (a) Browser is not on the VPN — VPCE host is VPC-DNS-only. (b) Mode B: `S3VpcEndpointDnsNameOverride` was set without the AWS-assigned random suffix. Re-deploy with the full DNS from `aws ec2 describe-vpc-endpoints ... DnsEntries[0].DnsName` minus the `*.` prefix. |
 | **Browser upload fails: `Failed to fetch` / connect timeout** | (a) S3 VPCE endpoint SG missing ingress for VPN NAT-subnet CIDR (see SG matrix). (b) VPN association subnet differs from S3 VPCE subnets — return path is fine if SG has the NAT CIDR. |

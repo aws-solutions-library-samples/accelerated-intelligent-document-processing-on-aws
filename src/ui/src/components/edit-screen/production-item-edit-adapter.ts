@@ -8,15 +8,15 @@
 // Only the assignee's verbs are called here. Assigning, unassigning, moving and
 // removing are Admin operations on the queue pages: an assignment does not expire.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { defineMessages, type NoMessageValues } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { generateClient } from '../../api/client-shim';
 import { getDocument as getDocumentQuery } from '../../graphql/generated';
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
-import useAppContext from '../../contexts/app';
 import usePolling from '../../hooks/use-polling';
-import { describeApiError } from '../../hooks/utils/graphql-error';
 import { completeItem, fetchReviewItem, reviewErrorCode, saveDraft } from '../review-queues/review-api';
+import { EditPageError, failedActionMessages } from './edit-messages';
 import { fetchSectionResult } from './section-result';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { RawDocument } from './use-edit-mode';
@@ -26,6 +26,15 @@ const logger = new ConsoleLogger('ProductionItemEditAdapter');
 
 export const REVIEW_ITEM_POLL_INTERVAL_MS = 20_000;
 export const AUTOSAVE_MS = 2000;
+
+const messages = defineMessages<{ noResultToReview: NoMessageValues }>({
+  noResultToReview: {
+    id: 'editScreen.productionItem.noResultToReview',
+    defaultMessage: 'This section has no result to review',
+    description:
+      'Why the section editor of a review queue item\'s edit page could not open a section, shown after "Failed to load ground truth:": the section has neither a draft nor an extraction result.',
+  },
+});
 
 export interface ProductionItemEditModel {
   detail: ReviewItemDetail | null;
@@ -44,10 +53,16 @@ export interface ProductionItemEditModel {
   refresh: () => Promise<void>;
   /** The document's summary report, once summarization has run (after the review). */
   summaryReportUri: string | null;
+  /** The document's policy rule validation report, when policy rule validation has run (before the review). */
+  ruleValidationResultUri: string | null;
   /** The document's evaluation status (BASELINE_COPYING while a baseline copy runs). */
   evaluationStatus: string | null;
   /** Bumped when the open section must be re-read (a newer draft arrived). */
   reloadToken: number;
+  /** What a save has to tell the user, for the page to word: `'stale-draft'`, a newer draft was found and reloaded. */
+  notice: 'stale-draft' | null;
+  /** The page has shown `notice`. */
+  clearNotice: () => void;
   loadSection: (sectionId: string) => Promise<LoadedSection>;
   saveSection: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
   complete: (checklist?: boolean[]) => Promise<void>;
@@ -85,15 +100,17 @@ export const useProductionItemEdit = (
   objectKey: string,
   seed?: { detail: ReviewItemDetail; document: RawDocument },
 ): ProductionItemEditModel => {
-  const { setErrorMessage } = useAppContext();
   const [detail, setDetail] = useState<ReviewItemDetail | null>(seed?.detail ?? null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [pages, setPages] = useState<ReviewPage[]>(() => pagesOf(seed?.document));
   const [pagesLoading, setPagesLoading] = useState(!seed);
   const [documentSections, setDocumentSections] = useState<ReviewSectionRef[]>(() => sectionsOf(seed?.document));
   const [summaryReportUri, setSummaryReportUri] = useState<string | null>(seed?.document.SummaryReportUri || null);
+  const [ruleValidationResultUri, setRuleValidationResultUri] = useState<string | null>(seed?.document.RuleValidationResultUri || null);
   const [evaluationStatus, setEvaluationStatus] = useState<string | null>(seed?.document.EvaluationStatus || null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [notice, setNotice] = useState<'stale-draft' | null>(null);
+  const clearNotice = useCallback(() => setNotice(null), []);
   // The latest draft revision per section, so a save names the revision it edits.
   const revisionsRef = useRef<Record<string, number>>(revisionsOf(seed?.detail));
   // The first item and document reads are the seed's; the key they belong to is the first one.
@@ -140,6 +157,7 @@ export const useProductionItemEdit = (
       if (read !== documentRead.current) return;
       const doc = result.data?.getDocument;
       setSummaryReportUri(doc?.SummaryReportUri || null);
+      setRuleValidationResultUri(doc?.RuleValidationResultUri || null);
       setEvaluationStatus(doc?.EvaluationStatus || null);
       setPages(pagesOf(doc));
       setDocumentSections(sectionsOf(doc));
@@ -186,7 +204,7 @@ export const useProductionItemEdit = (
     async (sectionId: string): Promise<LoadedSection> => {
       const section = sections.find((s) => s.sectionId === sectionId);
       const s3Uri = section?.draftUri || section?.resultUri;
-      if (!s3Uri) throw new Error('This section has no result to review');
+      if (!s3Uri) throw new EditPageError({ descriptor: messages.noResultToReview });
       return fetchSectionResult(s3Uri);
     },
     [sections],
@@ -202,17 +220,17 @@ export const useProductionItemEdit = (
         revisionsRef.current[sectionId] = draft.revision;
       } catch (err) {
         if (reviewErrorCode(err) === 'STALE_DRAFT') {
-          setErrorMessage('Someone saved a newer draft of this section. It has been reloaded; reapply your last change.');
+          setNotice('stale-draft');
           await reload();
           setReloadToken((t) => t + 1);
           return;
         }
         // An assignment that moved to someone else shows up on the next read.
         void reload();
-        throw new Error(describeApiError(err, 'save your draft'));
+        throw new EditPageError({ action: failedActionMessages.save, cause: err });
       }
     },
-    [item, reload, setErrorMessage],
+    [item, reload],
   );
 
   const complete = useCallback(
@@ -234,8 +252,11 @@ export const useProductionItemEdit = (
     refreshDocument,
     refresh,
     summaryReportUri,
+    ruleValidationResultUri,
     evaluationStatus,
     reloadToken,
+    notice,
+    clearNotice,
     loadSection,
     saveSection,
     complete,

@@ -237,6 +237,12 @@ while True:
     if status.all_complete:
         break
     time.sleep(5)
+
+# `all_complete` means nothing is queued or running. A document held for human
+# review (HITL_IN_PROGRESS) counts as settled, so the loop ends; it is reported
+# in `awaiting_review` and moves on once a reviewer works it in the web UI.
+if status.awaiting_review:
+    print(f"{status.awaiting_review} document(s) awaiting human review")
 ```
 
 ### Reprocessing Documents

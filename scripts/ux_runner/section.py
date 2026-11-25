@@ -706,7 +706,7 @@ def compose_section(
         "",
         f"🤖 Automated UX test of `{sha8}` by `{_code(model, NAME_CHARS)}` in a "
         f"confined headless browser against `{stack_name}`, following "
-        "`.claude/skills/ux-test-ci.md`. **Advisory only** — it approves nothing "
+        "`.claude/skills/ux-test-ci/SKILL.md`. **Advisory only** — it approves nothing "
         "and gates nothing.",
     ]
     return "\n".join(lines) + "\n"

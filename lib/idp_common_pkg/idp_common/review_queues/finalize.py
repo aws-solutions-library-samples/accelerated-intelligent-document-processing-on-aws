@@ -10,18 +10,38 @@ a re-send (by the sweeper) collapses into ``ExecutionAlreadyExists`` instead of
 starting a second run. The message resets ``queued_time`` and ``metering``, so
 the finalize run counts only its own usage; the tracker merges the phase-1
 snapshot kept on the item.
+
+Both senders here queue through ``idp_common.run_plan.sender``, with a run plan
+that says where the run starts: a completed review at applying the review's
+changes, or at extraction when the review decided that sections are extracted
+again; a rejected one at the rejected end; and a removed or skipped one at
+policy rule validation.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
+from idp_common.run_plan.clearing import clear_after_review, clear_for_start
+from idp_common.run_plan.models import RunKind, RunPlan
+from idp_common.run_plan.sender import (
+    EVENT_REVIEW_FINALIZE,
+    EVENT_REVIEW_SKIP_RESUBMIT,
+    build_run_message,
+    send_run,
+)
+from idp_common.run_plan.steps import (
+    APPLY_REVIEW_CHANGES,
+    BEGINNING,
+    EXTRACTION,
+    POLICY_RULE_VALIDATION,
+    REJECTED,
+)
 from idp_common.utils.execution_names import (
     RESUBMIT_TOKEN_ATTRIBUTE,
     RESUBMIT_TOKEN_RE,
@@ -30,11 +50,12 @@ from idp_common.utils.execution_names import (
 
 from .exceptions import ResubmitError, ResubmitNotConfigured
 from .models import DraftRecord, ReviewItemRecord
+from .statuses import MACHINE_RESULT_DISPOSITIONS
 
 logger = logging.getLogger(__name__)
 
 FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
-FINALIZE_EVENT_TYPE = "ReviewFinalize"
+FINALIZE_EVENT_TYPE = EVENT_REVIEW_FINALIZE
 TOKEN_ATTRIBUTE = "ReviewFinalizeToken"  # nosec B105 - DynamoDB attribute name, not a secret
 
 
@@ -56,7 +77,10 @@ def is_finalize_token(value: Any) -> bool:
 
 
 #: Message ``EventType`` of a resubmit after a skipped review.
-RESUBMIT_EVENT_TYPE = "ReviewSkipResubmit"
+RESUBMIT_EVENT_TYPE = EVENT_REVIEW_SKIP_RESUBMIT
+
+#: The disposition of a completed review.
+_COMPLETE = "complete"
 
 
 class DocumentResubmitter:
@@ -64,8 +88,10 @@ class DocumentResubmitter:
 
     The run re-uses the document's existing results (OCR, classification,
     extraction and assessment are skipped) and re-runs the tail: summarization,
-    evaluation, rule validation and the post-processing hook. Unlike the review
-    finalize message (:class:`FinalizeSender`) it keeps the document's metering:
+    evaluation, rule validation and the post-processing hook. Its run plan is a
+    ``legacy_review`` one, which starts at the beginning and leaves the skipping
+    to each step's own check. Unlike the review finalize message
+    (:class:`FinalizeSender`) it keeps the document's metering:
     ``queue_processor`` moves the cumulative usage into the run's baseline.
     """
 
@@ -105,13 +131,6 @@ class DocumentResubmitter:
             document.metering = {}
         return document
 
-    def _body(self, document: Any, prefix: str) -> str:
-        if self._working_bucket:
-            body = document.serialize_document(self._working_bucket, prefix)
-        else:
-            body = document.to_dict()
-        return json.dumps(body, default=str)
-
     def resubmit(
         self,
         doc_key: str,
@@ -132,58 +151,139 @@ class DocumentResubmitter:
             raise ValueError("invalid resubmit idempotency token")
         try:
             document = self._prepare(doc_key, reset_metering=False)
-            attributes: dict[str, Any] = {
-                "EventType": {"DataType": "String", "StringValue": RESUBMIT_EVENT_TYPE},
-                "ObjectKey": {"DataType": "String", "StringValue": doc_key},
-            }
-            if idempotency_token:
-                attributes[RESUBMIT_TOKEN_ATTRIBUTE] = {
-                    "DataType": "String",
-                    "StringValue": idempotency_token,
-                }
-            response = self._sqs.send_message(
-                QueueUrl=self._queue_url,
-                MessageBody=self._body(document, prefix),
-                MessageAttributes=attributes,
+            message_id = send_run(
+                self._sqs,
+                self._queue_url,
+                document=document,
+                plan=RunPlan(kind=RunKind.LEGACY_REVIEW, start=BEGINNING),
+                event_type=RESUBMIT_EVENT_TYPE,
+                working_bucket=self._working_bucket,
+                prefix=prefix,
+                extra_attributes=(
+                    {RESUBMIT_TOKEN_ATTRIBUTE: idempotency_token}
+                    if idempotency_token
+                    else None
+                ),
             )
         except (LookupError, ValueError) as e:
             raise ResubmitError(str(e)) from e
         except Exception as e:  # any S3/SQS/serialisation failure is reported
             raise ResubmitError(f"{type(e).__name__}: {e}") from e
         logger.info("event=review_resubmit_sent token=%s", bool(idempotency_token))
-        return str(response.get("MessageId", ""))
+        return message_id
 
 
 class FinalizeSender(DocumentResubmitter):
     """Sends the finalize message for a FINALIZING item."""
 
-    def build_message(self, item: ReviewItemRecord) -> tuple[str, dict[str, Any]]:
+    #: The stored-document prefix of a finalize message.
+    PREFIX = "review_finalize"
+
+    def plan_for(self, item: ReviewItemRecord) -> RunPlan:
+        """The run plan of the run that follows the item's review.
+
+        | Disposition | Kind | Start |
+        |---|---|---|
+        | ``complete``, with ``restart_step`` ``extraction`` | ``review_completed`` | ``extraction``, for ``restart_sections`` |
+        | ``complete``, otherwise | ``review_completed`` | ``apply_review_changes`` |
+        | ``removed``, ``skipped`` | ``review_skipped`` | ``policy_rule_validation`` |
+        | ``rejected``, or anything else | ``review_rejected`` | ``rejected`` |
+
+        Where a completed review's run starts was decided when the review was
+        completed and is read from the item (``restart_step``,
+        ``restart_sections``); an item completed before the start was recorded
+        has none and applies the review's changes. A run that extracts again
+        does not count the document as reviewed.
+
+        A plan is a function of the item alone, so a re-send of the same item
+        carries the same plan.
+        """
+        if item.disposition == _COMPLETE and item.restart_step == EXTRACTION:
+            return RunPlan(
+                kind=RunKind.REVIEW_COMPLETED,
+                start=EXTRACTION,
+                sections=list(item.restart_sections),
+                cycle_id=item.cycle_id,
+            )
+        if item.disposition == _COMPLETE:
+            return RunPlan(
+                kind=RunKind.REVIEW_COMPLETED,
+                start=APPLY_REVIEW_CHANGES,
+                cycle_id=item.cycle_id,
+                reviewed=True,
+            )
+        if item.disposition in MACHINE_RESULT_DISPOSITIONS:
+            return RunPlan(
+                kind=RunKind.REVIEW_SKIPPED,
+                start=POLICY_RULE_VALIDATION,
+                cycle_id=item.cycle_id,
+            )
+        return RunPlan(
+            kind=RunKind.REVIEW_REJECTED, start=REJECTED, cycle_id=item.cycle_id
+        )
+
+    def _document_and_plan(self, item: ReviewItemRecord) -> tuple[Any, RunPlan]:
+        """The document the finalize run starts from, and its plan.
+
+        A run that goes on to policy rule validation, summarization and
+        evaluation produces them again, so their results are cleared on the
+        queued document. A run that starts at extraction also has the fields of
+        the sections it extracts again cleared. A rejected document runs none
+        of them and keeps what it has.
+
+        Fields only: nothing is deleted in S3. The stages write over their own
+        outputs, and the role that sends this message may delete only under the
+        document's ``review/`` folder.
+        """
         try:
             document = self._prepare(item.doc_key, reset_metering=True)
         except LookupError:
             raise LookupError(
                 f"tracking row missing for the finalize of {item.cycle_id}"
             ) from None
-        attributes = {
-            "EventType": {"DataType": "String", "StringValue": FINALIZE_EVENT_TYPE},
-            "ObjectKey": {"DataType": "String", "StringValue": item.doc_key},
-            TOKEN_ATTRIBUTE: {
-                "DataType": "String",
-                "StringValue": item.finalize_token or "",
-            },
-        }
-        return self._body(document, "review_finalize"), attributes
+        plan = self.plan_for(item)
+        if plan.start == EXTRACTION:
+            # The tracking-row attributes it returns are not removed here: the
+            # run writes the row from this document.
+            clear_for_start(
+                document, EXTRACTION, sections=plan.sections, keep_objects=True
+            )
+        elif plan.kind in (RunKind.REVIEW_COMPLETED, RunKind.REVIEW_SKIPPED):
+            clear_after_review(document)
+        return document, plan
+
+    def _extra_attributes(self, item: ReviewItemRecord) -> dict[str, str]:
+        return {TOKEN_ATTRIBUTE: item.finalize_token or ""}
+
+    def build_message(self, item: ReviewItemRecord) -> tuple[str, dict[str, Any]]:
+        """The body and the attributes ``send`` sends for the item."""
+        document, plan = self._document_and_plan(item)
+        return build_run_message(
+            document=document,
+            plan=plan,
+            event_type=FINALIZE_EVENT_TYPE,
+            working_bucket=self._working_bucket,
+            prefix=self.PREFIX,
+            extra_attributes=self._extra_attributes(item),
+        )
 
     def send(self, item: ReviewItemRecord) -> str:
         """Send the message; return its id. Raises on failure (the caller logs)."""
         if not is_finalize_token(item.finalize_token):
             raise ValueError("item carries no valid finalize token")
-        body, attributes = self.build_message(item)
-        response = self._sqs.send_message(
-            QueueUrl=self._queue_url, MessageBody=body, MessageAttributes=attributes
+        document, plan = self._document_and_plan(item)
+        message_id = send_run(
+            self._sqs,
+            self._queue_url,
+            document=document,
+            plan=plan,
+            event_type=FINALIZE_EVENT_TYPE,
+            working_bucket=self._working_bucket,
+            prefix=self.PREFIX,
+            extra_attributes=self._extra_attributes(item),
         )
         logger.info("event=review_finalize_sent attempt=%d", item.finalize_attempt)
-        return str(response.get("MessageId", ""))
+        return message_id
 
 
 def apply_corrections(

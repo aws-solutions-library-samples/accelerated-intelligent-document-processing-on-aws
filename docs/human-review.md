@@ -28,13 +28,15 @@ SPDX-License-Identifier: MIT-0
 
 Human-in-the-loop (HITL) review sends a processed document to a person before it
 finishes, when its extracted values aren't confident enough to be trusted on their
-own. The person checks and corrects the values, and the document then finishes with
-the corrected data.
+own or when a routing rule you wrote says it needs a look. The person checks and
+corrects the values, and the document then finishes with the corrected data.
 
 Review is **queue based**. A document that needs review is held in a **review queue**,
 and the people who review work it from **Home › Queues** and **Home › Tasks** in the
 Web UI: they claim an item, correct it in the edit page, and finish it with **Process
-Changes**. Admins oversee the queues in **Review Studio › Review Management**. Every
+Changes** (or reject it, or send it back to be processed again). Which queue a
+document goes to is decided by the routing rules of its configuration profile; see
+[Review Routing](review-routing.md). Admins oversee the queues in **Review Studio › Review Management**. Every
 page and setting of the queues is described in [Review queues](review-queues.md); this
 page is the overview of the review process.
 
@@ -49,30 +51,46 @@ https://github.com/user-attachments/assets/0bf14b62-99dc-4538-a015-d8b89fa2f1f0
 - Reviewers and Annotators work their queues from **Home › Queues** and **Home › Tasks**,
   and get an Inbox message when work is assigned to them
 - Every item is held to the caller's configuration-profile scope
-- One edit page for every item, with the page images beside the fields, each review
-  reason, and a draft saved as you type
-- Corrections are applied by a second (finalize) run that reuses the document's OCR,
-  classification and extraction
+- One edit page for every item, with the page images beside the fields, the reason
+  the document is in review, the policy rules it failed, each confidence alert, and
+  a draft saved as you type
+- Routing rules decide which documents are reviewed, in which queue, and with which
+  reason for the reviewer
+- Corrections are applied by a second run. The system decides where it starts, and
+  the dialog that finishes the review lists the steps it will run. The run reuses the
+  document's OCR, classification and extraction, except for a section whose pages the
+  reviewer changed, which is extracted again
 
 ## Architecture
 
 ![HITL review flow: a processed document with confidence alerts is held in the Default queue, claimed or assigned and corrected, then finalized; otherwise it completes with its machine output](../images/hitl_review_queue_flow.svg)
 
-_How a document moves through review: processing decides whether it is queued, a Reviewer or Annotator claims and corrects it (or skips it back to the queue), and the finalize run completes it with the corrected data._
+_How a document moves through review: processing decides whether it is queued, a Reviewer or Annotator claims and corrects it (or skips it back to the queue), and the run after the review completes it with the corrected data. The figure shows the built-in routing rules, which use the Default queue._
 
-- **Routing.** At the end of the first run, a document is held in the **Default** queue
-  when HITL is enabled in its configuration (`hitl.enabled`), the Default queue is
-  enabled, and the document raised a confidence alert. Its status becomes
-  `HITL_IN_PROGRESS`, shown as **In Review**, and the machine output is kept. The exact
-  rules, including BDA blueprint confidence, are in
+- **Routing.** After policy rule validation, the Review Routing step evaluates the
+  routing rules of the document's configuration, when Review Routing is on in it
+  (`hitl.enabled`) and the Default queue is enabled. With the built-in routing rules
+  a document is held in the **Default** queue when a section's extraction failed,
+  when it raised a confidence alert or when it left a required field without a
+  value; routing rules of your own can send
+  documents to other queues, and give the reviewer a reason (see
+  [Review Routing](review-routing.md)). A held document's status becomes
+  `HITL_IN_PROGRESS`, shown as **In Review**, and the machine output is kept. What
+  holds a document, including BDA blueprint confidence, is described in
   [How a document reaches a queue](review-queues.md#how-a-document-reaches-a-queue).
 - **Queues are system-wide**, not part of any Configuration Profile, so one queue holds
   items of several profiles. Each item keeps its own profile, and that profile decides
   who may see and work it.
-- **The finalize run** starts when the item is finished. It reuses the first run's OCR,
-  classification and extraction, applies the corrections, and runs summarization,
-  evaluation, rule validation and the post-processing hooks. Those steps run only after
-  review, so they always see the corrected data.
+- **The run after the review** starts when the item is completed. The system decides
+  where it starts; the reviewer chooses no step. It reuses the first run's OCR,
+  classification and extraction, applies the corrections (the **Apply Review
+  Changes** step), runs policy rule validation again on the corrected values,
+  evaluates the routing rules again, and then runs summarization, evaluation and the
+  post-processing hooks. When the reviewer changed the page grouping, the sections
+  that were added or whose pages changed are extracted first, and the corrections
+  saved for them are applied to the new values (see
+  [What a completed review runs](#3-what-a-completed-review-runs)). Summarization and
+  evaluation run only after review, so they always see the corrected data.
 - **Review state** is kept in DynamoDB (the stack's `HITLTable`), and each routed
   document has a status object at
   `s3://<OutputBucket>/<documentKey>/review/status.json` that downstream consumers can
@@ -152,30 +170,51 @@ When the review ends, the document finishes:
 
 | Outcome | Document status |
 |---|---|
-| **Process Changes** | `COMPLETED`, with the corrected data, after the finalize run |
+| **Process Changes** › **Complete review** | `COMPLETED`, with the corrected data, after the run that applies the review. A routing rule can place the document in a queue again |
+| **Process Changes** › **Send back** | Processed again from classification (from the beginning in BDA mode); the review's corrections and any page regrouping are discarded, and the document can return to a queue |
+| **Reject** | `REJECTED`, with the machine output unchanged |
 | An Admin's **Remove from queue…** | `COMPLETED`, with the machine output unchanged |
-| The API's `rejectReviewItem` | `REJECTED`, with the machine output unchanged (the Web UI doesn't offer it) |
+
+See [How a review ends](review-queues.md#how-a-review-ends).
 
 The document records **Review Owner** (the item's assignee) and **Review Completed By**
 (whoever finished it).
 
 ### 1. Automatic Triggering
 
-A document is held for review when all of these are true:
-- HITL is enabled in the document's configuration (`hitl.enabled: true`)
+A routing rule holds a document for review. With the built-in routing rules, a
+document is held when all of these are true (routing rules of your own can hold a
+document for other reasons and in another queue; see
+[Review Routing](review-routing.md)):
+- Review Routing is on in the document's configuration (`hitl.enabled: true`; it is
+  on in the profiles of a new stack)
 - The Default queue is enabled (it is on a new stack)
-- The document raised a confidence alert: a field's confidence is under its own
-  threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
-  `hitl.confidence_threshold` when it has none; or, in BDA mode, the matched
-  blueprint's confidence is under `hitl.confidence_threshold` or unusable; or a field
-  the class schema marks `required` has no extracted value, while
-  `hitl.route_missing_required_fields` is on (the default). Any other field with no
-  extracted value raises no confidence alert, so it does not hold a document; see
-  [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields)
+- The document matches one of the built-in routing rules, which are tried in this
+  order:
+  - **Failed extractions.** A section's extraction failed without failing the
+    document (for example, Amazon Bedrock's content filter withheld the model's
+    reply), leaving the section with no extracted data. Its review reason reads
+    **Extraction failed**, and its details name the section and what failed; see
+    [Where a failed section shows up](extraction-and-confidence.md#where-a-failed-section-shows-up)
+  - **Confidence alerts.** A field's confidence is under its own threshold
+    (`x-aws-idp-confidence-threshold` in the class schema), or under
+    `hitl.confidence_threshold` when it has none; or, in BDA mode, the matched
+    blueprint's confidence is under `hitl.confidence_threshold` or unusable
+  - **Missing required fields.** A field the class schema marks `required` has no
+    extracted value, while `hitl.route_missing_required_fields` is on (the
+    default). Any other field with no extracted value raises no confidence alert,
+    so it does not hold a document; see
+    [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields)
 
-Each alert becomes a **review reason** on the item. A document with no alerts isn't
-queued, and documents processed by a Test Studio run are never held in a Production
-queue.
+Each alert, each missing required field and each failed section becomes a **review
+reason** on the item. A profile whose routing table no longer has the built-in
+routing rule for failed extractions holds such a document only when another of its
+routing rules matches it. When the Default queue is off, or the stack has no review
+queues, a failed section is marked pending review the same way a section with a
+confidence alert is (see
+[When the Default queue is off](#when-the-default-queue-is-off)). A document that
+matches no routing rule isn't queued, and documents processed by a Test Studio run
+are never held in a Production queue.
 
 ### 2. Review Process
 
@@ -190,16 +229,21 @@ queue.
    in your Tasks. You can open any item read-only first; an item someone else holds
    stays view-only.
 3. **Review and correct.** Open the item from Tasks. It opens in the
-   [edit page](#document-editor). **Review Reason** lists why it is in review, worst
-   first, and the editor opens on the fields with confidence alerts. Choose a reason
-   to move to its field, or **Next alert** to step through them. Correct the
-   values. Your edits are saved as a draft as you type, or at once with **Save**;
-   saving doesn't finish the review, so you can come back to it. **Edit Page
-   Grouping**, on the Document Editor panel, corrects how the document is split into
-   sections.
-4. **Finish.** Choose **Process Changes**. It saves your latest edits and applies
-   your corrections in the finalize run. The item leaves your
-   Tasks, the queue counts it as completed, and the document ends `COMPLETED`.
+   [edit page](#document-editor). **Review Reason** says why it is in review: the
+   routing rule that placed it with its reason, the policy rules the document
+   failed, and its confidence alerts, worst first. The editor opens on the fields
+   with alerts. Choose an alert to move to its field, or **Next alert** to step
+   through them. Correct the values. Your edits are saved as a draft as you type, or
+   at once with **Save**; saving doesn't finish the review, so you can come back to
+   it. **Edit Page Grouping**, on the Document Editor panel, corrects how the
+   document is split into sections (Pipeline mode).
+4. **Finish.** Choose **Process Changes**. It saves your latest edits and asks how
+   the review ends, and lists the steps the ending you choose will run. **Complete
+   review** keeps your corrections: the item leaves your Tasks, the queue counts it as
+   completed, and the document ends `COMPLETED` unless a routing rule places it in a
+   queue again. **Send back** discards your corrections and has the document
+   processed again from classification (from the beginning in BDA mode). You choose
+   no step for either. **Reject**, in the action bar, ends the document as rejected.
 5. **Or give it back.** If you can't finish it, choose **Skip** and pick a reason from
    the queue's skip list, with an optional note. The item goes back to its queue,
    unassigned and unfinished, and its draft is kept for whoever claims it next.
@@ -217,9 +261,9 @@ that flow:
 - **Claim before editing.** An item opens view-only until you claim it. **Edit Page
   Grouping** stays disabled with *Claim this item first to change its page grouping*,
   and the server refuses a page-grouping change from anyone but the item's holder.
-- **Process Changes on the queue item finishes the review.** It applies your field and
-  page-grouping corrections in the finalize run; there is no separate **Start Review**
-  step.
+- **Process Changes on the queue item finishes the review.** The run after it applies
+  your field corrections and extracts again the sections whose page grouping you
+  changed; there is no separate **Start Review** step.
 - **The document page doesn't edit a document in a queue.** It offers no **Start
   Review**, and its **Edit Page Grouping**, **Re-extract Sections**, **Edit Page Text**
   and **Reset Page Class** are disabled with *This document is in a review queue. Choose Edit to work on
@@ -250,11 +294,25 @@ and work in both flows.
 The full Admin guide is in
 [Admin guide: Review Management](review-queues.md#admin-guide-review-management).
 
-### 3. Result Integration
+### 3. What a completed review runs
 
-When an item is finished with **Process Changes**:
-- The finalize run applies the corrections and writes the document's final outputs to S3
-- Summarization, evaluation, rule validation and the optional post-processing hook
+When an item is finished with **Process Changes** › **Complete review**:
+- The system decides where the run after the review starts, from the document as it
+  now is. The reviewer does not choose a step, and the dialog lists the steps before
+  the review is completed:
+
+  | The document | The run starts at | Then |
+  |---|---|---|
+  | No section has to be extracted again | **Apply Review Changes**, which writes the corrections onto the extracted values | Policy rule validation, Review Routing, summarization, evaluation |
+  | Pipeline mode, and the reviewer added a section or changed a section's pages, or a section has no extracted values | **Extraction**, for those sections only | Assessment of those sections, Apply Review Changes, policy rule validation, Review Routing, summarization, evaluation |
+
+- A section that is extracted again gets its saved corrections set on the new values,
+  field by field. Its new values are not confirmed by a reviewer, so its remaining
+  confidence alerts count again when the routing rules are evaluated, and the
+  document can be placed in a queue again. See
+  [Regrouping pages in a review](review-queues.md#regrouping-pages-in-a-review)
+- The run writes the document's final outputs to S3
+- Policy rule validation (again), summarization, evaluation and the optional post-processing hook
   (`PostProcessingLambdaHookFunctionArn`) run on the corrected data
 - The document ends `COMPLETED`, and **Review Completed By** records who finished it
 - The review status object becomes `complete`, and the item's history (claims,
@@ -274,16 +332,33 @@ Annotator who may work the item, the document page's **Edit** opens its queue it
 page grouping is changed there, by the item's holder, with **Edit Page Grouping**. Reprocessing, aborting or deleting a document in review withdraws its
 review.
 
+**Send back** ends a review without keeping it: the review is withdrawn, its
+corrections and any page regrouping are discarded, and the document is processed
+again from classification, which keeps the page text and splits the document into
+sections again. In BDA mode, and for a document whose page text is missing, the run
+starts at the beginning. The reviewer chooses no step and may add a note, which is
+kept in the review history. When the new run reaches the Review Routing step the
+document is routed as one that was never reviewed, so it can return to a queue. See
+[How a review ends](review-queues.md#how-a-review-ends).
+
 ## Configuration
 
-### Enabling HITL
+### Turning Review Routing on and off
 
-HITL is a **configuration setting**, not a stack parameter. Review queues then need
-someone to work them and the Default queue enabled:
+Whether documents are held for review is a **configuration setting**, the **Review
+Routing** switch (`hitl.enabled`) of each Configuration Profile, not a stack
+parameter. **A newly created stack turns it on** in the profiles it creates, so a
+document with a failed section, a confidence alert or a missing required field
+waits in the Default queue for a reviewer. A stack update does not turn it on: a profile that has it off
+stays off until you turn it on. A headless deployment leaves it off. The cases are
+listed in
+[The Review Routing switch](review-routing.md#the-review-routing-switch). Review
+queues also need someone to work them and the Default queue enabled:
 
-1. **Turn on HITL** in each Configuration Profile whose documents should be reviewed,
-   either in the Web UI (**Configuration** › **Human-in-the-Loop (HITL) Review
-   (Optional)** › **Enabled**, then **Save**) or in the configuration YAML:
+1. **Check the Review Routing switch** in each Configuration Profile whose documents
+   should be reviewed, either in the Web UI (**Configuration** › **Processing
+   Settings** › **Review Routing (Optional)** › **Review Routing**, then **Save**) or
+   in the configuration YAML:
 
    ```yaml
    hitl:
@@ -292,8 +367,6 @@ someone to work them and the Default queue enabled:
      route_missing_required_fields: true   # a required field with no value is reviewed too
    ```
 
-   Set it in the configuration passed as `CustomConfigPath` (or
-   `idp-cli deploy --custom-config`) for a new stack to come up with HITL on.
 2. **Give people a review role** in **User Management**: **Reviewer** (works every
    Production queue) or **Annotator** (works the queues that list them). With an
    external identity provider, map a group instead (see [external-idp.md](external-idp.md)).
@@ -301,19 +374,41 @@ someone to work them and the Default queue enabled:
    Default queue's **Settings**, make sure **Enabled** is on, and list any Annotators
    under **Eligible Annotators**. A change applies to documents processed after it.
 
+**To process documents with nobody reviewing them** (a batch job, a load test, a
+pipeline that waits for every document to complete), turn Review Routing off in the
+profile the documents are processed with. Otherwise a document with a confidence
+alert waits in the Default queue instead of completing. Switch it off in the Web UI,
+or upload a configuration file that holds only the switch, which changes nothing else
+in the profile:
+
+```yaml
+hitl:
+  enabled: false
+```
+
+```bash
+idp-cli config-upload --stack-name my-stack \
+    --config-file review-routing-off.yaml --config-profile default
+```
+
+For a new stack that should come up with it off, set `hitl.enabled: false` in the
+configuration passed as `CustomConfigPath` (or `idp-cli deploy --custom-config`).
+
 > The `EnableHITL` CloudFormation parameter was removed in v0.4.11. If you are
-> upgrading from before that release and had `EnableHITL=true`, re-enable HITL in the
-> configuration as above; the parameter no longer exists and passing it is rejected.
+> upgrading from before that release and had `EnableHITL=true`, turn Review Routing
+> on in the configuration as above; the parameter no longer exists and passing it is
+> rejected.
 
 ### Confidence Threshold Configuration
 
-Queues have no threshold of their own. The confidence alerts decide routing: each
+Queues have no threshold of their own. With the built-in routing rules the
+confidence alerts decide routing: each
 field's own threshold in the class schema (`x-aws-idp-confidence-threshold`),
 otherwise `hitl.confidence_threshold`, the same thresholds that drive the alerts and
 field highlights (see [extraction-and-confidence.md](extraction-and-confidence.md)).
 
 1. Open **Configuration** in the Web UI.
-2. Find the **Human-in-the-Loop (HITL) Review (Optional)** section.
+2. On **Processing Settings**, find the **Review Routing (Optional)** section.
 3. Set **Confidence threshold** (0.0–1.0, the `hitl.confidence_threshold` key):
    - `0.8` = 80% confidence threshold. With the default confidence model (Amazon
      Nova Lite) a threshold in this range rarely triggers review: on the v0.6.14
@@ -341,13 +436,15 @@ object key under it. The actions are in one bar at the top:
 | Bar | **Edit \| View** | **View** shows the original file in the editor's place; unsaved edits are kept |
 | Reports | **History** | **Field Edits** (every field a save changed: **When**, **By**, **Field**, **From**, **To**) and **Review Activity** (who claimed, was assigned, skipped or completed the item) |
 | Reports | **Summary** | The document's summary, once its review is complete |
+| Reports | **Policy Rule Validation Summary** | The policy rules the document passed and failed, with the reason for each; disabled for a document with no such report |
 | Reports | **Processing Report** | How the open section was extracted |
 | More Actions | **Use As Evaluation Baseline** | Copies the finished document's results into the evaluation baseline (Admin, Author) |
 | Document Editor panel | **Edit Page Grouping** | Opens the page-grouping board, where each section's pages are changed (the item's holder) |
 | Button | **Skip** | Gives the item back to its queue, with a reason |
+| Button | **Reject** | Ends the review with the document `REJECTED`: asks for a reason from the queue's reject list, with an optional note, and leaves the extracted values as they were before the review, so your corrections are not applied and evaluation and summarization do not run. Unavailable, with the reason on hover, when the queue lists no reject reasons |
 | Button | **Cancel** | Leaves the item without finishing it; asks before discarding unsaved edits, and keeps the saved draft |
 | Button | **Save** | Saves the draft now (it is also saved as you type) |
-| Button | **Process Changes** | Saves your latest edits and applies the corrections |
+| Button | **Process Changes** | Saves your latest edits and opens **Finish the review**, which asks how the review ends and lists the steps that ending runs |
 
 For a Reviewer or Annotator viewing an item nobody holds, the bar offers **Claim**
 instead of the editing buttons, and the fields are read-only. One notice at the top
@@ -356,17 +453,23 @@ assigned to you and shows in Home › Tasks.*, with **Claim** in the notice, or,
 Admin on an item assigned to someone else, *Assigned to {name}. Take over to edit it
 and process its changes.* with **Take over**. **Edit** and **View** keep their labels. A button that doesn't apply is left out; a menu item
 that doesn't apply yet stays in its menu, disabled, with the reason on hover. The info
-icon opens a panel describing the screen. **Review Reason**, above the editor, lists
-the item's alerts, worst first: the five lowest-confidence are shown, **+N more
-alerts** lists the rest, and hovering a reason shows the field, the score and the
-threshold. Each reason is a link that moves to its field, and **Next alert**, in the
-Review Reason header, steps through them in turn.
+icon opens a panel describing the screen. **Review Reason**, above the editor, says
+why the item is in review. First comes the routing rule that placed the document
+(**Routed by rule: …**) with its reason for the reviewer, then **Failed policy
+rules**, the policy rules the document failed with the reason policy rule validation
+gave for each, then the item's alerts, worst first: the five lowest-confidence are
+shown, **+N more alerts** lists the rest, and hovering an alert shows the field, the
+score and the threshold. Each alert is a link that moves to its field, and **Next
+alert**, in the Review Reason header, steps through them in turn. Long texts are
+shortened and open in full on request; see the
+[Annotator guide](review-queues.md#annotator-guide).
 
 The **Document Editor** panel holds the editor: the page images beside the fields,
 with a **Section** dropdown at its top left listing each section with its class, and
 **Show Fields** set to **Confidence alerts only** when the item has review reasons.
 Changing a section's class isn't available for a Production document in review;
-regrouping pages is, with **Edit Page Grouping**.
+regrouping pages is, with **Edit Page Grouping**, in Pipeline mode. In BDA mode Edit
+Page Grouping is disabled with the reason.
 
 #### Navigation Controls
 - **Mouse Wheel Zoom**: Zoom in/out using the mouse wheel without requiring modifier keys
@@ -394,7 +497,7 @@ regrouping pages is, with **Edit Page Grouping**.
 - When evaluation is enabled, edit baseline (expected) values alongside the
   predictions, tracked separately (orange left border); a Reviewer doesn't save
   baseline edits
-- **Process Changes** applies the edits; **Cancel** discards unsaved ones after asking
+- **Process Changes** saves the edits and finishes the review; **Cancel** discards unsaved ones after asking
 
 #### Smart Filtering
 
@@ -456,7 +559,9 @@ When evaluation data is available, turn on **Show Evaluation**:
 ### Common Issues
 
 **Documents not reaching a queue:**
-- Verify HITL is enabled in the document's Configuration Profile
+- Verify Review Routing is on in the document's Configuration Profile
+  (**Processing Settings** › **Review Routing (Optional)**). The profile's **Routing
+  Rules** tab shows a warning while it is off
 - Verify the Default queue is enabled in **Review Studio › Review Management**
 - Check the confidence thresholds, and that extraction confidence scores are being calculated
 - Documents processed by a Test Studio run are reviewed in their test set's queue, not a Production queue
@@ -571,25 +676,35 @@ be skipped by selecting them.
 ## Send to review
 
 **Send to review** puts a finished production document into the Default review queue
-by hand, for a spot check or a second look after a customer query. Choose **More
+by hand, for a spot check or a second look after a customer query. It always uses the
+Default queue; the routing rules are not evaluated for it. Choose **More
 Actions › Send to review** on the document's page, or select documents in the Document
 List and choose **Review › Send to review (N selected)**. Admins and Reviewers can send
 documents in their configuration scope.
 
 A reason is required (**Spot check**, **Suspected extraction error**, **Customer or
 downstream query**, **Other (see note)**) with an optional note. Reviewers see it on the
-item as **Sent to review**. From then on the item is worked like any other: completing it
-reprocesses the document with the reviewer's edits.
+item as **Sent to review**. From then on the item is worked like any other: completing
+it starts the run after the review, which begins at **Apply Review Changes** (or at
+**Extraction** for sections that have to be extracted again), as described in
+[What a completed review runs](#3-what-a-completed-review-runs).
 
 A document can be sent when it has finished processing, is not already in a review, and
-is not a Test Studio document. The Default queue must be enabled; the profile's own
-`hitl.enabled` setting does not matter. With the Default queue off, Send to review is
-shown disabled with the reason.
+is not a Test Studio document. The Default queue must be enabled; the profile's
+Review Routing switch (`hitl.enabled`) does not matter. With the Default queue off,
+Send to review is shown disabled with the reason.
 
 ## When the Default queue is off
 
-The Default queue is enabled on a new stack. If an Admin turns it off while HITL stays
-enabled in a profile, documents that raise confidence alerts are not queued: they wait
+The Default queue is enabled on a new stack. If an Admin turns it off while Review
+Routing stays on in a profile, the routing rules are not evaluated and no document is
+held in any queue. The **Routing Rules** tab of each profile then shows Admins a
+warning, *The Default review queue is off, so routing rules are not evaluated and
+documents use the document-page review flow.*, with a link to **Review Management**,
+where the queue is turned on again. Review Management shows Admins the warning *The
+Default review queue is off, so routing rules are not evaluated.*, with **Open
+Default queue settings**. Documents that raise confidence alerts, or have a section
+whose extraction failed, wait
 as **Review Pending** and are reviewed on their document page instead, with **Start
 Review** and **Process Changes** (or **More Actions › Skip All Reviews**; many at once
 with [bulk Skip All Reviews](#skip-all-reviews-for-many-documents)). That page is

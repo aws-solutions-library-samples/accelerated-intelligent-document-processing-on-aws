@@ -29,6 +29,7 @@ QUICK_START_TOOLS = {
     "estimate_generation_cost",
     "request_document_generation",
     "generate_from_existing_config",
+    "set_processing_options",
 }
 
 
@@ -118,7 +119,7 @@ def processor(monkeypatch):
 
 def _send(processor, **event):
     event = {
-        "identity": {"claims": {"cognito:groups": ["Author"]}},
+        "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "sessionId": "s1",
         "prompt": "I process paystubs",
         **event,

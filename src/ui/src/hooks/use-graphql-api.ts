@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { generateClient } from '../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import useAppContext from '../contexts/app';
 import usePolling from './use-polling';
@@ -15,6 +16,7 @@ import {
   reprocessDocument,
   abortWorkflow,
 } from '../graphql/generated';
+import type { ReprocessDocumentMutationVariables, ReprocessDocumentResult } from '../graphql/generated/operation-types';
 import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS } from '../components/document-list/documents-table-config';
 import { Document } from '../types/documents';
 import { describeApiError, isNetworkError } from './utils/graphql-error';
@@ -53,6 +55,75 @@ const LATEST_MAX_PAGES = 10;
 const client = generateClient();
 
 const logger = new ConsoleLogger('useGraphQlApi');
+
+const messages = defineMessages<{
+  loadDocumentAction: NoMessageValues;
+  listDocumentsAction: NoMessageValues;
+  deleteIncomplete: NoMessageValues;
+  deleteDocumentsAction: NoMessageValues;
+  reprocessFailed: NoMessageValues;
+  abortPartial: { readonly abortedCount: number; readonly failedCount: number };
+  abortFailed: { readonly errors: string };
+  unknownError: NoMessageValues;
+  abortWorkflowFailed: NoMessageValues;
+}>({
+  loadDocumentAction: {
+    id: 'documents.api.loadDocumentAction',
+    defaultMessage: 'load this document',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a document cannot be loaded.',
+  },
+  listDocumentsAction: {
+    id: 'documents.api.listDocumentsAction',
+    defaultMessage: 'list documents',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when the document list cannot be loaded.',
+  },
+  deleteIncomplete: {
+    id: 'documents.api.deleteIncomplete',
+    defaultMessage: 'Failed to delete document(s) - the server reported the delete did not complete',
+    description: 'Error shown when the server answered a delete of documents without completing it.',
+  },
+  deleteDocumentsAction: {
+    id: 'documents.api.deleteDocumentsAction',
+    defaultMessage: 'delete document(s)',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when documents cannot be deleted.',
+  },
+  reprocessFailed: {
+    id: 'documents.api.reprocessFailed',
+    defaultMessage: 'Failed to reprocess document(s) - please try again later',
+    description: 'Error shown when documents could not be sent for processing again.',
+  },
+  abortPartial: {
+    id: 'documents.api.abortPartial',
+    defaultMessage: 'Aborted {abortedCount} document(s), but {failedCount} failed',
+    description:
+      'Error shown when only some of the documents being processed could be stopped. {abortedCount} is how many were stopped, {failedCount} how many could not be.',
+  },
+  abortFailed: {
+    id: 'documents.api.abortFailed',
+    defaultMessage: 'Failed to abort document(s): {errors}',
+    description:
+      'Error shown when none of the documents being processed could be stopped. {errors} is the reasons the server sent, separated by commas, or Unknown error.',
+  },
+  unknownError: {
+    id: 'documents.api.unknownError',
+    defaultMessage: 'Unknown error',
+    description: 'Shown in the error of a stop request that failed when the server sent no reason.',
+  },
+  abortWorkflowFailed: {
+    id: 'documents.api.abortWorkflowFailed',
+    defaultMessage: 'Failed to abort workflow(s) - please try again later',
+    description: 'Error shown when the request to stop processing documents could not be sent or failed.',
+  },
+});
+
+/** A load's failure: the action phrase and what the call threw. */
+interface LoadFailure {
+  action: TypedMessageDescriptor<NoMessageValues>;
+  cause: unknown;
+}
 
 interface DateRange {
   startDateTime: string;
@@ -96,9 +167,21 @@ interface UseGraphQlApiReturn {
   setDocumentView: React.Dispatch<React.SetStateAction<DocumentView>>;
   latestTruncated: boolean;
   deleteDocuments: (objectKeys: string[]) => Promise<unknown>;
-  reprocessDocuments: (objectKeys: string[], version?: string) => Promise<unknown>;
+  reprocessDocuments: ReprocessDocuments;
   abortWorkflows: (objectKeys: string[]) => Promise<unknown>;
 }
+
+/**
+ * Reprocess documents, optionally under another profile and revision and from a later
+ * step. Resolves each document's result (queued, refused or failed, with the reason),
+ * or false when the request itself failed, which has then been reported.
+ */
+export type ReprocessDocuments = (
+  objectKeys: string[],
+  version?: string,
+  revision?: number,
+  startStep?: string,
+) => Promise<ReprocessDocumentResult[] | false>;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface DocumentListItem {
@@ -154,6 +237,17 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
   /** Latest stopped with pages remaining, so the list is a prefix of the partition. */
   const [latestTruncated, setLatestTruncated] = useState<boolean>(false);
   const { setErrorMessage } = useAppContext();
+  // Only the mutations and the relay below read it: the loads and the poll never do, so a
+  // language switch sends no request.
+  const intl = useIntl();
+  /** A load's failure, held raw until the effect below words it. */
+  const [loadFailure, setLoadFailure] = useState<LoadFailure | null>(null);
+
+  useEffect(() => {
+    if (!loadFailure) return;
+    setErrorMessage(describeApiError(loadFailure.cause, loadFailure.action, intl));
+    setLoadFailure(null);
+  }, [loadFailure, intl, setErrorMessage]);
 
   // Ref to track customDateRange in subscription callbacks (closures capture stale state)
   const customDateRangeRef = useRef<DateRange | null>(customDateRange);
@@ -261,7 +355,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       });
       if (firstRejection) {
         const reason = (firstRejection as PromiseRejectedResult).reason;
-        if (reportErrors) setErrorMessage(describeApiError(reason, 'load this document'));
+        if (reportErrors) setLoadFailure({ action: messages.loadDocumentAction, cause: reason });
         logger.error('Error fetching document details', reason);
       }
 
@@ -274,7 +368,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
 
       return documentValues;
     },
-    [setDocumentsDeduped, setErrorMessage],
+    [setDocumentsDeduped],
   );
 
   // ── Subscriptions ──────────────────────────────────────────────────────
@@ -401,7 +495,8 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       // describeApiError branches on errorType: a 403 gets copy the reader can act
       // on rather than the dispatcher's own words, which name Cognito groups they
       // cannot grant themselves. Everything else still carries the server's detail.
-      setErrorMessage(describeApiError(error, 'list documents'));
+      // The relay effect words it, so this load never reads `intl`.
+      setLoadFailure({ action: messages.listDocumentsAction, cause: error });
       logger.error('Error fetching documents', error);
     }
   };
@@ -479,27 +574,28 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       const result = await client.graphql({ query: deleteDocument, variables: { objectKeys } });
       setIsDocumentsListLoading(true);
       if (result.data.deleteDocument === false) {
-        setErrorMessage('Failed to delete document(s) - the server reported the delete did not complete');
+        setErrorMessage(intl.formatMessage(messages.deleteIncomplete));
         logger.error('deleteDocument reported failure', objectKeys);
       }
       return result.data.deleteDocument;
     } catch (error) {
-      setErrorMessage(describeApiError(error, 'delete document(s)'));
+      setErrorMessage(describeApiError(error, messages.deleteDocumentsAction, intl));
       logger.error('Error deleting documents', error);
       return false;
     }
   };
 
-  const reprocessDocuments = async (objectKeys: string[], version?: string, revision?: number): Promise<unknown> => {
+  const reprocessDocuments: ReprocessDocuments = async (objectKeys, version, revision, startStep) => {
     try {
-      const variables: { objectKeys: string[]; version?: string; revision?: number } = { objectKeys };
+      const variables: ReprocessDocumentMutationVariables = { objectKeys };
       if (version) variables.version = version;
       if (revision !== undefined) variables.revision = revision;
+      if (startStep) variables.startStep = startStep;
       const result = await client.graphql({ query: reprocessDocument, variables });
       setIsDocumentsListLoading(true);
-      return result.data.reprocessDocument;
+      return result.data.reprocessDocument.results;
     } catch (error) {
-      setErrorMessage('Failed to reprocess document(s) - please try again later');
+      setErrorMessage(intl.formatMessage(messages.reprocessFailed));
       logger.error('Error reprocessing documents', error);
       return false;
     }
@@ -512,14 +608,18 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       setIsDocumentsListLoading(true);
 
       if ((response.failedCount ?? 0) > 0 && (response.abortedCount ?? 0) > 0) {
-        setErrorMessage(`Aborted ${response.abortedCount ?? 0} document(s), but ${response.failedCount ?? 0} failed`);
+        setErrorMessage(
+          intl.formatMessage(messages.abortPartial, { abortedCount: response.abortedCount ?? 0, failedCount: response.failedCount ?? 0 }),
+        );
       } else if ((response.failedCount ?? 0) > 0 && response.abortedCount === 0) {
-        setErrorMessage(`Failed to abort document(s): ${response.errors?.join(', ') || 'Unknown error'}`);
+        setErrorMessage(
+          intl.formatMessage(messages.abortFailed, { errors: response.errors?.join(', ') || intl.formatMessage(messages.unknownError) }),
+        );
       }
 
       return response;
     } catch (error: unknown) {
-      setErrorMessage('Failed to abort workflow(s) - please try again later');
+      setErrorMessage(intl.formatMessage(messages.abortWorkflowFailed));
       logger.error('Error aborting workflows', error);
       return {
         success: false,

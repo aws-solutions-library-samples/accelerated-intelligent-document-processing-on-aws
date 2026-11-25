@@ -88,7 +88,7 @@
   ],
   "scannedPaths": [
     "*.md",
-    ".claude/skills/*.md",
+    ".claude/skills/*/SKILL.md",
     "docs/**/*.md",
     "feature-platform/**/*.md",
     "iam-roles/**/*.md",
@@ -213,7 +213,7 @@
       "justification": "Two contrastive notes explaining why the private REST API needs no custom-header workaround and only one private hosted zone, where AppSync needed both. The contrast is the point and is stated in the past tense."
     },
     {
-      "path": ".claude/skills/repo-quality-review.md",
+      "path": ".claude/skills/repo-quality-review/SKILL.md",
       "linePattern": "AppSync is the worked example|grep -rl \"AWS::AppSync\"|grep -rl \"AppSync\" docs/\\*\\.md|templates \\*do\\* match `AWS::AppSync`|does any template declare an AppSync resource|or parse for `Type: AWS::AppSync::`|AppSync resource, and when this review was first run|described AppSync as the UI-to-backend API while",
       "bucket": "b",
       "justification": "The whole-repository review skill teaches how to find a service the documentation still presents as current after it was removed, and it uses AppSync as its worked example -- the one case in this repository where that drift actually happened and was measured. Every mention here asserts AppSync's ABSENCE: two shell lines that grep for it and print 'no template declares AppSync', a note that the only two templates matching the grep name the service in an IAM Action: rather than declaring a resource of that type, the instruction to parse for 'Type: AWS::AppSync::' instead, a comment saying the UI moved to API Gateway while the docs did not, and a past-tense sentence recording the 28-file backlog that issue #929 has since closed. Pinned to those eight literal fragments rather than the bare word so it cannot silently transfer to a future edit of this file that presents AppSync as current -- the same discipline the now-deleted docs/well-architected.md entry used, and for the same reason. Accept the trade that pinning buys: a literal fragment is brittle against REWORDING, so adding a sentence to this section and re-wrapping the paragraph around it moves text across line boundaries and leaves the affected lines unexcused, failing this gate with the prose still correct. That has happened once. The fix is to re-pin the fragments to the current wording, never to edit the prose to suit the pattern -- and the gate now names the individual fragment that stopped matching, because each alternative is accounted for separately rather than the entry being counted live as soon as any one of them matches.",
@@ -260,18 +260,6 @@
       "linePattern": "Corrected controls credited to deleted machinery",
       "bucket": "b",
       "justification": "A revision-history row recording what the v3.0 review changed, not a description of the architecture. The row does say the machinery is deleted and that the AppSync API layer was removed, but those statements sit in different SENTENCES of the same table row from the mention that is flagged, and the gate deliberately confines a marker to one sentence -- a removal note elsewhere in a 3,000-character row must not exempt the whole row. So this is an allowlist entry rather than a marker: the reason it reads correctly is the row's purpose, which no phrase pattern can establish."
-    },
-    {
-      "path": "security/threat-modeling/feature-threats/rbac-authentication.md",
-      "linePattern": "AppSync validated every operation's input arguments",
-      "bucket": "b",
-      "justification": "AUTH.T12's Description, explaining what the input-validation gap was a gap RELATIVE TO. Pastness is carried entirely by the verb -- 'validated', then 'The REST dispatcher that replaced it' -- and a marker for a bare past-tense verb would exempt most of the corpus, so this cannot be a marker. The sentence is correct and load-bearing: without it the threat reads as though nothing ever validated these arguments."
-    },
-    {
-      "path": "security/threat-modeling/feature-threats/rbac-authentication.md",
-      "linePattern": "restoring AppSync's input gate for all operations at once",
-      "bucket": "b",
-      "justification": "AUTH.T12's Mitigations, naming what the dispatcher's validator restores. Same shape as the Description above: the possessive plus 'restoring' is what makes it past, and no safe phrase pattern captures that. It is the sentence that tells a reader the control is a replacement for a gate that used to exist rather than a new invention."
     }
   ]
 }

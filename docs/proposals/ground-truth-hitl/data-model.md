@@ -3,6 +3,10 @@ SPDX-License-Identifier: MIT-0
 
 # Test Sets — Data Model & Versioning (ERD)
 
+**Status:** implemented; see
+[Versioning test sets](../../test-studio.md#versioning-test-sets) in the Test Studio
+guide for the shipped behaviour.
+
 **What this is:** how a test set, its immutable versions, its documents, and the
 test runs that score against it relate on disk. It explains the versioning model
 the UI surfaces (Version history panel + run pinning).
@@ -116,14 +120,15 @@ the test set's prefix:
 - `.source` marker — present (body `synthetic`) for generated sets, so provenance
   survives even if the DynamoDB `source` field is lost.
 
-> **Open question (unchanged):** versions currently share one S3 label prefix —
-> the `version#` items snapshot *counts and metadata*, not the bytes. True
-> byte-level immutability across versions needs a manifest, copy-on-publish, or a
-> lifecycle change. See `requirements-v3.md` open questions.
+> **Label bytes are copied on publish.** Publishing copies the set's labels to
+> `{testSetId}/versions/{n}/baseline/`, so a version names a fixed set of bytes as
+> well as the counts and metadata its `version#` item records (a version published
+> before 0.6.10 has no such copy); see
+> [Publishing a version](../../test-studio.md#publishing-a-version).
 
 ## Backend status
 
 The version items, the three pointers, `publishTestSetVersion`,
-`getTestSetVersions`, and run-pinning are **built and verified live** on
-`sr-testing`. The UI surfaces are: the Version column (live) and the new Version
-history panel + publish-time accuracy estimate (prototype, this round).
+`getTestSetVersions`, and run-pinning are implemented. The UI surfaces them as the
+**Version** column on the Test Sets table, the **Publish version** dialog and the
+**Test set version** choice on the run form.

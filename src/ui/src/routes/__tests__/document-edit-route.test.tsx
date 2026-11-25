@@ -12,9 +12,11 @@
  */
 
 import React from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
+import { renderWithIntl as render } from '../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { EditModeState } from '../../components/edit-screen/use-edit-mode';
@@ -81,6 +83,12 @@ vi.mock('../../components/edit-screen/ProductionItemEdit', async (importOriginal
 import { getDocument, getReviewItem } from '../../graphql/generated';
 import DocumentsRoutes from '../DocumentsRoutes';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderAt = (path: string) =>
   render(
     <MemoryRouter initialEntries={[path]}>
@@ -88,6 +96,7 @@ const renderAt = (path: string) =>
         <Route path="/documents/*" element={<DocumentsRoutes />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const crumbs = () =>
@@ -103,6 +112,7 @@ const DETAIL = {
   sections: [{ sectionId: '1', documentClass: 'W2', resultUri: 's3://out/a/b.pdf/sections/1/result.json', draftUri: null, pageIds: [] }],
   history: [],
   skipReasons: [],
+  rejectReasons: [],
 };
 const resolved = (decision: unknown): EditModeState => ({ status: 'resolved', decision, document: DOC, retry: vi.fn() }) as EditModeState;
 

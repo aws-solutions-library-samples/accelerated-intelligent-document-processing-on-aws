@@ -12,8 +12,9 @@ de-facto API. This module makes the contract explicit so a shape change fails
 loudly at read time rather than as wrong dashboard numbers downstream.
 
 Bump ``STICKLER_RESULT_VERSION`` on any change that alters the raw blob shape
-Stickler emits (a stickler-eval upgrade, a new ``compare_with`` flag, a
-different accumulator). The aggregation Lambda can key off it to reject
+Stickler emits (a stickler-eval upgrade that changes it, a new ``compare_with``
+flag, a different accumulator). A stickler-eval upgrade that leaves the shape
+and the count semantics unchanged gets a history note instead of a bump. The aggregation Lambda can key off it to reject
 mismatched blobs (or migrate) instead of silently doubling counters.
 """
 
@@ -785,4 +786,24 @@ def compare_with_flags() -> Dict[str, Any]:
 #         ``mapper._add_evaluation_extensions_recursive`` removal); the
 #         aggregation Lambda's version-mismatch warning surfaces both
 #         cases.
-STICKLER_RESULT_VERSION = "3.0"
+#   3.1 — new optional top-level key ``empty_prediction_confidences``
+#         (``{field path: confidence}``) holding the confidence of each empty
+#         prediction Stickler's ``prediction_confidences`` omits (#2052). The
+#         aggregation Lambda reports it at ``confidence_metrics.empty_values``;
+#         a 3.0 blob lacks the key and is counted there as
+#         ``sections_without_record``. No existing key changes meaning.
+#         Stickler 1.0.1 (#2117) keeps 3.1: it changes how a list's match
+#         matrix is built (once instead of three times) and treats a
+#         similarity within 1e-10 below its threshold as a match, but adds,
+#         removes or renames no blob key and changes no ``_stickler_counts``
+#         semantics. Re-scoring 3,067 documents (10,701 sections) on 1.0.0 and
+#         1.0.1 gave identical scores, verdicts, rows and counts, so a bump
+#         would only make the aggregation Lambda warn on every 3.1 blob.
+#         Stickler 1.0.2 (#2245) also keeps 3.1: it adds, removes or renames
+#         no blob key and changes no ``_stickler_counts`` semantics. It does
+#         change the score of an amount written in non-ASCII digits, such as
+#         ``"١٬٢٥٠٫٠٠"`` against ``"1,250.00"`` on a NUMERIC_EXACT string
+#         field, which now matches. Re-scoring 3,075 documents with no such
+#         amounts gave identical results on 1.0.1 and 1.0.2. A bump would
+#         again only make the aggregation Lambda warn on every 3.1 blob.
+STICKLER_RESULT_VERSION = "3.1"

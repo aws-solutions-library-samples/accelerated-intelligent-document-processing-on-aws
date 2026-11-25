@@ -1,0 +1,587 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Limitations of the GenAI IDP Accelerator (Solution Profile contract v1,
+# solution-profile/schema/v1/README.md): where it stops, with the conditions each
+# figure was measured under.
+
+limitations:
+  # ------------------------------------------------------------ extraction size
+  - id: simple-extraction-row-limit
+    title: Simple extraction can return part of a long list and report success
+    description: >-
+      In simple extraction mode one model call extracts a whole section, and above
+      a certain list length the model stops the list early, returning fewer rows
+      with no error and a COMPLETED status. On the v0.6.14 benchmark grid with the
+      shipped default model (Claude Sonnet 5), every run was complete at 400 rows
+      on 9 pages, while at 800 rows on 17 pages only 5 of 13 runs returned the
+      whole list and the other 8 returned 43 to 190 rows; no size between 400 and
+      800 rows was measured. The threshold depends on the model: Claude Sonnet 5.5
+      lost most of a 400-row list on 15 of 133 runs, and both Amazon Nova models
+      returned about half of a list or less above 100 rows.
+    evidence:
+      - docs/extraction-scaling-guide.md#1-output-truncation-from-somewhere-between-400-and-800-rows
+      - docs/extraction-scaling-guide.md#tldr--which-mode-what-size
+      - docs/configuration.md#making-a-truncated-list-fail-the-section-extractionrow_shortfall_action
+    impact: high
+    modes: [pipeline]
+    detect_with:
+      - question:max-table-rows
+      - question:tables-span-pages
+      - question:pages-per-document
+    mitigations:
+      - capability:advanced-extraction
+
+  - id: simple-extraction-page-limit
+    title: Simple extraction refuses a section too large for one request
+    description: >-
+      A section too large for a single model request is refused before
+      extraction runs with ExtractionInputTooLarge (Bedrock's "Input is too long
+      for requested model"), and the document fails rather than returning partial
+      data. On the v0.6.14 benchmark a 3,200-row, 66-page statement was refused on
+      every simple-mode run at the shipped default and at the control model (Claude Sonnet
+      4.6), in 47
+      to 58 seconds, with OCR and classification already billed (about $1.05); a
+      1,600-row, 33-page statement was not refused at the control model. Sizes
+      between 33 and 66 pages were not measured, so 66 pages is where refusal was
+      observed, not a measured cap. The request is filled mostly by page images, so
+      the limit tracks page count more than row count.
+    evidence:
+      - docs/extraction-scaling-guide.md#2-request-too-large-refused-at-66-pages
+    impact: medium
+    modes: [pipeline]
+    detect_with:
+      - question:pages-per-document
+      - question:max-table-rows
+    mitigations:
+      - capability:advanced-extraction
+
+  # ------------------------------------------------------------------- hooks
+  - id: lambda-hook-payload-limit
+    title: Payload size limits on Lambda hooks
+    description: >-
+      Hooks are bounded by AWS Lambda's invocation payload limits. A LambdaHook
+      model invocation is synchronous and limited to 6 MB; images are sent by S3
+      reference, but more than about 5 MB of text alone can still exceed it. A
+      pipeline hook may return an inline document of at most 5 MB and must return
+      a compressed S3 reference above that. The EventBridge post-processing hook
+      is invoked asynchronously, which AWS caps at 1 MB, so a larger document
+      arrives as a compressed reference the hook resolves itself.
+    evidence:
+      - docs/lambda-hook-inference.md#limitations
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/post-processing-lambda-hook.md#important-notes
+      - patterns/unified/src/pipeline_hooks_function/index.py
+    impact: medium
+    detect_with:
+      - question:pages-per-document
+    mitigations:
+      - extension:pipeline-hook-post-extraction
+
+  - id: lambda-hook-timeout
+    title: Lambda hooks run inside a 15-minute Lambda ceiling
+    description: >-
+      Every hook is a Lambda function, so one invocation can run for at most 900
+      seconds. For a LambdaHook model the calling client waits up to 840 seconds
+      per invocation, inside a caller that is itself capped at 900 seconds, and
+      makes at most 8 invocations per request at the default retry count, each
+      re-running the hook's paid work. All pipeline hooks registered at one hook
+      point run in turn within a single dispatcher invocation whose Lambda timeout
+      is 900 seconds, and the time adds directly to per-document latency.
+    evidence:
+      - docs/lambda-hook-inference.md#limitations
+      - docs/lambda-hook-inference.md#error-handling
+      - lib/idp_common_pkg/idp_common/bedrock/client.py
+      - patterns/unified/template.yaml
+    impact: medium
+    detect_with:
+      - question:latency-target
+      - question:pages-per-document
+    mitigations:
+      - extension:eventbridge-post-processing
+
+  - id: lambda-hook-no-caching-or-guardrails
+    title: LambdaHook calls get no prompt caching and no Bedrock Guardrails
+    description: >-
+      When a step's model is a LambdaHook, Bedrock prompt caching (cachePoint) is
+      not available and Bedrock Guardrails are not applied to the call. Cold
+      starts add latency to the first invocation unless provisioned concurrency is
+      used. Cost reporting depends on the metering the hook returns.
+    evidence:
+      - docs/lambda-hook-inference.md#limitations
+      - docs/lambda-hook-inference.md#metering-and-cost-tracking
+    impact: low
+    detect_with:
+      - question:latency-target
+    mitigations:
+      - none
+
+  - id: step-hooks-not-in-bda
+    title: Post-OCR, post-classification and post-extraction hooks do not run in BDA mode
+    description: >-
+      BDA mode performs OCR, classification and extraction in one Bedrock Data
+      Automation invocation, so the workflow has no post-OCR, post-classification
+      or post-extraction state and a hook registered there never runs, including
+      one with onError fail. The solution refuses a fail-policy registration at
+      those points when the configuration has use_bda true, and lists every
+      unreachable hook in each execution's preprocessing results. The
+      preprocessing, post-rule-validation, post-summarization and postprocessing
+      points run in both modes.
+    evidence:
+      - docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
+      - lib/idp_common_pkg/idp_common/config/hook_point_reachability.py
+    impact: medium
+    modes: [bda]
+    detect_with:
+      - question:business-rules
+      - question:pii
+    mitigations:
+      - extension:pipeline-hook-preprocessing
+      - extension:pipeline-hook-post-rule-validation
+      - capability:pipeline-mode
+
+  # ---------------------------------------------------------- classification
+  - id: packet-classification-long-context
+    title: Packet-granularity classification needs a long-context model
+    description: >-
+      Packet granularity sends a whole packet to one classification call, so long
+      packets can exceed a model's context window; with packet.window_pages 0 such
+      a request fails outright, and window_pages splits it. Long inputs can also
+      dilute the model's focus. The models with a 1-million-token window are the
+      :1m Claude variants, Claude Sonnet 5.5 and Haiku 5.5 by default, and Amazon
+      Nova 2 Lite; other Claude 4.x and 5 models carry 200K, Nova Pro and Nova
+      Lite 300K, and Nova Micro 128K. Page granularity is the documented choice
+      for very large or visually complex sets.
+    evidence:
+      - docs/classification.md#limitations-of-packet-level-classification
+      - config_library/model_config_limits.yaml
+    impact: medium
+    modes: [pipeline]
+    detect_with:
+      - question:single-or-packet
+      - question:pages-per-document
+    mitigations:
+      - capability:classification
+
+  # ---------------------------------------------------------------- BDA mode
+  - id: bda-mode-disabled-features
+    title: Features that do not apply in BDA mode
+    description: >-
+      In BDA mode Bedrock Data Automation splits, classifies and extracts against
+      the project's blueprints, so the pipeline-mode classification settings,
+      prompts, few-shot examples, regex classification, the custom prompt Lambda
+      and LambdaHook models for OCR, classification, extraction and assessment
+      have no effect. In the web UI Edit Page Class, Save and Re-extract,
+      Re-extract Sections, Edit Page Text, Reset Page Class and Edit Page Grouping
+      are disabled; values are corrected with Edit Data. The Capacity Planning
+      page does not size BDA mode.
+    evidence:
+      - docs/pattern-1.md#limitations
+      - docs/classification.md#classification-in-bda-mode-and-pipeline-mode
+      - docs/configuration.md#regex-based-classification-pipeline-mode
+      - docs/few-shot-examples.md
+      - docs/web-ui.md#bda-mode-documents-offer-data-only-editing
+      - docs/capacity-planning.md#pipeline-mode-only
+    impact: medium
+    modes: [bda]
+    detect_with:
+      - question:review-needs
+      - question:accuracy-target
+    mitigations:
+      - capability:pipeline-mode
+
+  - id: bda-schema-nesting
+    title: BDA blueprints do not accept deeply nested class schemas
+    description: >-
+      Classes synchronised to BDA blueprints cannot contain objects nested within
+      objects or arrays of objects inside an object definition; top-level arrays
+      and flat objects are accepted. A class schema that needs deeper structure
+      has to be flattened for BDA mode or processed in pipeline mode.
+    evidence:
+      - docs/discovery.md#bda-schema-limitations
+    impact: low
+    modes: [bda]
+    detect_with:
+      - question:class-attributes
+    mitigations:
+      - capability:pipeline-mode
+
+  # --------------------------------------------------------------- languages
+  - id: language-script-support
+    title: Language and script support depends on mode and OCR feature
+    description: >-
+      BDA mode supports the languages BDA lists; when the docs last checked
+      (2025-09-19) these were English, Portuguese, French, Italian, Spanish and
+      German, and BDA does not support vertical text orientation. In pipeline mode
+      Textract's coverage depends on the operation: plain text detection and
+      Queries are English only, Forms covers six European languages, and Tables,
+      Layout and Signatures (the default features) cover the broadest set.
+      Textract's handwriting recognition is English only. A language outside the
+      coverage of the configured Textract features needs the Bedrock OCR backend, and
+      low-resource languages often need 5 to 10 times the 50 to 100 test documents
+      typical for a high-resource language.
+    evidence:
+      - docs/languages.md#bda-mode
+      - docs/languages.md#textract-backend-language-limitations
+      - docs/languages.md#practical-implementation-approach
+    impact: medium
+    detect_with:
+      - question:languages-scripts
+      - question:handwriting
+    mitigations:
+      - capability:language-support
+      - capability:ocr-backends
+      - capability:fine-tuning
+
+  # ------------------------------------------------------- regions, partitions
+  - id: deployment-regions
+    title: Published templates exist for four commercial Regions
+    description: >-
+      Pre-built templates are published for us-west-2, us-east-1, eu-central-1
+      and ca-central-1. Other Regions require building from source, and model
+      defaults are translated only for EU and Canada Regions; a stack in another
+      Region keeps the US inference-profile ids. GovCloud (us-gov-west-1 and
+      us-gov-east-1) has no published templates and is deployed from source with
+      a transform.
+    evidence:
+      - docs/deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users
+      - scripts/aws-release.sh
+      - lib/idp_common_pkg/idp_common/regional_models.py
+      - docs/govcloud-deployment.md
+    impact: medium
+    detect_with:
+      - question:data-residency
+      - question:aws-partition
+    mitigations:
+      - extension:model-region-availability
+
+  - id: cross-region-inference-residency
+    title: Cross-Region inference can process requests outside the stack's Region
+    description: >-
+      Data at rest stays in the stack's Region, but model calls through
+      cross-Region inference profiles can be processed elsewhere: us. profiles in
+      US Regions, global. profiles in any commercial Region, and the BDA profile
+      used by Canada stacks in two Canadian and three US Regions. In a Canada
+      stack ca.amazon.nova-lite-v1:0 is the only catalogue model whose requests
+      stay in Canada.
+    evidence:
+      - docs/canada-region-model-support.md#where-requests-are-processed
+      - docs/eu-region-model-support.md#important-limitations
+    impact: high
+    detect_with:
+      - question:data-residency
+    mitigations:
+      - extension:model-region-availability
+      - capability:bedrock-model-choice
+
+  - id: regional-model-gaps
+    title: Some models and features are unavailable or substituted outside the US
+    description: >-
+      EU stacks map some US models to fallbacks with different cost and output
+      (Claude Opus 4 and 4.1 to Opus 4.5; Meta Llama 4 to Claude Sonnet 4.6), and
+      single-Region third-party models are not available. In Canada the capacity
+      planner has no quota keys for ca. profiles, multi-document discovery
+      embeddings are not costed, and ca-west-1 receives the ca-central-1 model
+      lists, from which four ids could not be called on 2026-10-13. The BDA OCR
+      backend is not available in ca-central-1 (BDA mode itself works there).
+    evidence:
+      - docs/eu-region-model-support.md#important-limitations
+      - docs/canada-region-model-support.md#known-limitations
+      - docs/canada-region-model-support.md#bedrock-data-automation
+    impact: medium
+    detect_with:
+      - question:data-residency
+    mitigations:
+      - extension:model-region-availability
+
+  - id: govcloud-differences
+    title: GovCloud deployments lose CloudFront, streaming chat and some features
+    description: >-
+      The standard template does not deploy in GovCloud. The govcloud variant
+      keeps the web UI served by API Gateway without CloudFront and answers chat
+      without streaming, because CloudFront and Lambda Function URLs are not
+      available there. In every GovCloud variant the BDA OCR backend is
+      unavailable (Textract is the default). In the govcloud variant multi-document
+      discovery fails at its embedding step for lack of a multimodal embedding model
+      as checked on 2026-07-17; the headless variant removes multi-document discovery. Model defaults come from the GovCloud preset, which pins Nova
+      and Claude Sonnet 4.5 GovCloud ids.
+    evidence:
+      - docs/govcloud-deployment.md#not-available-in-govcloud-all-deploy-modes
+      - docs/govcloud-deployment.md#models-in-the-govcloud-preset
+      - docs/govcloud-architecture.md#govcloud-capability-gaps-all-deploy-modes
+      - config_library/unified/lending-package-sample-govcloud
+    impact: medium
+    detect_with:
+      - question:aws-partition
+      - question:network-isolation
+    mitigations:
+      - none
+
+  - id: headless-removes-ui-and-review
+    title: The headless variant removes the UI, human review and the feature platform
+    description: >-
+      The headless deployment keeps the processing backend but removes the web
+      UI, Cognito, WAF, agent chat, human-in-the-loop review, the document
+      knowledge base, discovery and the feature platform. Documents are submitted
+      by S3 upload, the CLI, the SDK or the optional jobs REST API, and results are
+      read from the Output bucket or Athena.
+    evidence:
+      - docs/govcloud-architecture.md#headless-limitations-and-workarounds
+      - docs/govcloud-architecture.md#what---headless-removes
+      - docs/headless-deployment.md
+    impact: medium
+    detect_with:
+      - question:review-needs
+      - question:network-isolation
+    mitigations:
+      - capability:idp-cli
+      - capability:idp-sdk
+
+  - id: terraform-deployment-experimental
+    title: Terraform deployment is experimental and differs from CloudFormation
+    description: >-
+      The Terraform and OpenTofu module is experimental: the full stack has been
+      applied, re-planned and destroyed in a development account, while the
+      headless and GovCloud modules have been validated offline but not applied. A
+      failed apply is not rolled back, feature-platform extensions still install
+      as CloudFormation stacks, and AWS tools that read CloudFormation see only a
+      label stack.
+    evidence:
+      - docs/terraform.md#differences-from-cloudformation-and-current-limitations
+    status: experimental
+    impact: low
+    detect_with:
+      - question:operating-team
+    mitigations:
+      - none
+
+  # ---------------------------------------------------------------- formats
+  - id: legacy-office-formats
+    title: Legacy binary Word (.doc) files are refused
+    description: >-
+      A legacy binary Word document is detected by its OLE2 container signature,
+      even when renamed .docx, and fails the OCR step with
+      UnsupportedLegacyFormatError asking for the file to be re-saved as .docx; no
+      pure-Python reader for the format exists. The web UI's upload picker does not
+      offer .doc, but a file placed in the input bucket is accepted by extension
+      and then refused. Legacy .xls workbooks are read (with xlrd), so they are not
+      part of this limitation.
+    evidence:
+      - lib/idp_common_pkg/idp_common/ocr/document_converter.py
+      - lib/idp_common_pkg/idp_common/ocr/service.py
+      - src/ui/src/components/common/constants.ts
+    impact: low
+    tags: [format:doc]
+    detect_with:
+      - question:file-formats
+    mitigations:
+      - none
+
+  - id: unsupported-file-format
+    title: Files of a type the OCR step does not route are guessed, not refused
+    description: >-
+      The OCR step routes a file by its extension (PDF, the image types, Word,
+      Excel, CSV and plain text). A file with any other extension, such as a
+      PowerPoint deck, an HEIC photo, an email message or a zip archive, is not
+      refused at upload: its type is guessed from the content (a PDF header, an
+      Office zip, UTF-8 text) and anything else is read as a PDF, so the document
+      fails or is processed as text. Such files need converting before upload or
+      in a preprocessing hook. The fit check refuses them before upload.
+    evidence:
+      - lib/idp_common_pkg/idp_common/ocr/file_types.py
+      - lib/idp_common_pkg/idp_common/ocr/service.py
+      - docs/fit-check.md
+    impact: low
+    detect_with:
+      - question:file-formats
+    mitigations:
+      - extension:pipeline-hook-preprocessing
+
+  # ----------------------------------------------------- access-control gaps
+  - id: profile-scope-gaps
+    title: Some surfaces are not scoped by configuration profile
+    description: >-
+      Users restricted to particular configuration profiles are not restricted
+      everywhere: Knowledge Base queries and the agent chat's Athena analytics do
+      not filter by profile, fine-tuning jobs are global, and discovery uploads are
+      a shared workspace. A principal that writes directly to the Input bucket
+      chooses its own profile, so profile mapping is a routing policy rather than
+      an ingest boundary. Those gaps matter when one stack serves several
+      business units or tenants.
+    evidence:
+      - docs/rbac.md#known-limitations
+    impact: medium
+    detect_with:
+      - question:multi-tenant
+      - question:reviewer-roles
+    mitigations:
+      - capability:multi-tenancy
+
+  - id: policy-discovery-single-document
+    title: Policy discovery extracts rules from one manual at a time
+    description: >-
+      Policy discovery extracts each uploaded policy manual independently. Uploads
+      join one policy class only when they name the same policy group, and a later
+      upload supersedes earlier rules only when it replaces the group or names the
+      rules; an amendment added without that is evaluated beside the rule it
+      rewords. There is no automatic document-name regex and no deduplication of a
+      rule that appears in two manuals, and a duplicated rule is evaluated by its own
+      model call on every document. Very large manuals can exceed one call's output
+      limit and fail the job, and are split by chapter into uploads sharing a
+      group.
+    evidence:
+      - docs/policy-discovery.md#limitations
+    impact: low
+    detect_with:
+      - question:business-rules
+    mitigations:
+      - capability:rule-validation
+
+  # ------------------------------------------------------- ROADMAP non-goals
+  - id: not-a-document-management-system
+    title: Not a document management system
+    description: >-
+      The accelerator processes documents and hands structured data onward. Long
+      term document storage, records management, retention policy, e-signature,
+      workflow approvals and content collaboration are out of scope.
+    evidence:
+      - ROADMAP.md#non-goals
+    impact: high
+    detect_with:
+      - question:retention
+      - question:downstream-systems
+    mitigations:
+      - extension:downstream-integration
+
+  - id: web-ui-is-operator-console
+    title: The web UI is an operator console, not an end-user application
+    description: >-
+      The web UI exists to configure the pipeline, inspect results, run
+      evaluations and review low-confidence extractions. It will not grow features
+      that only make sense in a general end-user application, so a customer-facing
+      portal is built separately on the SDK, the API or the output data.
+    evidence:
+      - ROADMAP.md#non-goals
+    impact: medium
+    detect_with:
+      - question:reviewer-roles
+      - question:review-needs
+    mitigations:
+      - capability:idp-sdk
+      - extension:feature-platform-extension
+
+  - id: aws-service-issues-out-of-scope
+    title: Underlying AWS service behaviour is not fixed in this repository
+    description: >-
+      Bedrock model quality, Textract accuracy, Bedrock Data Automation behaviour,
+      service quotas and throttling are matters for AWS Support, not for the
+      repository's issue tracker. As guidance, an accuracy gap caused by a model or
+      OCR service is usually closed by configuration (another model, backend or
+      prompt) rather than waiting on a fix in the accelerator.
+    evidence:
+      - ROADMAP.md#non-goals
+      - CONTRIBUTING.md#reporting-bugs-and-requesting-features
+    impact: low
+    detect_with:
+      - question:accuracy-target
+    mitigations:
+      - extension:bedrock-quotas
+      - capability:bedrock-model-choice
+
+  - id: no-provider-abstraction-layer
+    title: No generic model gateway
+    description: >-
+      Several model families are supported, but the project will not build a
+      provider-abstraction layer that treats every model alike; caching minimums,
+      reasoning parameters, tool-use reliability, Regional availability and output
+      limits are expressed per model in the configuration. A model not on the
+      supported list is reached through a LambdaHook.
+    evidence:
+      - ROADMAP.md#non-goals
+      - docs/lambda-hook-inference.md
+    impact: low
+    detect_with:
+      - question:accuracy-target
+    mitigations:
+      - extension:lambda-hook-model
+
+  - id: models-added-on-evidence
+    title: New Bedrock models are added on evidence, not on release day
+    description: >-
+      A selectable model is added when someone has measured it to be better or
+      cheaper for a real workload, because adding one touches pricing, output
+      limits, Region lists, client routing, IAM, the UI and the docs. A customer
+      who needs a newly launched model before then uses a LambdaHook or
+      contributes the measurement.
+    evidence:
+      - ROADMAP.md#non-goals
+    impact: low
+    mitigations:
+      - extension:lambda-hook-model
+      - extension:contribute-upstream
+
+  - id: no-cdk-or-terraform-sibling-competition
+    title: CDK and the separately maintained Terraform module live in sibling projects
+    description: >-
+      The roadmap keeps this repository on CloudFormation and SAM and points CDK
+      users to the cdklabs/genai-idp constructs and Terraform users to
+      awslabs/genai-idp-terraform, which are maintained separately with their own
+      release schedules. The repository does publish an experimental Terraform
+      module of its own, translated from the CloudFormation template.
+    evidence:
+      - ROADMAP.md#non-goals
+      - GOVERNANCE.md#sibling-implementations
+      - docs/terraform.md
+    impact: low
+    detect_with:
+      - question:operating-team
+    mitigations:
+      - none
+
+  - id: no-lts-or-backports
+    title: No long-term-support line and no backports
+    description: >-
+      Fixes land on the develop branch and ship in the next release; there are no
+      release branches. Older tags stay deployable but are not maintained, and
+      the supported version is the most recent one, so a deployment that needs
+      fixes has to keep upgrading. Releases are cut when ready, with no published
+      calendar; six were tagged between v0.6.10 (2026-09-25) and v0.6.15
+      (2026-11-13), one to two weeks apart.
+    evidence:
+      - ROADMAP.md#non-goals
+      - GOVERNANCE.md#branch-and-release-model
+      - https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/releases
+    impact: medium
+    detect_with:
+      - question:operating-team
+    mitigations:
+      - none
+
+  - id: no-internal-api-stability
+    title: The shared library is not a stable API before 1.0
+    description: >-
+      idp_common powers the accelerator and is not a versioned public SDK
+      contract; its signatures change between minor releases and CHANGELOG.md is
+      where changes are announced. Customer code that imports it, including hook
+      code using its document model, must be re-checked on each upgrade.
+    evidence:
+      - ROADMAP.md#non-goals
+      - GOVERNANCE.md#branch-and-release-model
+    impact: medium
+    detect_with:
+      - question:operating-team
+    mitigations:
+      - extension:eventbridge-post-processing
+
+  - id: refactors-need-a-problem
+    title: Structural refactors without an observable defect are not accepted
+    description: >-
+      A large change that improves structure without fixing an observable defect
+      or enabling named work is unlikely to be merged, because its review cost and
+      regression risk are real. Contributions upstream should be framed around a
+      measured problem.
+    evidence:
+      - ROADMAP.md#non-goals
+    impact: low
+    mitigations:
+      - extension:contribute-upstream

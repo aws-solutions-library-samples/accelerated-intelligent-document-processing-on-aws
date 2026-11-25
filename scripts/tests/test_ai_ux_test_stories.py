@@ -3173,9 +3173,19 @@ def test_nights_past_the_reading_time_are_gaps(
 
 @pytest.mark.unit
 def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
-    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+    harness: StoryHarness,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _shard_runs(harness)
+    composed: list[story_digest.SlackFacts] = []
+    compose = story_digest.slack_payload
+
+    def recording(digest: Any, *, job_url: str, facts: Any = None) -> dict[str, str]:
+        composed.append(facts)
+        return compose(digest, job_url=job_url, facts=facts)
+
+    monkeypatch.setattr(story_digest, "slack_payload", recording)
     harness.environ.update(
         _scheduled(
             CI_COMMIT_SHA=HEAD,
@@ -3220,9 +3230,13 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
         run=json.loads((out / story_verdict.RUN_FILE).read_text("utf-8")),
         history=read[0],
         titles={story.id: story.title for story in catalogue.stories},
+        permissions={story.id: story.rbac for story in catalogue.stories if story.rbac},
         cap_usd=2 * catalogue.runs.job_usd,
     )
     ((webhook, payload),) = posted
+    (sent,) = composed
+    assert sent.permissions == facts.permissions
+    assert sent.permissions["route-folder-to-profile"] == "Manage prefix mappings"
     assert webhook == WEBHOOK
     assert payload == story_digest.slack_payload(digest, job_url=JOB_URL, facts=facts)
     assert payload["status"] == "⚠️ 1 of 2 passed"

@@ -459,6 +459,31 @@
         }
       ]
     },
+    "convertRoutingDmn": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "direction",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "content",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "dmnVersion",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "copyToBaseline": {
       "args": [
         {
@@ -1195,6 +1220,60 @@
     "getPricing": {
       "args": []
     },
+    "getProcessChangesPlan": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "getReprocessOptions": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "objectKeys",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "version",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
+    "getReviewCompletionPlan": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "getReviewItem": {
       "args": [
         {
@@ -1202,6 +1281,31 @@
           "is_list": false,
           "name": "objectKey",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "getReviewQueueReferences": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "queueId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -1465,6 +1569,31 @@
           "name": "surface",
           "non_null": false,
           "type": "String"
+        }
+      ]
+    },
+    "listConfigPrefixMappingHistory": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "prefix",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "before",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -1738,7 +1867,22 @@
       ]
     },
     "listReviewQueues": {
-      "args": []
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
     },
     "listSampleDocuments": {
       "args": []
@@ -2208,6 +2352,20 @@
           "name": "revision",
           "non_null": false,
           "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "startStep",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "skipSteps",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -2446,6 +2604,17 @@
         }
       ]
     },
+    "selectActiveTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "sendAgentChatMessage": {
       "args": [
         {
@@ -2489,6 +2658,31 @@
           "name": "toolMetadata",
           "non_null": false,
           "type": "ToolMetadataInput"
+        }
+      ]
+    },
+    "sendBackReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -2860,6 +3054,24 @@
           "name": "cycleId",
           "non_null": true,
           "type": "String"
+        }
+      ]
+    },
+    "testRoutingTable": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "routing",
+          "non_null": false,
+          "type": "AWSJSON"
         }
       ]
     },
@@ -3448,6 +3660,27 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "saveMode",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "policyGroup",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "policyGroupMode",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "supersededRules",
           "non_null": false,
           "type": "String"
         }

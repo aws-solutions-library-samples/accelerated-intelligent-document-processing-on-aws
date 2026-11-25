@@ -72,7 +72,7 @@ permissive license (see `fonts/LICENSE-DejaVu.txt`). Re-sync must keep this file
 
 ## Re-syncing from upstream
 
-Use the `.claude/skills/sync-pii-anonymizer.md` skill (or run it manually): it
+Use the `.claude/skills/sync-pii-anonymizer/SKILL.md` skill (or run it manually): it
 re-clones upstream, diffs the vendored files against the recorded commit, and
 re-copies the closure, flagging any newly-added intra-project imports that would
 expand the closure. After a re-sync: bump the commit SHA above, re-run the

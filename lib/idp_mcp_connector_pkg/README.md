@@ -115,7 +115,7 @@ The connector dynamically discovers tools from the IDP MCP Server at startup. Cu
 |------|-------------|
 | `search` | Natural language queries on document analytics |
 | `process` | Submit documents for processing (S3 URI or base64) |
-| `reprocess` | Re-run classification or extraction on documents |
+| `reprocess` | Process documents again, starting at a chosen pipeline step and optionally skipping later optional steps |
 | `status` | Check batch processing status |
 | `get_results` | Retrieve extracted fields and confidence scores |
 

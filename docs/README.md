@@ -13,6 +13,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
 - [Quick Start](./quick-start.md) - Cold-start configuration authoring for new deployments (chat widget + `idp-cli bootstrap`)
+- [IDP in Action](./idp-in-action.md) - An illustrated tour of the main features, with an overview video and feature walkthroughs
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
 - [AI-Guided Deployment Walkthrough](./idp-deployment-ai-guide.md) - A system prompt to paste into an AI assistant that walks you through choosing deployment parameters one question at a time
 - [After Subscribing on AWS Marketplace](./marketplace-subscription-next-steps.md) - What to do next in your own AWS account after a Marketplace subscription
@@ -47,7 +48,9 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Missing Pages vs. Blank Fields](./missing-page-handling.md) - Telling a legitimately omitted page apart from an empty field on sparsely populated forms
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
-- [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
+- [Review Queues](./review-queues.md) - System-wide review queues: creating queues, assigning work to Annotators, review outcomes, the review status contract
+- [Review Routing](./review-routing.md) - Routing rules that decide whether a processed document is reviewed and in which review queue; testing a table; DMN XML export and import
+- [Document Attributes](./document-attributes.md) - Attach caller-supplied key-value attributes (account id, claim number) at upload and get them back with the results
 - [Document Versions](./document-versions.md) - Each processing run of a document is kept as a version, so reprocessing or re-uploading does not lose prior results
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
 - [Z3 Symbolic Rule Validation Engine](./rule-validation-z3.md) - Deterministic, formal rule validation with the Z3 theorem prover, routed per rule alongside the LLM engine
@@ -83,6 +86,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Post-Processing Lambda Hook](./post-processing-lambda-hook.md) - Custom downstream processing integration
 - [Lambda Hook Inference](./lambda-hook-inference.md) - Custom LLM integration via Lambda hooks
+- [Decision Models](./decision-models.md) - Classify sections with a decision model that returns a probability for every class
 - [Nova Fine-Tuning](./nova-finetuning.md) - Fine-tuning Amazon Nova models for IDP tasks
 - [Custom Model Fine-Tuning](./custom-model-finetuning.md) - Fine-tuning Nova models for document classification with the accelerator
 - [OpenAI Models](./openai-models.md) - GPT-6 Astra via the Converse API (CRIS-only `us.`/`global.` IDs, agentic extraction, all regions) **and** GPT-5.4 / GPT-5.5 / GPT-5.6 (Sol/Terra/Luna) via the bedrock-mantle Responses API: the two-path split, support matrices, limitations, regions, caching, long-context pricing
@@ -94,6 +98,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 ### Extensions
 
 - [Auto Optimizer (Beta)](./extensions/auto-optimizer.md) - Agentic optimization of a document processing configuration
+- [Decision Model: Strands Decider](./extensions/decision-model-decider.md) - Builds and deploys a decision model for section classification and extraction confidence
 - [Test Set - ConfBench](./extensions/confbench-testset.md) - Deploys the ConfBench benchmark into Test Studio on demand
 - [Test Set Generator](./extensions/idp-data-generator.md) - Generates labeled synthetic document test sets
 - [IDP Monitor](./extensions/idp-monitor.md) - AI-assisted operations dashboard over the reporting data
@@ -111,6 +116,8 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
+- [Solution Profile](./solution-profile.md) - The versioned, machine-readable description of the accelerator attached to each release: what it does, where it stops, how to extend it and how to judge fit
+- [Fit Check](./fit-check.md) - Run sample documents through a deployed stack with `idp-cli fit-check` and get a structured report of classes, field confidence, observed limitations, latency and estimated cost
 - [Release Runbook](./release-runbook.md) - How a release is built and published to S3, for publishing releases to buckets in your own account: preconditions, ordered steps, failure and recovery, post-release verification
 - [Version Update Indicator](./version-update-indicator.md) - The Web UI badge shown when a newer template version has been published
 
@@ -122,6 +129,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Role-Based Access Control](./rbac.md) - Server-side role enforcement at the API layer, UI controls, and configuration-profile scoping
 - [External Identity Provider](./external-idp.md) - Federating sign-in from a SAML or OIDC identity provider through Amazon Cognito
 - [Malware Scanning](./malware-scanning.md) - Scanning incoming documents before they are processed
+- [Customer Managed KMS Key](./customer-managed-kms-key.md) - Encrypting a new deployment's data with a KMS key you supply, and the key policy it needs
 - [VPC Secured Mode](./vpc-secured-mode.md) - Running the solution in a VPC-secured environment for network isolation
 - [Deploying in a Private Network](./deployment-private-network.md) - Runbook for a fully private or air-gapped deployment
 - [Installing First-Party Packages Safely](./dependency-confusion.md) - Why the packages in `lib/` must be installed from a local checkout, never by bare name
@@ -145,6 +153,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 ## Migration
 
 - [Migration v0.6.12 to v0.6.13](./migration-v0612-to-v0613.md) - Classification settings nested by model call (config format 0.9)
+- [Migration v0.6.15 to v0.6.16](./migration-v0615-to-v0616.md) - Review routing and run plans (workflow state names, hooks, the review status object, API and SDK changes, rollback), and the other behaviour changes an upgrade brings
 - [Migration v0.5 to v0.6](./migration-v05-to-v06.md) - The standalone `assessment:` block folded into `extraction.confidence`, `extraction.geometry` and `hitl`
 - [Granular Assessment Retirement](./migration-granular-retirement.md) - What the retirement of granular assessment means for your configuration
 - [AppSync to REST API Migration](./migration-appsync-to-rest.md) - How the REST transport reproduces what the UI previously got from AWS AppSync

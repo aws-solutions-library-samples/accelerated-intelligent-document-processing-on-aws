@@ -459,9 +459,23 @@ For detailed instructions on integrating custom MCP agents, see the [Custom MCP 
 ### Accessing the Feature
 
 1. Log in to the GenAI IDP Web UI
-2. Navigate to the **Agent Chat** section in the main navigation
+2. Open **Assistants › Agent Chat** in the side navigation
 3. The chat interface opens with a welcome message and sample prompts
 4. Start typing your question or click a sample prompt to begin
+
+**Who sees it.** The side navigation shows **Agent Chat** (in the **Assistants**
+section) to Admins only. The `sendAgentChatMessage` operation itself allows the
+Admin, Author and Viewer groups (see [rbac.md](rbac.md)), so an Author or a Viewer
+who opens the page's route can still chat; only the navigation link is Admin-only.
+
+**Setting up the system is Quick Start's job.** Agent Chat answers questions about
+your documents, analytics, errors and the codebase; it does not author schemas,
+create configuration versions or change configuration. When you ask for that, the
+orchestrator tells you it is handled by the separate **Quick Start** assistant, which
+an Admin opens with the **Quick Start** button at the top of the side navigation (see
+[Quick Start](quick-start.md)). Both chat routes, the REST mutation and the streaming
+Function URL, refuse a Quick Start turn from anyone who is not an Admin, and from
+everyone on a deployment with `EnableQuickStartWidget=false`.
 
 ### Your First Conversation
 
@@ -687,9 +701,15 @@ Agent: "You can add validation by including criteria in your config..."
 
 ## Configuration
 
-**Supported Models**:
+**Supported Models**: the configuration editor offers every model in the
+`agents.chat_companion.model_id` enum of the configuration schema in
+`patterns/unified/template.yaml`, in its `us.`, `eu.` and `global.` forms. Common
+choices:
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Default - fast and inexpensive for conversational use)
 - `us.anthropic.claude-sonnet-4-6` (Best for complex reasoning)
+- `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-sonnet-5-5`
+- `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (legacy from 2026-10-08, end of life 2027-04-08)
 - `us.amazon.nova-pro-v1:0` (AWS native option)
 - `us.amazon.nova-lite-v1:0` (Lightweight option)

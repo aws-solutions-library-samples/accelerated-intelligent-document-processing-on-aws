@@ -102,7 +102,7 @@ builds anything. It requires:
 | AWS SAM CLI | **1.129.0** | `check_prerequisites()` compares `sam --version` against it and exits if lower |
 | AWS CLI (`aws`) | any | must be on `PATH` |
 | `uv` | any | must be on `PATH` — it is a hard requirement of the publish flow and is easy to miss |
-| Node.js | **22.12.0** | `engines` in `package.json` and `src/ui/package.json` |
+| Node.js | **26.0.0** | `engines` in `package.json` and `src/ui/package.json` |
 | npm | **11.0.0** | `engines` in root `package.json` (the UI's own floor is lower, 10.0.0, so the root value is the one to meet) |
 
 Two things the table above does not make obvious:
@@ -113,9 +113,9 @@ Two things the table above does not make obvious:
   [deployment.md](docs/deployment.md#option-3-build-and-deploy-from-source-code).
 - **Node.js is not version-checked by the publish script**, but the publish flow
   runs `npm ci` and `npm run build` over `src/ui`, so an older Node will fail
-  there instead. Treat 22.12+ as required.
+  there instead. Treat 26+ as required.
 
-Both CI systems build on **Python 3.13** (`python:3.13-bookworm`) and Node 22,
+Both CI systems build on **Python 3.13** (`python:3.13-bookworm`) and Node 26,
 so 3.12 is the floor rather than the tested version. Per-platform setup walkthroughs:
 [Linux](docs/setup-development-env-linux.md), [macOS](docs/setup-development-env-macos.md),
 [Windows/WSL](docs/setup-development-env-WSL.md).
@@ -132,13 +132,21 @@ source .venv/bin/activate      # required — the gate targets need .venv/bin on
 # or, to install into the Python environment you are already in:
 make setup
 
-npm install -g basedpyright    # the type-check gate; neither target above installs it
+make setup-node                # only if the step above warned that Node was missing or too old
 ```
 
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint` and `ruff`, then verify that every first-party package
-resolved from the checkout. Every install is constrained to
+resolved from the checkout. Their last step is the Node side: when Node 26 or
+later is on `PATH` they run `npm ci` in `src/ui/` and `docs-site/` and install
+`basedpyright`; otherwise they print a warning naming what was not installed and
+still succeed, because deploying and `idp-cli` need no Node. That step does nothing
+when `CI` or `CODEBUILD_BUILD_ID` is set, or with `SKIP_NODE_SETUP=1`.
+`make setup-node` runs it on its own and fails on any error; run it again after a
+`git pull` that changes `src/ui/package-lock.json`, because the UI gates in
+`make fastlint` skip, rather than pass, while `src/ui/node_modules` does not match
+the lockfile. Every install is constrained to
 `lib/idp_common_pkg/uv.lock`, the same constraints both CI systems install against,
 so a local environment holds the versions CI tests; exporting the lock is why both
 targets need `uv`. Use them in preference to hand-rolling `pip install` lines.
@@ -154,9 +162,10 @@ pip install cfn-lint==1.51.0` even though `setup-venv` already installed
 `cfn-lint` at `.venv/bin/cfn-lint`. `make setup` does not have this problem,
 because it installs into the environment that is already active.
 
-**`basedpyright` comes from npm, not from either setup target.** It is a
-devDependency of the root `package.json` — which exists only to pin it — and
-both CI systems provision it with `npm install -g basedpyright`. The `make`
+**`basedpyright` comes from npm.** It is a devDependency of the root
+`package.json`, and both CI systems provision it with `npm install -g
+basedpyright`, which is also what `make setup-node` runs when it is not already on
+`PATH`. The `make`
 type-check targets invoke it as a bare command, so it has to be on `PATH`: a
 plain `npm install` at the repository root puts it in `node_modules/.bin/`,
 which is enough for `npx basedpyright` or `npm run typecheck` but not for
@@ -325,26 +334,20 @@ round-trip:
 
 | Skill file | Read it when you are changing |
 |---|---|
-| `.claude/skills/backend-lambda.md` | Lambda handlers or `idp_common` Python code |
-| `.claude/skills/frontend-ui.md` | React / TypeScript / Cloudscape UI code |
-| `.claude/skills/infrastructure.md` | CloudFormation or SAM templates, nested stacks, GovCloud, log-group naming |
-| `.claude/skills/extraction-pipeline.md` | The processing pipeline, configuration, or agentic extraction |
-| `.claude/skills/testing-qa.md` | Tests — pytest patterns, `moto`, conftest layout |
-| `.claude/skills/documentation.md` | Documentation, the CHANGELOG, or the docs site |
-| `.claude/skills/code-review.md` | Anything — it is the self-review checklist to run before you push |
+| `.claude/skills/backend-lambda/SKILL.md` | Lambda handlers or `idp_common` Python code |
+| `.claude/skills/frontend-ui/SKILL.md` | React / TypeScript / Cloudscape UI code |
+| `.claude/skills/infrastructure/SKILL.md` | CloudFormation or SAM templates, nested stacks, GovCloud, log-group naming |
+| `.claude/skills/extraction-pipeline/SKILL.md` | The processing pipeline, configuration, or agentic extraction |
+| `.claude/skills/testing-qa/SKILL.md` | Tests — pytest patterns, `moto`, conftest layout |
+| `.claude/skills/documentation/SKILL.md` | Documentation, the CHANGELOG, or the docs site |
+| `.claude/skills/code-review/SKILL.md` | Anything — it is the self-review checklist to run before you push |
 
-`.claude/skills/` is **canonical**. The Cline assistant's `.cline/skills/` files
-are **symlinks** to them (under different filenames, e.g. `.cline/skills/docs.md`
-→ `.claude/skills/documentation.md`), so editing a `.claude` skill updates both.
-**Do not create a parallel copy under `.cline/skills/`** — add a symlink instead:
-
-```bash
-ln -s ../../.claude/skills/<name>.md .cline/skills/<name>.md
-```
-
-On a clone with `core.symlinks=false` (some Windows setups) those symlinks
-materialize as text files containing a path. If a skill file looks like a bare
-path, run `git config core.symlinks true` and re-checkout.
+Each skill is `.claude/skills/<name>/SKILL.md`, with `name` and `description`
+front matter (the open [Agent Skills](https://agentskills.io) layout). Claude Code
+and Cline both read `.claude/skills/` directly, and `.agents/skills` is a symlink to
+it for other assistants, so there is exactly one copy of each skill. Add a new skill
+as a new directory there; do not create a copy anywhere else. The front-matter rules
+are in the "Skill format" section of `.claude/skills/documentation/SKILL.md`.
 
 ### Documentation lives in two tiers
 
@@ -362,7 +365,7 @@ Both tiers are real documentation and they cover different things:
 the API detail, and any matching `docs/*.md` page that summarizes it. It is easy
 to update one and forget the other, so check both. Adding or changing a
 selectable Bedrock model touches many more files than you would expect — work
-through the checklist in `.claude/skills/documentation.md` rather than from
+through the checklist in `.claude/skills/documentation/SKILL.md` rather than from
 memory.
 
 To preview the site locally:
@@ -419,15 +422,15 @@ The second is that `ruff` still does not read everything, and what it skips is
 now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
-when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 71 files
-holding 172 pre-existing findings, and `[format] exclude` names 157 files that
-`ruff format` has never been run over. Both counts fall as files are paid off, and
-`scripts/tests/test_contributing_doc.py` reads them out of
-`scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.
-⚠️ It checks for *presence*, not for absence of a wrong one, so it cannot see a second
-stale copy of the count — which is how this file once carried three sentences quoting
-two different numbers with that gate green. If you change a count, change every
-occurrence. Two further entries in the
+when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names the files
+that held pre-existing findings, and `[format] exclude` names the files that
+`ruff format` has never been run over. Both lists shrink as files are paid off, so
+this page does not quote their sizes. Both arrays are generated from
+`scripts/lint_debt.json`, so its `lintDebt` and `formatDebt` objects are the
+source of truth, and a green `python3 scripts/check_lint_debt.py` prints both
+sizes.
+`scripts/tests/test_documented_counts.py` fails if a figure for either list is
+written back into prose. Two further entries in the
 top-level
 `extend-exclude` are scope decisions rather than debt — the vendored
 `pii-anonymizer` tree, and `**/*.ipynb`, because `E402`/`F811`/`I001` describe a
@@ -638,7 +641,7 @@ a line-scoped `# nosec <ID> - <reason>`; an unreachable advisory goes in
 `scripts/security/dep_audit_allowlist.json` with a justification; a
 security-matrix or Checkov finding goes in `scripts/srt/issues.json`. Adding a
 suppression without a stated reason will be asked about in review. The procedure
-is in `.claude/skills/srt-security-scan.md`.
+is in `.claude/skills/srt-security-scan/SKILL.md`.
 
 ### Type checking
 
@@ -661,8 +664,10 @@ It also resolves this repository's own packages, via `pyrightconfig.json`'s
 `extraPaths`. That matters more than it sounds: without it `idp_common` did not
 resolve, `reportMissingImports` is configured `"none"`, and so **no call into the
 shared library could produce a diagnostic** — the gate read every file and proved
-much less than that suggests. If you add a `lib/<something>` distribution, add its
-package root to `extraPaths`; the suite fails until you do.
+much less than that suggests. If you add a `lib/<something>` distribution, or a
+distribution anywhere else whose package is imported from outside its own directory
+(as `scripts/` imports `idp_tf` from `terraform/translator`), add its package root to
+`extraPaths`; the suite fails until you do.
 
 Errors fail it and warnings do not. To see today's warning split, run
 `make typecheck` and read the tally it prints rather than a list written here — it
@@ -680,9 +685,9 @@ the callers, which are usually outside the diff — so a green `typecheck-pr` is
 not a substitute for `make typecheck` before you push. It defaults to comparing
 against `develop`; override with `make typecheck-pr TARGET_BRANCH=<branch>`.
 
-All three targets need `basedpyright` on `PATH`, and neither `make setup` nor
-`make setup-venv` installs it; `npm install -g basedpyright`, which is what both
-CI systems do, is the command that supplies it. Note that `make typecheck-pr`
+All three targets need `basedpyright` on `PATH`. `make setup-node` installs it
+with `npm install -g basedpyright`, the command both CI systems run, and `make
+setup` and `make setup-venv` do the same when Node is available. Note that `make typecheck-pr`
 exits 0 without `basedpyright` present when your branch changes no Python files
 at all, so a documentation-only branch will not tell you the tool is missing.
 `make typecheck` always tries to run it and so always says.
@@ -804,7 +809,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
-| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/` or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
+| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build or holds a stale entry, whose English changed after it was translated (`make ui-i18n-drop-stale LOCALE=<locale>` deletes those); check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/`, `src/ui/node_modules` does not match `src/ui/package-lock.json`, or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
 | `make check-ui-string-debt` | Ratchet the UI's hardcoded user-facing strings against `scripts/ui_string_debt.json`: a file may not gain one, an unlisted file may not have any, and the baseline may not be stale (part of `lint`, `fastlint` and `lint-cicd`) |
 | `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |
@@ -847,6 +852,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make ui-build` | Lint, typecheck, and production Vite build |
 | `make ui-i18n-extract` | Re-extract the UI's English message catalog into `src/ui/src/i18n/en.json` (the writer for `check-ui-i18n-catalog`; commit the result) |
 | `make ui-i18n-coverage` | Report translation coverage per locale catalog: missing, stale (English changed since translation) and invalid entries; advisory, never fails (`UI_I18N_COVERAGE_ARGS=--json` for JSON) |
+| `make ui-i18n-todo LOCALE=fr-CA` | Print, as JSON, the entries of a translation catalog that the change editing the English leaves missing or stale, with their English, description and glossary terms |
+| `make ui-i18n-ingest LOCALE=fr-CA FILE=<list>` | Write that list, given a `"message"` per entry, through the UI build's parity check, with each entry's `sourceHash` |
+| `make ui-i18n-drop-stale LOCALE=fr-CA` | Delete the stale and dead entries of a translation catalog, so the English shows until they are translated again |
 | `make docs-setup` | One-time docs site setup |
 | `make docs` | Build and serve the docs site locally |
 
@@ -855,8 +863,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
 an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
-still excludes a named list of 82 files from the linter and 171 from the
-formatter. Both caveats are explained under
+still excludes a named list of files from the linter and another from the
+formatter (their sizes are the `lintDebt` and `formatDebt` entries in
+`scripts/lint_debt.json`). Both caveats are explained under
 [the local gate set](#before-every-commit), along with how to pay one of those
 files off. Types are checked
 with `basedpyright` (`pyrightconfig.json`), which is installed separately with
@@ -894,7 +903,7 @@ are, say so in the PR description.
 
 **Region and service availability.** Not every Bedrock model is available in
 every Region. If you add one, follow the model checklist in
-`.claude/skills/documentation.md` — it covers the template enums, pricing,
+`.claude/skills/documentation/SKILL.md` — it covers the template enums, pricing,
 limits, client routing, UI, both documentation tiers, and the CHANGELOG.
 
 **Service quotas.** Bedrock and Textract throughput, Lambda concurrency, and the

@@ -56,6 +56,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
+import deployment_key
 import pytest
 import yaml
 
@@ -621,9 +622,9 @@ def test_the_agentcore_gateway_manager_grants_only_what_it_calls() -> None:
         if effect != "Allow":
             continue
         if any(action.startswith("kms:") for action in _actions(statement)):
-            assert statement.get("Resource") == {
-                "Fn::GetAtt": "CustomerManagedEncryptionKey.Arn"
-            }, f"the KMS actions must stay on the stack's key: {statement}"
+            assert deployment_key.is_deployment_key_arn(statement.get("Resource")), (
+                f"the KMS actions must stay on the deployment's key: {statement}"
+            )
         assert "NotAction" not in statement and "NotResource" not in statement, (
             statement
         )

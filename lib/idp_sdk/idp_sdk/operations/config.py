@@ -4,7 +4,7 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
@@ -14,6 +14,7 @@ from idp_sdk.exceptions import (
 )
 from idp_sdk.models import (
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -70,15 +71,19 @@ class ConfigOperation:
     def __init__(self, client):
         self._client = client
 
-    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
-        """Physical IDs for the requested logical IDs, in one pass over the stack."""
+    def _cloudformation_client(self):
+        """The CloudFormation client every stack lookup here uses."""
         import boto3
 
+        # Enhancement 8: use self._client._region consistently
+        return boto3.client("cloudformation", region_name=self._client._region)
+
+    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
+        """Physical IDs for the requested logical IDs, in one pass over the stack."""
         wanted = set(logical_ids)
         found: dict = {}
 
-        # Enhancement 8: use self._client._region consistently
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
+        cfn = self._cloudformation_client()
         paginator = cfn.get_paginator("list_stack_resources")
 
         for page in paginator.paginate(StackName=stack_name):
@@ -132,19 +137,33 @@ class ConfigOperation:
         validates against on-disk default limits instead of the stack's and can
         reject a config that is legitimately above a default cap.
 
-        `AWS_DEFAULT_REGION` (not `AWS_REGION`) because it is the variable boto3
-        consults for a client built with no explicit region, which is exactly the
-        case being covered. `_core/publish.py` uses the same bridge for the same
-        reason. Only set when a region was actually requested — writing it
-        unconditionally would pin the process to `None`.
+        Both region variables, because the two readers prefer different ones.
+        `AWS_DEFAULT_REGION` is the variable boto3 consults for a client built with
+        no explicit region, which is the client case above (`_core/publish.py`
+        uses the same bridge for the same reason). `AWS_REGION` is the one
+        `idp_common.regional_models.stack_region` reads first, and that answer
+        picks the Region's inference profile for every model key a configuration
+        leaves out (`RegionalModelDefaults`). Bridging only the first left a shell
+        whose `AWS_REGION` names another Region resolving those keys for that
+        Region, so `config-download` from an EU stack wrote `us.` profiles into
+        the file, which a re-upload then stores as explicit values.
+
+        The Region bridged is `idp_sdk.resolve_region`'s answer: `--region` when given,
+        otherwise the Region boto3's default session resolves, which is the one
+        the lookup below (`_cloudformation_client`) reaches, so it names the
+        Region the stack is actually found in. When nothing resolves (or a test
+        double stands in for boto3), nothing is bridged.
 
         Returns the configuration table's physical ID.
         """
         import os
 
-        region = self._client._region
+        from idp_sdk._core.region import resolve_region
+
+        region = resolve_region(self._client._region)
         if region:
             os.environ["AWS_DEFAULT_REGION"] = region
+            os.environ["AWS_REGION"] = region
 
         found = self._lookup_stack_resources(
             stack_name, {"ConfigurationTable", "ConfigurationBucket"}
@@ -222,10 +241,10 @@ class ConfigOperation:
         Args:
             features: A feature set (``min``, ``core``, ``all``), or one or more
                 section names, comma-separated or as a list (see
-                ``parse_features``). ``all`` is every section except hitl, chat
-                and rule_validation. Uploaded, every setting the template
-                writes resets the deployment's value to the default, so edit it
-                first
+                ``parse_features``). ``all`` is every section except hitl, chat,
+                rule_validation and routing. Uploaded, every setting the
+                template writes resets the deployment's value to the default,
+                so edit it first
             pattern: Pattern to use (pattern-1, pattern-2)
             output: Optional output file path
             include_prompts: Include prompt templates
@@ -408,6 +427,104 @@ class ConfigOperation:
             return None
         classes = user_config.get("classes")
         return len(classes) if isinstance(classes, list) else 0
+
+    def routing_to_dmn(self, config: Any, dmn_version: str = "1.5") -> str:
+        """Write a configuration's review routing table as DMN XML.
+
+        The conversion is local: it reads no stack and calls no AWS service. The
+        DMN file holds the routing table (its rules, conditions and outcomes) and
+        can be opened in a DMN editor; ``routing_from_dmn`` reads it back.
+
+        Args:
+            config: A configuration as a dict, or the path of a YAML or JSON
+                configuration file. Its ``routing`` section is converted; a dict
+                that is a routing section itself (it has ``tables``) is accepted
+                too
+            dmn_version: The DMN version to write: "1.5" or "1.3"
+
+        Returns:
+            The DMN XML
+
+        Raises:
+            IDPValidationError: the configuration has no routing section, or the
+                section cannot be written as a DMN decision table
+        """
+        from pydantic import ValidationError
+
+        from idp_common.config.routing_models import RoutingConfig
+        from idp_common.decision_tables.models import DecisionTableError
+        from idp_common.review_queues import routing_dmn
+
+        if isinstance(config, str):
+            config = self._load_config_file(config)
+        if not isinstance(config, dict):
+            raise IDPValidationError(
+                "The configuration must be a mapping with a routing section"
+            )
+        section = config.get("routing") if "routing" in config else config
+        if not isinstance(section, dict) or "tables" not in section:
+            raise IDPValidationError("The configuration has no routing section")
+        try:
+            routing = RoutingConfig.model_validate(section)
+            return routing_dmn.export_xml(routing, dmn_version=dmn_version)
+        except ValidationError as e:
+            raise IDPValidationError(
+                f"The routing section is not valid: {e.error_count()} problem(s), "
+                f"the first at "
+                f"{'.'.join(str(part) for part in e.errors()[0]['loc']) or 'the top'}"
+            ) from e
+        except DecisionTableError as e:
+            raise IDPValidationError(
+                f"The routing section cannot be written: {e}"
+            ) from e
+
+    def routing_from_dmn(self, xml: Any) -> dict:
+        """Read a DMN decision table as a review routing section.
+
+        The conversion is local: it reads no stack and calls no AWS service, so
+        the queues the rules name are not checked here. They are checked when a
+        configuration that holds the section is uploaded to a stack.
+
+        Args:
+            xml: The DMN XML, as text or bytes
+
+        Returns:
+            ``{"routing": {...}}``: the section under its configuration key, ready
+            to be merged into a configuration or written to a file and uploaded
+
+        Raises:
+            IDPValidationError: the XML is not a decision table this product can
+                read. The message names what is wrong
+        """
+        from idp_common.decision_tables.models import DecisionTableError
+        from idp_common.review_queues import routing_dmn
+
+        if not isinstance(xml, (str, bytes)) or not xml.strip():
+            raise IDPValidationError("The DMN XML is empty")
+        try:
+            routing = routing_dmn.import_xml(xml)
+        except DecisionTableError as e:
+            raise IDPValidationError(f"The DMN file cannot be read: {e}") from e
+        return {"routing": routing.model_dump()}
+
+    def _routing_queue_lookup(self, stack_name: str, user_config: Any):
+        """A lookup of the stack's production review queues, for an upload.
+
+        Routing rules name review queues by id, and a rule that names a queue the
+        stack does not have is refused when it is saved. The lookup is built only
+        for a configuration that has a routing section. A stack with no review
+        queues table answers None: queue ids are then checked for their form.
+        """
+        if not isinstance(user_config, dict) or "routing" not in user_config:
+            return None
+        table = self._client._get_stack_resources(stack_name).get("HITLTable")
+        if not table:
+            return None
+        from idp_common.review_queues.queue_defs import production_queue_lookup
+        from idp_common.review_queues.store import ReviewStore
+
+        store = ReviewStore(table, region=self._client._region)
+        return production_queue_lookup(store.queue_defs)
 
     def migrate(
         self,
@@ -673,7 +790,10 @@ class ConfigOperation:
             **kwargs: Additional parameters
 
         Returns:
-            ConfigUploadResult with upload status
+            ConfigUploadResult with upload status. Its ``warnings`` list what the
+            saved configuration will not do although the upload succeeded, for
+            example a routing rule that tests a policy rule result while policy
+            rule validation is off for the profile.
         """
         config_version = resolve_config_profile(
             config_profile, config_version, required=True
@@ -712,8 +832,16 @@ class ConfigOperation:
         if isinstance(user_config, dict):
             user_config["managed"] = False
 
+        # The validation warnings travel with every result from here on, success or
+        # not. `validate` already computes them (unread keys with the field they were
+        # meant to be, prompt-cache and fallback-class findings, ...), and before they
+        # were carried here they were dropped on this path: `config-upload` printed
+        # none of them, so a finding added to validate_config reached only callers of
+        # `config-validate`, never the command that stores the configuration.
+        validation_warnings: list[str] = []
         if validate:
             result = self.validate(config_file, pattern=pattern or "pattern-2")
+            validation_warnings = list(result.warnings)
             if not result.valid:
                 # The gate holds either way — an unchecked configuration is not
                 # stored — but the two refusals ask for different things from the
@@ -728,6 +856,7 @@ class ConfigOperation:
                 return ConfigUploadResult(
                     success=False,
                     error=f"{reason}: {'; '.join(result.errors)}",
+                    warnings=validation_warnings,
                 )
 
         self._configure_config_env(name)
@@ -765,12 +894,17 @@ class ConfigOperation:
                     version_created = True
 
             config_json = json.dumps(user_config)
+            # What the saved configuration will not do although the save is
+            # accepted: the manager adds to this list and still returns a bool.
+            warnings: list[str] = []
             success = manager.handle_update_custom_configuration(
                 config_json,
                 version=config_version,
                 description=description,
                 created_by=created_by,
                 revision_notes=revision_notes,
+                routing_queue_lookup=self._routing_queue_lookup(name, user_config),
+                warnings=warnings,
             )
 
             # Report the revision this upload produced. Without it a caller can
@@ -797,9 +931,13 @@ class ConfigOperation:
                 version_created=version_created,
                 revision=revision,
                 error=None if success else "Upload failed",
+                # What validation found, then what the save accepted and will not do.
+                warnings=[*validation_warnings, *warnings],
             )
         except Exception as e:
-            return ConfigUploadResult(success=False, error=str(e))
+            return ConfigUploadResult(
+                success=False, error=str(e), warnings=validation_warnings
+            )
 
     def list(
         self,
@@ -1156,6 +1294,98 @@ class ConfigOperation:
                 bda_unsent_classes=bda_unsent_classes,
                 error=str(e),
             )
+
+    def bootstrap(
+        self,
+        prompt: str,
+        stack_name: Optional[str] = None,
+        *,
+        class_name: Optional[str] = None,
+        field_hints: Optional[List[str]] = None,
+        source_profile: Optional[str] = None,
+        target_profile: Optional[str] = None,
+        doc_count: int = 3,
+        quality_threshold: int = 7,
+        augment: bool = False,
+        model_id: Optional[str] = None,
+        generate_test_set: bool = True,
+        status_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> ConfigBootstrapResult:
+        """Author a document class from a description and save it to a profile.
+
+        The stack-connected half of ``idp-cli bootstrap`` (Quick Start's CLI
+        path): ``idp_common.synthesis.bootstrap.run_bootstrap`` searches the
+        catalog for a close class, authors a JSON Schema from ``prompt``, merges it
+        into ``target_profile`` (created when it does not exist, from the default
+        profile) and, when the document generator is installed and a test-set
+        bucket is known, generates a small labelled synthetic test set. It never
+        activates the profile.
+
+        Args:
+            prompt: Plain-language description of the document type.
+            stack_name: Optional stack name override.
+            class_name: Document class name to use as ``$id``.
+            field_hints: Fields the schema must include.
+            source_profile: Existing profile whose classes seed the catalog.
+            target_profile: Profile to write (default ``bootstrap-<class>``).
+                ``default`` and stack-managed profiles are refused: the result
+                has ``success=False`` and says why.
+            doc_count: Synthetic documents to generate.
+            quality_threshold: Generation quality threshold (1-10).
+            augment: Apply image augmentation to generated documents.
+            model_id: Bedrock model override for authoring and generation.
+            generate_test_set: ``False`` skips the synthetic test set even when
+                the generator and a ``TEST_SET_BUCKET`` are available.
+            status_callback: ``callable(percent, message)`` for progress.
+
+        Returns:
+            ConfigBootstrapResult. ``success`` false carries ``error``; ``success``
+            true may still carry a non-fatal note in ``error``.
+        """
+        import os
+
+        from idp_common.config.configuration_manager import ConfigurationManager
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        name = self._client._require_stack(stack_name)
+        # Table AND bucket: the save cuts a revision, and a save without
+        # CONFIGURATION_BUCKET cannot record one (#1778).
+        config_table = self._configure_config_env(name)
+        os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+        config_manager = ConfigurationManager(region=self._client._region)
+        test_set_bucket = (
+            os.environ.get("TEST_SET_BUCKET") if generate_test_set else None
+        )
+
+        request = bootstrap_mod.BootstrapRequest(
+            prompt=prompt,
+            class_name=class_name,
+            field_hints=list(field_hints or []),
+            config_version=source_profile,
+            target_version=target_profile,
+            doc_count=doc_count,
+            quality_threshold=quality_threshold,
+            augment=augment,
+            model_id=model_id,
+        )
+        result = bootstrap_mod.run_bootstrap(
+            request,
+            config_manager=config_manager,
+            test_set_bucket=test_set_bucket,
+            status_cb=status_callback,
+        )
+        return ConfigBootstrapResult(
+            success=result.success,
+            config_profile=result.config_version,
+            class_schema=result.schema,
+            resolution_tier=result.resolution_tier,
+            catalog_match=result.catalog_match,
+            test_set_id=result.test_set_id,
+            docs_generated=result.docs_generated,
+            generator_available=result.generator_available,
+            messages=list(result.messages),
+            error=result.error,
+        )
 
     def delete(
         self,

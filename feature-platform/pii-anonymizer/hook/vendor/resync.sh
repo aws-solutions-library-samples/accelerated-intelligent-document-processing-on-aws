@@ -4,7 +4,7 @@
 # observability, throttle_handler, log_scrubber, core/redactor).
 #
 # Usage: bash resync.sh /path/to/pii-anonymizer-clone
-# Driven by .claude/skills/sync-pii-anonymizer.md — read that first.
+# Driven by .claude/skills/sync-pii-anonymizer/SKILL.md — read that first.
 # The authoritative file list lives in PROVENANCE.md (this script must match it).
 set -euo pipefail
 
@@ -45,4 +45,4 @@ PY
 
 echo "Done. Now: (1) scan for excluded-module leaks, (2) run the import smoke"
 echo "test, (3) update PROVENANCE.md's commit SHA/date, (4) lint + tests + SRT."
-echo "See .claude/skills/sync-pii-anonymizer.md steps 4-7."
+echo "See .claude/skills/sync-pii-anonymizer/SKILL.md steps 4-7."

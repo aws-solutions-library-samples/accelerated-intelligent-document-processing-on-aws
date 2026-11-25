@@ -6,6 +6,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { Button, useAuthenticator } from '@aws-amplify/ui-react';
 import { Spinner } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 
 import { SettingsContext } from '../contexts/settings';
 import { InboxProvider } from '../contexts/inbox';
@@ -22,12 +23,15 @@ import TestStudioRoutes from './TestStudioRoutes';
 import RequireRole from './RequireRole';
 import AgentChatRoutes from './AgentChatRoutes';
 import QuickStartWidget from '../components/agent-chat/QuickStartWidget';
+import useQuickStartAvailable from '../hooks/use-quick-start-available';
 import FeaturesRoutes from './FeaturesRoutes';
 import InboxRoutes from './InboxRoutes';
 import ReviewQueuesRoutes from './ReviewQueuesRoutes';
 import MyWorkRoutes from './MyWorkRoutes';
 import WelcomePage from '../pages/WelcomePage';
 import { NoRoleAssigned, SessionError } from './SessionStates';
+import TenantSelectionGate from '../components/tenant-selection/TenantSelectionGate';
+import { clearTenantHint, needsTenantChoice } from '../utils/tenant-selection';
 
 import {
   DOCUMENTS_PATH,
@@ -49,6 +53,14 @@ import {
 
 const logger = new ConsoleLogger('AuthRoutes');
 
+const messages = defineMessages<{ signOut: NoMessageValues }>({
+  signOut: {
+    id: 'routes.auth.signOut',
+    defaultMessage: 'Sign Out',
+    description: 'The one button of the /logout page, which signs the user out.',
+  },
+});
+
 // Who opens Test Studio. A Reviewer works Production review queues only.
 const TEST_STUDIO_ROLES = ['Admin', 'Author', 'Annotator', 'Viewer'] as const;
 
@@ -58,7 +70,19 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isQueueWorker, isAnnotatorOnly, isReviewerOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
+  const {
+    isQueueWorker,
+    isAnnotatorOnly,
+    isReviewerOnly,
+    hasNoRole,
+    sessionError,
+    retrySession,
+    allowedConfigVersions,
+    eligibleTenants,
+    subject,
+    loading: roleLoading,
+  } = useUserRole();
+  const quickStartAvailable = useQuickStartAvailable();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -142,13 +166,41 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
     );
   }
 
+  // TenantSelection=UserSelect: the identity provider granted this user several
+  // tenants and none is active yet. The app mounts only once they choose, so no page
+  // requests data under a scope that shows them nothing. An Admin, a user with one
+  // tenant and a user granted none never reach this: there is nothing for them to pick.
+  if (needsTenantChoice(allowedConfigVersions, eligibleTenants)) {
+    return (
+      <SettingsContext.Provider value={settingsContextValue}>
+        <TenantSelectionGate
+          eligibleTenants={eligibleTenants}
+          subject={subject}
+          onSignOut={() => {
+            clearTenantHint();
+            signOut();
+          }}
+        />
+      </SettingsContext.Provider>
+    );
+  }
+
   const loginRoute = (
     <Route
       path={LOGIN_PATH}
       element={<Navigate to={!redirectParam || redirectParam === LOGIN_PATH ? landingPath : `${redirectParam}`} replace />}
     />
   );
-  const logoutRoute = <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />;
+  const logoutRoute = (
+    <Route
+      path={LOGOUT_PATH}
+      element={
+        <Button onClick={signOut}>
+          <FormattedMessage {...messages.signOut} />
+        </Button>
+      }
+    />
+  );
 
   // An Annotator-only user's shell: Home (Inbox, Tasks, Queues), the queue pages and
   // Test Studio items (under /review-queues), and a document's edit page (where Inbox
@@ -194,7 +246,7 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const shell = (
     <>
       {routes}
-      {!isAnnotatorOnly && <QuickStartWidget />}
+      {quickStartAvailable && <QuickStartWidget />}
     </>
   );
 

@@ -15,6 +15,7 @@ import {
   StatusIndicator,
   Textarea,
 } from '@cloudscape-design/components';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import StringConstraints from './constraints/StringConstraints';
 import NumberConstraints from './constraints/NumberConstraints';
@@ -23,6 +24,7 @@ import ObjectConstraints from './constraints/ObjectConstraints';
 import MetadataFields from './constraints/MetadataFields';
 import ValueConstraints from './constraints/ValueConstraints';
 import ExamplesEditor from './constraints/ExamplesEditor';
+import PolicyUploadHistory from './PolicyUploadHistory';
 import PageTypesEditor, { PageTypeEntry } from './constraints/PageTypesEditor';
 import {
   TYPE_OPTIONS,
@@ -39,6 +41,7 @@ import {
   X_AWS_IDP_CONFIDENCE_THRESHOLD,
   X_AWS_IDP_EXAMPLES,
   X_AWS_IDP_DOCUMENT_NAME_REGEX,
+  X_AWS_IDP_POLICY_UPLOADS,
   X_AWS_IDP_PAGE_CONTENT_REGEX,
   X_AWS_IDP_EXTRACTION_MODEL,
   X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
@@ -459,6 +462,15 @@ const MultiInstanceModeField = ({
   );
 };
 
+const messages = defineMessages<{ excludeDescription: NoMessageValues }>({
+  excludeDescription: {
+    id: 'schemaBuilder.inspector.excludeDescription',
+    defaultMessage:
+      'When checked, sections classified as this class are SKIPPED by downstream stages (extraction, assessment, summarization, policy rule validation, evaluation). Use for static boilerplate pages (instructions, legal notices, cover pages) that carry no extractable data.',
+    description: 'Help under the Exclude from Processing checkbox of a document class in the schema builder.',
+  },
+});
+
 const SchemaInspector = ({
   selectedClass = null,
   selectedAttribute = null,
@@ -473,6 +485,7 @@ const SchemaInspector = ({
   onNavigateToAttribute = null,
   isRuleSchema = false,
 }: SchemaInspectorProps): React.JSX.Element => {
+  const intl = useIntl();
   // Dynamic labels based on schema type
   const typeLabel = isRuleSchema ? 'policy' : 'document';
   const TypeLabel = isRuleSchema ? 'Policy' : 'Document';
@@ -555,6 +568,13 @@ const SchemaInspector = ({
             />
           </FormField>
 
+          {/* Only for a class Policy Discovery built: one with an upload record (#608). */}
+          {isRuleSchema &&
+            Array.isArray(selectedClass[X_AWS_IDP_POLICY_UPLOADS]) &&
+            (selectedClass[X_AWS_IDP_POLICY_UPLOADS] as unknown[]).length > 0 && (
+              <PolicyUploadHistory uploads={selectedClass[X_AWS_IDP_POLICY_UPLOADS]} />
+            )}
+
           {!!selectedClass[X_AWS_IDP_DOCUMENT_TYPE] && (
             <>
               {!isRuleSchema && (
@@ -575,14 +595,14 @@ const SchemaInspector = ({
                 label="Document Name Regex"
                 description={
                   isRuleSchema
-                    ? 'Pattern to match document ID/name. When matched, instantly classifies all pages as this type policy (single-class configs only). Use case-insensitive patterns like (?i).*(medicare|global).*'
+                    ? 'Pattern to match document ID/name. When matched, instantly classifies all pages as this type policy (single-class configs only). Use case-insensitive patterns like (?i).*(bank[_ -]?statement).*'
                     : `Pattern to match ${typeLabel} ID/name. When matched, instantly classifies all pages as this type (single-class configs only). Use case-insensitive patterns like (?i).*(invoice|bill).*`
                 }
               >
                 <Input
                   value={(selectedClass[X_AWS_IDP_DOCUMENT_NAME_REGEX] as string) || ''}
                   onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_DOCUMENT_NAME_REGEX]: detail.value || undefined })}
-                  placeholder={isRuleSchema ? 'e.g., (?i).*(medicare|global).*' : 'e.g., (?i).*(invoice|bill).*'}
+                  placeholder={isRuleSchema ? 'e.g., (?i).*(bank[_ -]?statement).*' : 'e.g., (?i).*(invoice|bill).*'}
                 />
               </FormField>
 
@@ -590,14 +610,14 @@ const SchemaInspector = ({
                 label="Page Content Regex"
                 description={
                   isRuleSchema
-                    ? 'Pattern to match page text content. When matched, classifies the document as this policy. Use case-insensitive patterns like (?i)(medicare\\s+number|amount\\s+due)'
+                    ? 'Pattern to match page text content. When matched, classifies the document as this policy. Use case-insensitive patterns like (?i)(statement\\s+period|account\\s+summary)'
                     : 'Pattern to match page text content. When matched during page-level classification, classifies the page as this type. Use case-insensitive patterns like (?i)(invoice\\s+number|amount\\s+due)'
                 }
               >
                 <Input
                   value={(selectedClass[X_AWS_IDP_PAGE_CONTENT_REGEX] as string) || ''}
                   onChange={({ detail }) => onUpdateClass({ [X_AWS_IDP_PAGE_CONTENT_REGEX]: detail.value || undefined })}
-                  placeholder={isRuleSchema ? 'e.g., (?i)(medicare\\s+number)' : 'e.g., (?i)(invoice\\s+number|bill\\s+to)'}
+                  placeholder={isRuleSchema ? 'e.g., (?i)(statement\\s+period)' : 'e.g., (?i)(invoice\\s+number|bill\\s+to)'}
                 />
               </FormField>
 
@@ -611,10 +631,7 @@ const SchemaInspector = ({
 
               {!isRuleSchema && (
                 <>
-                  <FormField
-                    label="Exclude from Processing (Optional)"
-                    description="When checked, sections classified as this class are SKIPPED by downstream stages (extraction, assessment, summarization, rule validation, evaluation). Use for static boilerplate pages (instructions, legal notices, cover pages) that carry no extractable data."
-                  >
+                  <FormField label="Exclude from Processing (Optional)" description={intl.formatMessage(messages.excludeDescription)}>
                     <Checkbox
                       checked={Boolean(selectedClass[X_AWS_IDP_EXCLUDE_FROM_PROCESSING])}
                       onChange={({ detail }) =>

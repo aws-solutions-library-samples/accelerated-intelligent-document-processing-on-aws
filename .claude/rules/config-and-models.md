@@ -57,9 +57,9 @@ and limits, and the Bedrock client.
 - `idp-cli config-validate --config-file <file>`, which lists ignored keys
 
 ## Sources
-- [.claude/skills/add-model.md](../skills/add-model.md): the ground-truth
+- [.claude/skills/add-model/SKILL.md](../skills/add-model/SKILL.md): the ground-truth
   checklist, file map and common traps for models
-- [.claude/skills/extraction-pipeline.md](../skills/extraction-pipeline.md): the
+- [.claude/skills/extraction-pipeline/SKILL.md](../skills/extraction-pipeline/SKILL.md): the
   configuration hierarchy, schema extensions and agentic extraction settings
 - [docs/configuration.md](../../docs/configuration.md): system defaults,
   unknown-key reporting, retired models and prompt caching

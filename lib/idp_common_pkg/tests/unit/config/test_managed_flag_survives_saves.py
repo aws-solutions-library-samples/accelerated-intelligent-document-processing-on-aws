@@ -17,6 +17,11 @@ through their real save path, against a profile seeded from the real
 `config_library/managed_config` presets the way the stack's configuration custom
 resource seeds it (`merge_config_with_defaults`, then `save_configuration`).
 Engine: moto's DynamoDB and S3; nothing here depends on expression semantics.
+
+The synthesis bootstrap and Quick Start's create_config_version do not write a
+stack-managed profile at all: a stack update replaces it with its preset, so the
+class they would add goes into a profile of its own. They are driven against the
+same seeded profiles and must leave them as they were.
 """
 
 from __future__ import annotations
@@ -191,9 +196,13 @@ def _via_blueprint_optimizer(mgr: ConfigurationManager, name: str) -> None:
 
 
 def _via_synthesis_bootstrap(mgr: ConfigurationManager, name: str) -> None:
-    from idp_common.synthesis.bootstrap import merge_class_into_version
+    from idp_common.synthesis.bootstrap import (
+        ProtectedProfileError,
+        merge_class_into_version,
+    )
 
-    merge_class_into_version(_class("BootstrapClass"), name, config_manager=mgr)
+    with pytest.raises(ProtectedProfileError, match="stack-managed"):
+        merge_class_into_version(_class("BootstrapClass"), name, config_manager=mgr)
 
 
 def _via_quick_start_bootstrap_tool(mgr: ConfigurationManager, name: str) -> None:
@@ -205,6 +214,18 @@ def _via_quick_start_bootstrap_tool(mgr: ConfigurationManager, name: str) -> Non
         create_config_version_impl(json.dumps(_class("QuickStartClass")), name)
     )
     assert result["config_version"] == name
+    assert result["activated"] is False
+    assert "stack-managed" in result["error"]
+
+
+def _via_quick_start_processing_options(mgr: ConfigurationManager, name: str) -> None:
+    from idp_common.agents.quick_start.tools.bootstrap_tools import (
+        set_processing_options_impl,
+    )
+
+    result = json.loads(set_processing_options_impl(name, "one", False))
+    assert result["refused"] is True
+    assert "stack-managed" in result["error"]
 
 
 def _via_discovery_upload_resolver(mgr: ConfigurationManager, name: str) -> None:
@@ -270,8 +291,6 @@ def _via_save_configuration_with_model_false(
 SAVE_PATHS: Dict[str, Callable[[ConfigurationManager, str], None]] = {
     "classes_discovery": _via_classes_discovery,
     "blueprint_optimizer": _via_blueprint_optimizer,
-    "synthesis_bootstrap": _via_synthesis_bootstrap,
-    "quick_start_bootstrap_tool": _via_quick_start_bootstrap_tool,
     "discovery_upload_resolver": _via_discovery_upload_resolver,
     "bda_blueprint_service_class_write": _via_bda_blueprint_service_class_write,
     "editor_update": _via_editor_update,
@@ -280,6 +299,33 @@ SAVE_PATHS: Dict[str, Callable[[ConfigurationManager, str], None]] = {
     "explicit_false_in_body": _via_explicit_false_in_body,
     "save_configuration_with_managed_false": _via_save_configuration_with_model_false,
 }
+
+
+REFUSING_PATHS: Dict[str, Callable[[ConfigurationManager, str], None]] = {
+    "synthesis_bootstrap": _via_synthesis_bootstrap,
+    "quick_start_bootstrap_tool": _via_quick_start_bootstrap_tool,
+    "quick_start_processing_options": _via_quick_start_processing_options,
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", MANAGED_PRESETS)
+@pytest.mark.parametrize("path", sorted(REFUSING_PATHS))
+def test_bootstrap_leaves_a_managed_profile_as_it_was(manager, path, name):
+    _seed_managed(manager, name)
+    head_before = _head(manager, name)
+    classes_before = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, name)["classes"]
+
+    REFUSING_PATHS[path](manager, name)
+
+    head = _head(manager, name)
+    assert head["UpdatedAt"] == head_before["UpdatedAt"]
+    assert head["LatestRevision"] == head_before["LatestRevision"]
+    assert head["Managed"] is True
+    assert (
+        manager.get_raw_configuration(CONFIG_TYPE_CONFIG, name)["classes"]
+        == classes_before
+    )
 
 
 @pytest.mark.unit

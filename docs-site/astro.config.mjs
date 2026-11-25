@@ -32,11 +32,14 @@ export default defineConfig({
           label: "Overview",
           items: [
             { label: "Welcome", slug: "index" },
+            { label: "IDP in Action", slug: "idp-in-action" },
             {
               label: "Blogs, Customer Stories & Research",
               slug: "references",
             },
             { label: "Hands-on Workshops", slug: "workshops" },
+            { label: "Solution Profile", slug: "solution-profile" },
+            { label: "Fit Check", slug: "fit-check" },
           ],
         },
         {
@@ -116,7 +119,9 @@ export default defineConfig({
             { label: "Few-Shot Examples", slug: "few-shot-examples" },
             { label: "Human-in-the-Loop Review", slug: "human-review" },
             { label: "Review Queues", slug: "review-queues" },
+            { label: "Review Routing", slug: "review-routing" },
             { label: "Rule Validation", slug: "rule-validation" },
+            { label: "Z3 Rule Validation Engine", slug: "rule-validation-z3" },
             { label: "Missing Page Handling", slug: "missing-page-handling" },
             {
               label: "OCR Image Sizing Guide",
@@ -199,6 +204,10 @@ export default defineConfig({
                   slug: "extensions/auto-optimizer",
                 },
                 {
+                  label: "Decision Model: Strands Decider",
+                  slug: "extensions/decision-model-decider",
+                },
+                {
                   label: "IDP Monitor",
                   slug: "extensions/idp-monitor",
                 },
@@ -225,6 +234,10 @@ export default defineConfig({
               ],
             },
             {
+              label: "Document Attributes",
+              slug: "document-attributes",
+            },
+            {
               label: "Document Versions",
               slug: "document-versions",
             },
@@ -235,6 +248,10 @@ export default defineConfig({
             {
               label: "Lambda Hook Inference",
               slug: "lambda-hook-inference",
+            },
+            {
+              label: "Decision Models",
+              slug: "decision-models",
             },
             { label: "Nova Fine-Tuning", slug: "nova-finetuning" },
             { label: "Custom Model Fine-Tuning", slug: "custom-model-finetuning" },
@@ -263,6 +280,7 @@ export default defineConfig({
           items: [
             { label: "Threat Model", slug: "threat-model" },
             { label: "Malware Scanning", slug: "malware-scanning" },
+            { label: "Customer Managed KMS Key", slug: "customer-managed-kms-key" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",
@@ -320,6 +338,10 @@ export default defineConfig({
           label: "Migration",
           items: [
             {
+              label: "v0.6.15 → v0.6.16 Migration",
+              slug: "migration-v0615-to-v0616",
+            },
+            {
               label: "v0.6.12 → v0.6.13 Migration",
               slug: "migration-v0612-to-v0613",
             },
@@ -329,17 +351,12 @@ export default defineConfig({
               label: "Granular Assessment Retirement",
               slug: "migration-granular-retirement",
             },
+            {
+              label: "Data Mart Migration Runbook",
+              slug: "data-mart-migration-runbook",
+            },
           ],
         },
-        // AUTO-SIDEBAR-START
-        {
-          label: "New & Uncategorized",
-          items: [
-            { label: "Data Mart Migration Runbook", slug: "data-mart-migration-runbook" },
-            { label: "Rule Validation Z3", slug: "rule-validation-z3" },
-          ],
-        },
-        // AUTO-SIDEBAR-END
       ],
     }),
   ],

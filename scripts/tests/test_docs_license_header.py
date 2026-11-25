@@ -3,7 +3,7 @@
 
 """Every page under ``docs/`` carries the MIT-0 licence header where the rule puts it.
 
-``.claude/skills/documentation.md`` requires each documentation page to open with
+``.claude/skills/documentation/SKILL.md`` requires each documentation page to open with
 its YAML frontmatter, then the copyright line and the SPDX line, then the H1. The
 per-page doc tests (``test_testing_doc.py``, ``test_well_architected_doc.py`` and
 others) checked that for the page each one owns, and nothing checked it for the
@@ -112,7 +112,7 @@ def test_every_docs_page_carries_the_licence_header() -> None:
     assert not failures, (
         "Every docs/ page needs, after its frontmatter and before the H1:\n  "
         + "\n  ".join(LICENSE_LINES)
-        + "\n(see .claude/skills/documentation.md). Pages that do not:\n"
+        + "\n(see .claude/skills/documentation/SKILL.md). Pages that do not:\n"
         + "\n".join(failures)
     )
 

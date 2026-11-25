@@ -14,6 +14,7 @@
 #   - base-classification.yaml:    LLM classification settings
 #   - base-extraction.yaml:        LLM extraction settings
 #   - base-confidence.yaml:        Per-field confidence assessment (v0.6) + hitl
+#   - base-routing.yaml:           Review routing table (built-in rules)
 #   - base-geometry.yaml:          Field bounding-box geometry mode (v0.6)
 #   - base-summarization.yaml:     Document summarization
 #   - base-chat.yaml:              Chat-with-Document (interactive Q&A)
@@ -38,6 +39,7 @@ _inherits:
   - base-classification.yaml
   - base-extraction.yaml
   - base-confidence.yaml
+  - base-routing.yaml
   - base-geometry.yaml
   - base-summarization.yaml
   - base-chat.yaml

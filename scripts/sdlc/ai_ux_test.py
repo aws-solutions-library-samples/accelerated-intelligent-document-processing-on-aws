@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT-0
 """Advisory UX test of one merge request's web UI, posted with a narrated video.
 
-This is the unattended form of ``.claude/skills/ux-test.md``, under the contract in
-``.claude/skills/ux-test-ci.md``. For one MR it decides in about a minute whether
+This is the unattended form of ``.claude/skills/ux-test/SKILL.md``, under the contract in
+``.claude/skills/ux-test-ci/SKILL.md``. For one MR it decides in about a minute whether
 there is anything to look at; then it serves the MR's own UI build to a confined
 headless Chrome, signs a persona of the long-lived review stack ``idp-ux-nightly``
 in, records while Claude Code over Amazon Bedrock drives that browser, renders the
@@ -339,8 +339,8 @@ HARNESS_PATHS = (
     "scripts/ux_recorder_mcp.py",
     "scripts/check_markdown_links.py",
     "scripts/ux_flows.yaml",
-    ".claude/skills/ux-test.md",
-    ".claude/skills/ux-test-ci.md",
+    ".claude/skills/ux-test/SKILL.md",
+    ".claude/skills/ux-test-ci/SKILL.md",
 )
 #: This file, as the CI job's ``UX_ENTRY`` must name it, relative to the tree.
 ENTRY = "scripts/sdlc/ai_ux_test.py"
@@ -349,7 +349,7 @@ ENTRY = "scripts/sdlc/ai_ux_test.py"
 REVIEW_RELAY = "scripts/ux_runner/review_relay.py"
 #: The two skills the prompt inlines, in that order. Read from the harness, so the
 #: MR under test cannot rewrite its own instructions.
-SKILL_FILES = (".claude/skills/ux-test-ci.md", ".claude/skills/ux-test.md")
+SKILL_FILES = (".claude/skills/ux-test-ci/SKILL.md", ".claude/skills/ux-test/SKILL.md")
 #: The flow catalogue the selector reads, from the harness for the same reason.
 FLOWS_FILE = "scripts/ux_flows.yaml"
 #: The long-lived review stack, and the one stack whose screens this job turns into
@@ -995,11 +995,24 @@ def _search_path(tool: str = "node", base: str = agent.DEFAULT_SEARCH_PATH) -> s
     return f"{tool_dir}{os.pathsep}{base}"
 
 
+def _without_front_matter(text: str) -> str:
+    """``text`` without a leading ``---`` front-matter block: that block is metadata
+    for the assistants that register a skill, not part of the prompt."""
+    match = re.match(r"---\n.*?\n---\n\n?", text, flags=re.DOTALL)
+    return text[match.end() :] if match else text
+
+
 def _skills() -> dict[str, str]:
-    """Both pinned skills, by file name, read from the harness tree."""
+    """Both pinned skills, keyed ``<skill name>.md``, read from the harness tree.
+
+    Each skill is ``.claude/skills/<name>/SKILL.md``, so the key comes from the
+    directory: the file name is the same for every skill.
+    """
     try:
         return {
-            Path(name).name: (paths.HARNESS_ROOT / name).read_text(encoding="utf-8")
+            f"{Path(name).parent.name}.md": _without_front_matter(
+                (paths.HARNESS_ROOT / name).read_text(encoding="utf-8")
+            )
             for name in SKILL_FILES
         }
     except OSError as error:

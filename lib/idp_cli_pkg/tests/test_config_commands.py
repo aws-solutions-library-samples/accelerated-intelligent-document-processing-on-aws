@@ -1215,6 +1215,123 @@ def test_upload_offers_the_escape_hatch_when_the_checks_could_not_run_either(
         assert stack.item("p1") is None
 
 
+#: Valid, with an unread nested key: the model's field is `ocr.image.dpi`, so
+#: validation warns about `ocr.dpi` and names the field it was meant to be.
+_UPLOAD_WITH_UNREAD_KEY = (
+    "classes:\n  - name: invoice\n    description: An invoice\nocr:\n  dpi: 150\n"
+)
+
+
+def _upload_args(*extra):
+    return [
+        "config-upload",
+        "--stack-name",
+        STACK,
+        "--config-file",
+        "config.yaml",
+        "--config-profile",
+        "p1",
+        "--region",
+        REGION,
+        *extra,
+    ]
+
+
+@pytest.mark.unit
+def test_upload_prints_the_validation_warnings_and_still_succeeds():
+    """
+    The findings `config-validate` prints for a file are printed by the command
+    that stores it, too. They used to be dropped on this path, so a warning added
+    to the validator reached nobody who uploaded. Non-fatal: the record is written
+    and the exit code stays 0.
+    """
+    with config_stack() as stack:
+        with write_config(_UPLOAD_WITH_UNREAD_KEY) as runner:
+            result = runner.invoke(cli, _upload_args())
+            validated = runner.invoke(
+                cli, ["config-validate", "--config-file", "config.yaml"]
+            )
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "Configuration uploaded successfully" in flat
+        assert "Warnings:" in flat
+        assert "Did you mean 'ocr.image.dpi'?" in flat
+        # Every finding config-validate reports for the file, not only the first.
+        validated_flat = " ".join(validated.output.split())
+        reported = [
+            line.split("⚠", 1)[1].strip()
+            for line in validated.output.splitlines()
+            if line.strip().startswith("⚠")
+        ]
+        assert len(reported) >= 2, validated.output
+        for line in reported:
+            assert line in validated_flat
+            assert line in flat, line
+        assert stack.item("p1") is not None
+
+
+@pytest.mark.unit
+def test_upload_prints_the_warnings_beside_a_validation_refusal(api_calls):
+    """The unread key is often why the value the author set did not take."""
+    with config_stack() as stack:
+        api_calls.clear()
+        with write_config(
+            "extraction:\n  model: us.anthropic.claude-nope-v9:0\n"
+            + _UPLOAD_WITH_UNREAD_KEY
+        ) as runner:
+            result = runner.invoke(cli, _upload_args())
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert "Failed to upload configuration: Validation failed" in flat
+        assert "Warnings:" in flat
+        assert "Did you mean 'ocr.image.dpi'?" in flat
+        assert api_calls.of("PutItem") == []
+        assert stack.item("p1") is None
+
+
+#: Valid, and both warnings it produces quote text the author wrote that rich would
+#: read as markup: the unread key's path, and the fallback class name.
+_MARKUP_LIKE_CONFIG = (
+    "classes:\n  - name: invoice\n    description: An invoice\n"
+    'classification:\n  fallback_class: "[/x]"\n'
+    'ocr:\n  "[bold]dpi": 150\n'
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("command", ["config-validate", "config-upload"])
+def test_warnings_quoting_markup_like_user_text_are_printed_verbatim(command):
+    """
+    Warnings quote what the author wrote. Printed as rich markup, `[bold]` in a key
+    is swallowed as a style tag, so the warning names `ocr.dpi`, a key the author
+    did not write, and `[/x]` in the fallback class raises, so a valid
+    configuration exits 1. Both commands print through the same escaped helper.
+    """
+    with config_stack():
+        with write_config(_MARKUP_LIKE_CONFIG) as runner:
+            args = (
+                ["config-validate", "--config-file", "config.yaml"]
+                if command == "config-validate"
+                else _upload_args()
+            )
+            result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "'ocr.[bold]dpi'" in flat
+    assert "'[/x]'" in flat
+
+
+@pytest.mark.unit
+def test_upload_without_validation_prints_no_warnings_heading():
+    """Nothing was checked, so there is nothing to report."""
+    with config_stack() as stack:
+        with write_config(_UPLOAD_WITH_UNREAD_KEY) as runner:
+            result = runner.invoke(cli, _upload_args("--no-validate"))
+        assert result.exit_code == 0, result.output
+        assert "Warnings:" not in result.output
+        assert stack.item("p1") is not None
+
+
 @pytest.mark.unit
 def test_upload_requires_a_profile_and_an_existing_file():
     """Both are usage errors, so both are exit 2 and neither reaches AWS."""
@@ -1408,6 +1525,89 @@ def test_upload_to_a_stack_without_revision_history_prints_no_revision_number():
             result.output
         )
         assert stack.item("p1") is not None
+
+
+#: A routing rule that tests a policy rule result, in a configuration that holds no
+#: policy: the upload is accepted and the routing rule never matches.
+_ROUTING_RULE_THAT_NEVER_MATCHES = """\
+routing:
+  tables:
+    - rules:
+        - id: by-count
+          conditions:
+            - input: failed_policy_rule_count
+              test: "> 0"
+          actions:
+            - type: review_queue
+              queue: approvals
+"""
+
+
+@pytest.mark.unit
+def test_upload_prints_each_warning_of_the_save_and_still_succeeds():
+    """
+    Run for real, from the command line down to the record: the warning comes from
+    the save itself, not from a mock, and with ``--no-validate``, so it is not one
+    of the validation warnings. It is printed in the same Warnings block as those.
+    """
+    with config_stack() as stack:
+        stack.seed("lending", class_name="original-class")
+        with write_config(_ROUTING_RULE_THAT_NEVER_MATCHES) as runner:
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    STACK,
+                    "--config-file",
+                    "config.yaml",
+                    "--config-profile",
+                    "lending",
+                    "--no-validate",
+                    "--region",
+                    REGION,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        stored = stack.manager.get_configuration("Config", version="lending")
+        assert [rule.id for rule in stored.routing.tables[0].rules] == ["by-count"]
+
+    flat = " ".join(result.output.split())
+    assert "Warnings:" in flat
+    assert (
+        "⚠ Routing table 'review-routing', rule 'by-count': this routing "
+        "rule tests a policy rule result (failed_policy_rule_count), and policy "
+        "rule validation is off for this profile or it has no policies, so the "
+        "routing rule never matches."
+    ) in flat
+    # Once: the SDK hands the save's warnings back in the same list as validation's.
+    assert flat.count("so the routing rule never matches.") == 1
+    # The lines a script reads (the profile and the revision to pin a run to) follow.
+    assert "'lending' updated!" in result.stdout
+    assert "Revision: r2" in result.stdout
+
+
+@pytest.mark.unit
+def test_upload_with_nothing_to_warn_about_writes_nothing_to_stderr():
+    with config_stack():
+        with write_config(VALID_MINIMAL) as runner:
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    STACK,
+                    "--config-file",
+                    "config.yaml",
+                    "--config-profile",
+                    "p1",
+                    "--no-validate",
+                    "--region",
+                    REGION,
+                ],
+            )
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
 
 
 @pytest.mark.unit

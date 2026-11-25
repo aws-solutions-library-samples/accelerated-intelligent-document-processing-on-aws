@@ -5,7 +5,7 @@
 # NOTE: python-Levenshtein / fuzzywuzzy / termcolor / aws-xray-sdk / matplotlib
 # are NOT needed by the document closure (textract_helper uses stdlib difflib).
 # Audio deps (ffmpeg) are intentionally excluded — documents only in v1.
-pypdf>=6.19.0
+pypdf>=6.21.4
 pypdfium2>=4.30.0
 # Security floor. 13.0.0 fixes CRITICAL and HIGH advisories against 12.3.0 (a
 # heap overflow in the JPEG decoder, out-of-bounds and uninitialized reads in

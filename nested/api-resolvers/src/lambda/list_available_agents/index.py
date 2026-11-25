@@ -18,6 +18,7 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 # Agent Chat is available to Admin/Author/Viewer; Reviewer is excluded.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+_QUICK_START_AGENT_ID = "Quick-Start-Agent"
 
 
 def _caller_in_groups(event, allowed):
@@ -48,6 +49,9 @@ def handler(event, context):
 
     Returns:
         List of available agents with metadata
+
+    Quick Start's agent is left out: it runs only from its own panel, which offers
+    it to Admins, and never as an Agent Chat or analytics agent.
     """
     logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
@@ -62,7 +66,11 @@ def handler(event, context):
 
     try:
         # Get list of available agents from factory
-        available_agents = agent_factory.list_available_agents()
+        available_agents = [
+            agent
+            for agent in agent_factory.list_available_agents()
+            if agent.get("agent_id") != _QUICK_START_AGENT_ID
+        ]
 
         logger.info(f"Found {len(available_agents)} available agents")
         return available_agents

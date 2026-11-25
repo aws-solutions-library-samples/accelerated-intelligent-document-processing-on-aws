@@ -2,10 +2,172 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState } from 'react';
 import { Box, Spinner, Button, Modal, Header, SpaceBetween, Tabs } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import SafeMarkdown from '../common/SafeMarkdown';
+import { useFormatters } from '../../i18n/format';
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atelierLakesideLight } from 'react-syntax-highlighter/dist/esm/styles/hljs';
+
+/** The CloudWatch search summary a log search tool returns. Stack names, log groups and events are data. */
+const logMessages = defineMessages<{
+  summary: NoMessageValues;
+  stack: NoMessageValues;
+  filterPattern: NoMessageValues;
+  groupsSearched: NoMessageValues;
+  totalEvents: NoMessageValues;
+  events: NoMessageValues;
+  groupEvents: { readonly logGroup: string; readonly count: number };
+  noEvents: { readonly filterPattern: string };
+}>({
+  summary: {
+    id: 'agentChat.tool.logs.summary',
+    defaultMessage: 'Search Summary',
+    description: "Heading of the summary of a CloudWatch log search, in an Agent Chat tool's details.",
+  },
+  stack: {
+    id: 'agentChat.tool.logs.stack',
+    defaultMessage: 'Stack:',
+    description: 'Label before the name of the CloudFormation stack whose logs were searched. The name is shown as it arrives.',
+  },
+  filterPattern: {
+    id: 'agentChat.tool.logs.filterPattern',
+    defaultMessage: 'Filter Pattern:',
+    description: 'Label before the CloudWatch filter pattern of the log search, such as ERROR, shown as it arrives.',
+  },
+  groupsSearched: {
+    id: 'agentChat.tool.logs.groupsSearched',
+    defaultMessage: 'Log Groups Searched:',
+    description: 'Label before the count of CloudWatch log groups searched, shown as "searched / found".',
+  },
+  totalEvents: {
+    id: 'agentChat.tool.logs.totalEvents',
+    defaultMessage: 'Total Events Found:',
+    description: 'Label before the number of log events the CloudWatch log search found.',
+  },
+  events: {
+    id: 'agentChat.tool.logs.events',
+    defaultMessage: 'Log Events',
+    description: 'Heading above the log events a CloudWatch log search found, grouped by log group.',
+  },
+  groupEvents: {
+    id: 'agentChat.tool.logs.groupEvents',
+    defaultMessage: '{logGroup} ({count, plural, one {# event} other {# events}})',
+    description: 'Heading of one CloudWatch log group in the search results. {logGroup} is its name; {count} is how many events it holds.',
+  },
+  noEvents: {
+    id: 'agentChat.tool.logs.noEvents',
+    defaultMessage: 'No {filterPattern} events found in the searched time period.',
+    description:
+      'Shown when the CloudWatch log search found nothing. {filterPattern} is the filter pattern searched for, such as ERROR, as it arrives.',
+  },
+});
+
+/** Never shown today: the tool's status is computed and not rendered. */
+const statusMessages = defineMessages<{
+  executing: NoMessageValues;
+  processingResults: NoMessageValues;
+  completed: NoMessageValues;
+  executionCompleted: NoMessageValues;
+  starting: NoMessageValues;
+}>({
+  executing: {
+    id: 'agentChat.tool.status.executing',
+    defaultMessage: 'Executing...',
+    description: 'Status of a tool an Agent Chat agent uses: the tool is running.',
+  },
+  processingResults: {
+    id: 'agentChat.tool.status.processingResults',
+    defaultMessage: 'Processing results...',
+    description: "Status of a tool an Agent Chat agent uses: the tool's results are being read.",
+  },
+  completed: {
+    id: 'agentChat.tool.status.completed',
+    defaultMessage: 'Completed',
+    description: 'Status of a tool an Agent Chat agent uses: the tool returned its results.',
+  },
+  executionCompleted: {
+    id: 'agentChat.tool.status.executionCompleted',
+    defaultMessage: 'Execution completed',
+    description: 'Status of a tool an Agent Chat agent uses: the tool ran and has no results yet.',
+  },
+  starting: {
+    id: 'agentChat.tool.status.starting',
+    defaultMessage: 'Starting...',
+    description: 'Status of a tool an Agent Chat agent uses: the tool has not started yet.',
+  },
+});
+
+const messages = defineMessages<{
+  codeLabelFromPython: NoMessageValues;
+  codeLabelPythonDict: NoMessageValues;
+  viewDetails: NoMessageValues;
+  detailsTitle: { readonly toolName: string };
+  close: NoMessageValues;
+  tabExecution: NoMessageValues;
+  tabResults: NoMessageValues;
+  executing: NoMessageValues;
+  noExecutionDetails: NoMessageValues;
+  processingResults: NoMessageValues;
+  noResults: NoMessageValues;
+}>({
+  codeLabelFromPython: {
+    id: 'agentChat.tool.codeLabel.fromPython',
+    defaultMessage: 'JSON (converted from Python)',
+    description: "Label above a tool's input or output that arrived as Python data and is shown as JSON. JSON and Python are format names.",
+  },
+  codeLabelPythonDict: {
+    id: 'agentChat.tool.codeLabel.pythonDict',
+    defaultMessage: 'JSON (Python dict)',
+    description:
+      "Label above a tool's input or output that arrived as a Python dictionary and is shown as JSON. JSON and Python are format names.",
+  },
+  viewDetails: {
+    id: 'agentChat.tool.viewDetails',
+    defaultMessage: 'View Details',
+    description: 'Button beside the name of a tool an Agent Chat agent used. It opens the tool input and output.',
+  },
+  detailsTitle: {
+    id: 'agentChat.tool.detailsTitle',
+    defaultMessage: '{toolName} Details',
+    description: "Title of the dialog that shows a tool's input and output. {toolName} is the tool's name, as the agent reports it.",
+  },
+  close: {
+    id: 'agentChat.tool.close',
+    defaultMessage: 'Close',
+    description: "Button that closes the dialog showing a tool's input and output.",
+  },
+  tabExecution: {
+    id: 'agentChat.tool.tab.execution',
+    defaultMessage: 'Execution Details',
+    description: 'Tab of the tool dialog that shows the input the agent gave the tool.',
+  },
+  tabResults: {
+    id: 'agentChat.tool.tab.results',
+    defaultMessage: 'Results',
+    description: 'Tab of the tool dialog that shows what the tool returned.',
+  },
+  executing: {
+    id: 'agentChat.tool.executing',
+    defaultMessage: 'Executing tool...',
+    description: 'Shown in the Execution Details tab of the tool dialog while the tool runs.',
+  },
+  noExecutionDetails: {
+    id: 'agentChat.tool.noExecutionDetails',
+    defaultMessage: 'No execution details available',
+    description: 'Shown in the Execution Details tab of the tool dialog when the tool has no input to show.',
+  },
+  processingResults: {
+    id: 'agentChat.tool.processingResults',
+    defaultMessage: 'Processing results...',
+    description: "Shown in the Results tab of the tool dialog while the tool's results are read.",
+  },
+  noResults: {
+    id: 'agentChat.tool.noResults',
+    defaultMessage: 'No results available yet',
+    description: 'Shown in the Results tab of the tool dialog before the tool has returned anything.',
+  },
+});
 
 interface CodeBlockProps {
   language: string;
@@ -56,8 +218,9 @@ interface CloudWatchLogsDisplayProps {
  * CloudWatchLogsDisplay sub-component for structured log display
  */
 const CloudWatchLogsDisplay = ({ data }: CloudWatchLogsDisplayProps): React.JSX.Element => {
+  const { formatDateTime } = useFormatters();
   const formatTimestamp = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleString();
+    return formatDateTime(new Date(timestamp));
   };
 
   const formatLogMessage = (message: string): string => {
@@ -72,25 +235,33 @@ const CloudWatchLogsDisplay = ({ data }: CloudWatchLogsDisplayProps): React.JSX.
     <Box>
       <Box {...({ marginBottom: 'l' } as Record<string, unknown>)}>
         <Box fontSize="heading-s" {...({ marginBottom: 's' } as Record<string, unknown>)}>
-          Search Summary
+          <FormattedMessage {...logMessages.summary} />
         </Box>
         <SpaceBetween direction="vertical" size="xs">
           <Box {...({ display: 'flex', justifyContent: 'space-between' } as Record<string, unknown>)}>
-            <Box>Stack:</Box>
+            <Box>
+              <FormattedMessage {...logMessages.stack} />
+            </Box>
             <Box fontWeight="bold">{data.stack_name}</Box>
           </Box>
           <Box {...({ display: 'flex', justifyContent: 'space-between' } as Record<string, unknown>)}>
-            <Box>Filter Pattern:</Box>
+            <Box>
+              <FormattedMessage {...logMessages.filterPattern} />
+            </Box>
             <Box fontWeight="bold">{data.filter_pattern}</Box>
           </Box>
           <Box {...({ display: 'flex', justifyContent: 'space-between' } as Record<string, unknown>)}>
-            <Box>Log Groups Searched:</Box>
+            <Box>
+              <FormattedMessage {...logMessages.groupsSearched} />
+            </Box>
             <Box fontWeight="bold">
               {data.log_groups_searched} / {data.total_log_groups_found}
             </Box>
           </Box>
           <Box {...({ display: 'flex', justifyContent: 'space-between' } as Record<string, unknown>)}>
-            <Box>Total Events Found:</Box>
+            <Box>
+              <FormattedMessage {...logMessages.totalEvents} />
+            </Box>
             <Box fontWeight="bold" color={data.total_events_found > 0 ? 'text-status-error' : 'text-status-success'}>
               {data.total_events_found}
             </Box>
@@ -102,13 +273,13 @@ const CloudWatchLogsDisplay = ({ data }: CloudWatchLogsDisplayProps): React.JSX.
       {data.results && data.results.length > 0 && (
         <Box>
           <Box fontSize="heading-s" {...({ marginBottom: 's' } as Record<string, unknown>)}>
-            Log Events
+            <FormattedMessage {...logMessages.events} />
           </Box>
           <SpaceBetween direction="vertical" size="m">
             {data.results.map((logGroup) => (
               <Box key={logGroup.log_group}>
                 <Box fontSize="body-m" fontWeight="bold" {...({ marginBottom: 's' } as Record<string, unknown>)} color="text-status-info">
-                  {logGroup.log_group} ({logGroup.events_found} events)
+                  <FormattedMessage {...logMessages.groupEvents} values={{ logGroup: logGroup.log_group, count: logGroup.events_found }} />
                 </Box>
                 <SpaceBetween direction="vertical" size="s">
                   {logGroup.events.map((event) => (
@@ -141,7 +312,7 @@ const CloudWatchLogsDisplay = ({ data }: CloudWatchLogsDisplayProps): React.JSX.
 
       {data.total_events_found === 0 && (
         <Box textAlign="center" color="text-status-success" padding="l">
-          No {data.filter_pattern} events found in the searched time period.
+          <FormattedMessage {...logMessages.noEvents} values={{ filterPattern: data.filter_pattern }} />
         </Box>
       )}
     </Box>
@@ -174,6 +345,7 @@ const AgentToolComponentBase = ({
   onToggle = null,
   parentProcessing = false,
 }: AgentToolComponentProps): React.JSX.Element => {
+  const intl = useIntl();
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [activeTabId, setActiveTabId] = useState('execution');
 
@@ -363,7 +535,7 @@ const AgentToolComponentBase = ({
         }
 
         const formatted = JSON.stringify(parsed, null, 2);
-        return <CodeBlock language="json" content={formatted} label="JSON (converted from Python)" />;
+        return <CodeBlock language="json" content={formatted} label={intl.formatMessage(messages.codeLabelFromPython)} />;
       } catch (conversionError) {
         // Try a more aggressive approach for complex nested structures
         try {
@@ -377,7 +549,7 @@ const AgentToolComponentBase = ({
           }
 
           const formatted = JSON.stringify(parsed, null, 2);
-          return <CodeBlock language="json" content={formatted} label="JSON (Python dict)" />;
+          return <CodeBlock language="json" content={formatted} label={intl.formatMessage(messages.codeLabelPythonDict)} />;
         } catch (finalError) {
           // Fall through to text formatting
         }
@@ -401,18 +573,18 @@ const AgentToolComponentBase = ({
   // Determine the overall status and display
   const getStatus = () => {
     if (executionLoading) {
-      return { text: 'Executing...', color: 'text-status-info' };
+      return { text: intl.formatMessage(statusMessages.executing), color: 'text-status-info' };
     }
     if (resultLoading) {
-      return { text: 'Processing results...', color: 'text-status-info' };
+      return { text: intl.formatMessage(statusMessages.processingResults), color: 'text-status-info' };
     }
     if (resultDetails) {
-      return { text: 'Completed', color: 'text-status-success' };
+      return { text: intl.formatMessage(statusMessages.completed), color: 'text-status-success' };
     }
     if (executionDetails) {
-      return { text: 'Execution completed', color: 'text-status-success' };
+      return { text: intl.formatMessage(statusMessages.executionCompleted), color: 'text-status-success' };
     }
-    return { text: 'Starting...', color: 'text-status-info' };
+    return { text: intl.formatMessage(statusMessages.starting), color: 'text-status-info' };
   };
 
   const _status = getStatus();
@@ -441,7 +613,7 @@ const AgentToolComponentBase = ({
           )}
           {hasContent && (
             <button onClick={handleViewDetails} style={{ fontSize: '12px' }}>
-              View Details
+              <FormattedMessage {...messages.viewDetails} />
             </button>
           )}
         </Box>
@@ -452,11 +624,15 @@ const AgentToolComponentBase = ({
         onDismiss={handleCloseModal}
         visible={isModalVisible}
         size="large"
-        header={<Header variant="h2">{formatToolName(toolName)} Details</Header>}
+        header={
+          <Header variant="h2">
+            <FormattedMessage {...messages.detailsTitle} values={{ toolName: formatToolName(toolName) }} />
+          </Header>
+        }
         footer={
           <Box float="right">
             <Button variant="primary" onClick={handleCloseModal}>
-              Close
+              <FormattedMessage {...messages.close} />
             </Button>
           </Box>
         }
@@ -467,18 +643,22 @@ const AgentToolComponentBase = ({
           tabs={[
             {
               id: 'execution',
-              label: 'Execution Details',
+              label: intl.formatMessage(messages.tabExecution),
               content: (
                 <Box padding={{ top: 's' }}>
                   {executionLoading ? (
                     <Box {...({ display: 'flex', alignItems: 'center' } as Record<string, unknown>)}>
                       <Spinner />
-                      <Box {...({ marginLeft: 's' } as Record<string, unknown>)}>Executing tool...</Box>
+                      <Box {...({ marginLeft: 's' } as Record<string, unknown>)}>
+                        <FormattedMessage {...messages.executing} />
+                      </Box>
                     </Box>
                   ) : executionDetails ? (
                     formatContent(executionDetails, toolName)
                   ) : (
-                    <Box color="text-status-info">No execution details available</Box>
+                    <Box color="text-status-info">
+                      <FormattedMessage {...messages.noExecutionDetails} />
+                    </Box>
                   )}
                 </Box>
               ),
@@ -489,18 +669,22 @@ const AgentToolComponentBase = ({
               : [
                   {
                     id: 'results',
-                    label: 'Results',
+                    label: intl.formatMessage(messages.tabResults),
                     content: (
                       <Box padding={{ top: 's' }}>
                         {resultLoading ? (
                           <Box {...({ display: 'flex', alignItems: 'center' } as Record<string, unknown>)}>
                             <Spinner />
-                            <Box {...({ marginLeft: 's' } as Record<string, unknown>)}>Processing results...</Box>
+                            <Box {...({ marginLeft: 's' } as Record<string, unknown>)}>
+                              <FormattedMessage {...messages.processingResults} />
+                            </Box>
                           </Box>
                         ) : resultDetails ? (
                           formatContent(resultDetails, toolName)
                         ) : (
-                          <Box color="text-status-info">No results available yet</Box>
+                          <Box color="text-status-info">
+                            <FormattedMessage {...messages.noResults} />
+                          </Box>
                         )}
                       </Box>
                     ),

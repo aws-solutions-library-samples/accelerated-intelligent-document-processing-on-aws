@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { defineMessages, useIntl } from 'react-intl';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { SelectProps } from '@cloudscape-design/components';
 import {
@@ -35,8 +36,33 @@ import { LabelAccuracyLegend, renderLabelAccuracy } from './TestSetDetail';
 import { testSetDetailHref, testSetAnnotateHref, testSetReviewedHref } from '../../routes/constants';
 import { EDIT_GROUND_TRUTH_LABEL } from '../common/labels';
 import ReviewEffortModal from './ReviewEffortModal';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
+
+const deleteMessages = defineMessages<{
+  partlyDeleted: { readonly deleted: number; readonly total: number; readonly reason: string };
+  notDeleted: { readonly reason: string };
+  outcomeUnknown: { readonly reason: string };
+}>({
+  partlyDeleted: {
+    id: 'testStudio.testSets.delete.partlyDeleted',
+    defaultMessage: 'Deleted {deleted} of {total, plural, one {# test set} other {# test sets}}. {reason}',
+    description:
+      'Error shown on the Test Sets page when a delete of several test sets removed some and not others. {reason} is the server’s message naming each test set that was refused (busy) or failed, and why.',
+  },
+  outcomeUnknown: {
+    id: 'testStudio.testSets.delete.outcomeUnknown',
+    defaultMessage: 'Some test sets may not have been deleted, and the list could not be reloaded to show which: {reason}',
+    description:
+      'Error shown on the Test Sets page when a delete of test sets was partly refused or failed and the list then failed to reload. {reason} is the server’s message from the delete.',
+  },
+  notDeleted: {
+    id: 'testStudio.testSets.delete.notDeleted',
+    defaultMessage: 'Failed to delete test sets: {reason}',
+    description: 'Error shown on the Test Sets page when none of the selected test sets was deleted. {reason} is the server’s message.',
+  },
+});
 
 const DOCUMENT_CLASS_TYPE_OPTIONS: SelectProps.Option[] = [
   { label: 'Unspecified', value: '' },
@@ -98,10 +124,12 @@ export const isInFlux = (status?: string | null): boolean => IN_FLUX_TEST_SET_ST
 const labelStateKey = (ts: TestSetItem): string => `${ts.labelState ?? ''}:${ts.labelJobStatus ?? ''}`;
 
 const TestSets = (): React.JSX.Element => {
+  const intl = useIntl();
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
   // Importing by file pattern searches a whole bucket, so it is Admin-only.
   const { isAdmin } = useUserRole();
+  const { formatDate } = useFormatters();
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -203,7 +231,8 @@ const TestSets = (): React.JSX.Element => {
     );
   }, []);
 
-  const loadTestSets = async () => {
+  /** Refresh the list; resolves to the ids the server listed, or null when the load failed. */
+  const loadTestSets = async (): Promise<Set<string> | null> => {
     try {
       console.log('TestSets: Loading test sets...');
       const result = await client.graphql({ query: getTestSets });
@@ -237,9 +266,11 @@ const TestSets = (): React.JSX.Element => {
         // Combine backend test sets (always win) with UI-only active test sets
         return [...nonNullBackendTestSets, ...uiOnlyTestSets];
       });
+      return new Set(backendTestSets.flatMap((ts) => (ts ? [ts.id] : [])));
     } catch (err) {
       console.error('TestSets: Failed to load test sets:', err);
       setError(`Failed to load test sets: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      return null;
     } finally {
       setInitialLoading(false);
     }
@@ -513,14 +544,26 @@ const TestSets = (): React.JSX.Element => {
         query: deleteTestSets,
         variables: { testSetIds },
       });
-      setTestSets(testSets.filter((testSet) => !testSetIds.includes(testSet.id)));
+      setTestSets((prev) => prev.filter((testSet) => !testSetIds.includes(testSet.id)));
       setSelectedItems([]);
       setSuccessMessage(`Successfully deleted ${deleteCount} test set${deleteCount > 1 ? 's' : ''}`);
       setError('');
     } catch (err) {
       console.error('Error deleting test sets:', err);
-      const errorMessage = getErrorMessage(err);
-      setError(`Failed to delete test sets: ${errorMessage}`);
+      const reason = getErrorMessage(err);
+      // The server deletes each set it can and reports only the ones it refused
+      // (busy) or could not finish, so the rest are already gone. Reload rather
+      // than wait for a poll, which may not be running, and count what went.
+      const listed = await loadTestSets();
+      const deleted = listed ? testSetIds.filter((id) => !listed.has(id)).length : 0;
+      setSuccessMessage('');
+      setError(
+        !listed
+          ? intl.formatMessage(deleteMessages.outcomeUnknown, { reason })
+          : deleted > 0
+            ? intl.formatMessage(deleteMessages.partlyDeleted, { deleted, total: deleteCount, reason })
+            : intl.formatMessage(deleteMessages.notDeleted, { reason }),
+      );
     } finally {
       setLoading(false);
     }
@@ -701,7 +744,7 @@ const TestSets = (): React.JSX.Element => {
     {
       id: 'createdAt',
       header: 'Created',
-      cell: (item: TestSetItem) => new Date(item.createdAt).toLocaleDateString(),
+      cell: (item: TestSetItem) => formatDate(new Date(item.createdAt)),
       sortingComparator: compareByCreatedAt,
     },
   ];

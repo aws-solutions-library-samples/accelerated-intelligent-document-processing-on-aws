@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 
 
+🎬 **[See IDP in Action](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/idp-in-action.html)** — an illustrated tour of the main features, with an eight-minute overview video
+
 📖 **[Browse the Documentation Site](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/)** — searchable, with sidebar navigation
 
 ## Table of Contents
@@ -28,6 +30,7 @@ SPDX-License-Identifier: MIT-0
     - [Processing Modes](#processing-modes)
     - [Python Development](#python-development)
     - [Planning \& Operations](#planning--operations)
+    - [Solution Profile](#solution-profile)
   - [Security](#security)
   - [Contributing](#contributing)
   - [Project Governance](#project-governance)
@@ -49,7 +52,7 @@ Concierge support for customization, deployment, and integration of production u
 
 **Prefer AWS CDK?** This solution is also available as [GenAI IDP Accelerator for AWS CDK](https://github.com/cdklabs/genai-idp), providing the same functional capabilities through AWS CDK constructs for customers who prefer Infrastructure-as-Code with CDK.
 
-**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating to the built-in Terraform module](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
+**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating from genai-idp-terraform](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
 
 ## Key Features
 
@@ -164,8 +167,14 @@ the index instead of from `lib/`. See
 See the [Deployment Guide](./docs/deployment.md#testing-the-solution) for more detailed testing instructions.
 
 IMPORTANT: If you have not previously done so, you must [request access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) to the following Amazon Bedrock models:
-- Amazon: All Nova models, plus Titan Text Embeddings V2
-- Anthropic: Claude 3.x models, Claude 4.x models
+- Amazon: Nova 2 Lite, Nova Lite and Nova Pro; Titan Text Embeddings V2 (knowledge base)
+- Anthropic: Claude Sonnet 5 (including its 1M-context variant), Claude Opus 4.8 (1M
+  context), Claude Opus 4.6 (1M context), Claude Sonnet 4.6 and Claude Haiku 4.5
+- Cohere: Embed v4 (multi-document discovery)
+
+These are the models the shipped configuration defaults call. Request access to any
+other model your own configuration names, in the Region you deploy to. The GovCloud,
+EU and Canada guides list the defaults and inference-profile mappings used there.
 
 ## Updating an Existing Deployment
 
@@ -208,10 +217,13 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Custom MCP Agent](./docs/custom-MCP-agent.md) - Integrating external MCP servers for custom tools and capabilities
 - [Configuration](./docs/configuration.md) - Configuration and customization options
 - [JSON Schema Migration](./docs/json-schema-migration.md) - JSON Schema format guide and legacy migration details
+- [v0.6.15 → v0.6.16 Migration](./docs/migration-v0615-to-v0616.md) - What changes when upgrading to v0.6.16, including review routing and run plans
 - [Discovery](./docs/discovery.md) - Pattern-neutral discovery process and BDA blueprint automation
 - [Classification](./docs/classification.md) - Customizing document classification
 - [Extraction](./docs/extraction.md) - Customizing information extraction
 - [Human-in-the-Loop Review](./docs/human-review.md) - Human review workflows with built-in review system
+- [Review Routing](./docs/review-routing.md) - Routing rules that decide whether a document is reviewed, in which queue and with which reason
+- [Review Queues](./docs/review-queues.md) - Production and Test Studio queues that hold documents for human review, and how Annotators work them
 - [Assessment](./docs/assessment.md) - Extraction confidence evaluation using LLMs
 - [Rule Validation](./docs/rule-validation.md) - Business rule validation and compliance checking
 - [Evaluation Framework](./docs/evaluation.md) - Accuracy assessment system with analytics database and reporting
@@ -243,12 +255,16 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Threat Model](./docs/threat-model.md) - STRIDE threat model: trust boundaries, controls in place, residual risks and open items
 - [Cost Calculator](./docs/cost-calculator.md) - Framework for estimating solution costs
 
+### Solution Profile
+
+From the first release after 0.6.15, each GitHub Release carries a **solution profile**: a small, versioned set of YAML files describing what the accelerator does, where it can be extended, where it stops (with numbers), the questions that test whether it fits a need, and how a delivery usually starts. It is built from the release tag, every statement cites its evidence, and it is meant for anyone, including an AI assistant, judging fit before deploying. See [Solution Profile](./docs/solution-profile.md) for how to download, verify and read it.
+
 ## Security
 
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 109 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 123 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats

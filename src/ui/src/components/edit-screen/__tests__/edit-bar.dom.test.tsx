@@ -10,12 +10,19 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { describe, expect, it, vi } from 'vitest';
 
 import EditScreen from '../EditScreen';
 import type { EditActionsProps } from '../EditScreen';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const normalize = (html: string): string =>
   html.replace(/\b(id|aria-describedby|aria-labelledby|aria-controls|for|data-analytics-[a-z-]+)="[^"]*"/g, '$1="X"');
@@ -62,6 +69,7 @@ describe('the edit screen bar DOM', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     const bar = createWrapper(document.body).findHeader()!.findActions()!.getElement();
     expect(normalize(bar.outerHTML)).toMatchSnapshot();

@@ -5,7 +5,7 @@ use_bda: false
 
 # All settings not explicitly defined here are inherited from system defaults.
 
-notes: Rule validation configuration for healthcare/insurance prior authorization documents
+notes: Rule validation configuration for bank statement review
 
 chat:
   # Chat-with-Document: inherits defaults from system base-chat.yaml.
@@ -13,1034 +13,197 @@ chat:
   # for documents processed with this configuration version.
   enabled: true
 
+# The Bank-Statement class of the lending-package-sample preset, unchanged.
 classes:
   - $schema: https://json-schema.org/draft/2020-12/schema
-    description: >-
-      Section 1 of a Prior Authorization packet containing administrative and 
-      demographic information including patient identification, insurance/payer 
-      details, encounter information, provider credentials, facility details, 
-      and a billing summary table showing all CPT codes with modifiers and 
-      global periods. This section is critical for verifying same-provider/same-date 
-      requirements, service type (Emergent/Elective), and modifier documentation 
-      for global period rule evaluation.
+    $id: Bank-Statement
     type: object
-    x-aws-idp-document-type: PA-Administrative
-    properties:
-      patient_name:
-        type: string
-        description: >-
-          The full name of the patient (Last, First Middle) as shown in 
-          Section A: Patient Identification.
-        x-aws-idp-evaluation-method: EXACT
-      patient_dob:
-        type: string
-        format: date
-        description: >-
-          The patient's date of birth from Section A, in ISO-8601 format
-          (YYYY-MM-DD) to match this field's `format: date`.
-        x-aws-idp-evaluation-method: DATE
-      member_id:
-        type: string
-        description: >-
-          The insurance member identification number from Section B: Insurance/Payer.
-        x-aws-idp-evaluation-method: EXACT
-      group_number:
-        type: string
-        description: >-
-          The insurance group number from Section B.
-        x-aws-idp-evaluation-method: EXACT
-      primary_insurance_carrier:
-        type: string
-        description: >-
-          The name of the primary insurance carrier from Section B.
-        x-aws-idp-evaluation-method: EXACT
-      date_of_service:
-        type: string
-        format: date
-        description: >-
-          The date when services were rendered from Section C: Encounter Information. 
-          Critical for same_day_service_rules and global period calculations.
-        x-aws-idp-evaluation-method: DATE
-      admission_date:
-        type: string
-        format: date
-        description: >-
-          The date the patient was admitted from Section C.
-        x-aws-idp-evaluation-method: DATE
-      discharge_date:
-        type: string
-        format: date
-        description: >-
-          The date the patient was discharged from Section C.
-        x-aws-idp-evaluation-method: DATE
-      type_of_service:
-        type: string
-        description: >-
-          The classification of service urgency from Section C checkboxes: 
-          Elective, Urgent, or Emergent. Critical for bundling_31500 rule 
-          evaluation (emergency intubation requires EMERGENT designation).
-        x-aws-idp-evaluation-method: EXACT
-      place_of_service:
-        type: string
-        description: >-
-          The place of service code and description from Section C (e.g., 
-          Inpatient Hospital (21), Emergency Room (23)).
-        x-aws-idp-evaluation-method: EXACT
-      provider_name:
-        type: string
-        description: >-
-          The name and credentials of the rendering/requesting provider from 
-          Section D: Requesting/Rendering Provider.
-        x-aws-idp-evaluation-method: EXACT
-      provider_npi:
-        type: string
-        description: >-
-          The National Provider Identifier (NPI) of the rendering provider 
-          from Section D. Used to verify same-provider requirements for 
-          same_day_service_rules.
-        x-aws-idp-evaluation-method: EXACT
-      facility_name:
-        type: string
-        description: >-
-          The name of the facility where services were performed from Section E.
-        x-aws-idp-evaluation-method: EXACT
-      facility_npi:
-        type: string
-        description: >-
-          The NPI of the facility from Section E.
-        x-aws-idp-evaluation-method: EXACT
-      same_provider_same_date_statement:
-        type: string
-        description: >-
-          Statement from Section G Billing Summary confirming all procedures 
-          were performed by SAME PROVIDER on SAME DATE under specified conditions. 
-          Critical evidence for same_day_service_rules evaluation.
-        x-aws-idp-evaluation-method: LLM
-      billing_summary_cpt_codes:
-        type: array
-        description: >-
-          List of all CPT codes from Section G: Procedure & Billing Summary table 
-          with their modifiers, global periods, and status notes.
-        x-aws-idp-evaluation-method: LLM
-        x-aws-idp-list-item-description: Each item represents one billed procedure line
-        items:
-          type: object
-          properties:
-            cpt_code:
-              type: string
-              description: The CPT procedure code.
-            description:
-              type: string
-              description: Brief description of the procedure.
-            modifier:
-              type: string
-              description: >-
-                Modifier applied (57=Decision for Surgery, 59=Distinct Procedural 
-                Service, 25=Significant Separate E&M, 24=Unrelated E&M Postop, None).
-            global_period:
-              type: string
-              description: >-
-                The global surgery period (000, 010, 090, XXX, N/A). Critical for 
-                global_periods rule evaluation.
-            billed_amount:
-              type: string
-              description: The dollar amount billed for this procedure.
-            status:
-              type: string
-              description: >-
-                Status notes from billing summary such as 'Decision for Surgery', 
-                'Primary Procedure', 'Emergency - documented', 'Findings → open surgery', 
-                'Converted to open', 'Access evaluation', 'Intraoperative', 
-                'Contralateral (LEFT)'.
-    $id: PA-Administrative
-
-  # ---------------------------------------------------------------------------
-  # SECTION 2: PA-Medical-History
-  # ---------------------------------------------------------------------------
-  - $schema: https://json-schema.org/draft/2020-12/schema
+    x-aws-idp-document-type: Bank-Statement
     description: >-
-      Section 2 of a Prior Authorization packet containing patient medical history 
-      including chronic conditions with ICD-10 codes, comorbidities, prior surgical 
-      and procedural history, current medications, allergies, history of present 
-      illness (HPI) with vital signs, physical examination findings, diagnostic 
-      study results, and postoperative follow-up documentation. This section provides 
-      clinical context for emergency criteria evaluation, pre-existing conditions 
-      (like pleural effusion laterality), bleeding history, and unrelated E&M 
-      documentation for modifier 24/25 justification.
-    type: object
-    x-aws-idp-document-type: PA-Medical-History
+      A periodic financial document issued by banks detailing account activity,
+      balances, and transactions over a specific time period.
+    $defs:
+      Address:
+        type: object
+        properties:
+          City:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+          Line1:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+          State:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+          ZipCode:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+          Line2:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+      account_summaryItem:
+        type: object
+        properties:
+          summary_desc:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+          summary_amount:
+            type: string
+            x-aws-idp-evaluation-method: NUMERIC_EXACT
+      transaction_detail:
+        type: object
+        properties:
+          date:
+            type: string
+            x-aws-idp-evaluation-method: DATE
+          description:
+            type: string
+            x-aws-idp-evaluation-method: EXACT
+          balance:
+            type: string
+            x-aws-idp-evaluation-method: NUMERIC_EXACT
+          deposits:
+            type: string
+            x-aws-idp-evaluation-method: NUMERIC_EXACT
+          withdrawals:
+            type: string
+            x-aws-idp-evaluation-method: NUMERIC_EXACT
     properties:
-      patient_name:
+      bank_name:
         type: string
-        description: >-
-          The full name of the patient from the patient reference bar.
         x-aws-idp-evaluation-method: EXACT
-      mrn:
+      account_holder_name:
         type: string
-        description: >-
-          The Medical Record Number assigned by the facility.
         x-aws-idp-evaluation-method: EXACT
-      encounter_date:
+      account_holder_address:
+        $ref: "#/$defs/Address"
+        x-aws-idp-evaluation-method: EXACT
+      account_number:
         type: string
+        x-aws-idp-evaluation-method: EXACT
+      account_type:
+        type: string
+        x-aws-idp-evaluation-method: EXACT
+      statement_start_date:
         format: date
-        description: >-
-          The encounter date for this medical history documentation.
+        type: string
         x-aws-idp-evaluation-method: DATE
-      chronic_conditions:
-        type: array
-        description: >-
-          List of chronic conditions and comorbidities from the Chronic Conditions 
-          & Comorbidities section with ICD-10 codes and clinical notes.
-        x-aws-idp-evaluation-method: LLM
-        x-aws-idp-list-item-description: Each item represents one chronic condition
-        items:
-          type: object
-          properties:
-            condition_name:
-              type: string
-              description: Name of the chronic condition.
-            icd10_code:
-              type: string
-              description: ICD-10 diagnosis code.
-            clinical_notes:
-              type: string
-              description: Clinical notes about the condition status and management.
-      pre_existing_pleural_effusion:
-        type: string
-        description: >-
-          Documentation of any PRE-EXISTING pleural effusion including LATERALITY 
-          (LEFT/RIGHT). Look for terms like 'LEFT-sided pleural effusion', 
-          'CONTRALATERAL to current pathology'. Critical for separate_procedure_cpt_32551 
-          rule - determines if chest tube is on contralateral side.
-        x-aws-idp-evaluation-method: LLM
-      bleeding_disorder_history:
-        type: string
-        description: >-
-          Documentation of bleeding disorders or confirmation of NO BLEEDING DISORDERS. 
-          Look for 'No history of bleeding disorders', 'coagulation normal'. Critical 
-          for component_service rule - determines if intraoperative bleeding was 
-          incidental to procedure vs. due to underlying condition.
-        x-aws-idp-evaluation-method: LLM
-      prior_respiratory_procedures:
-        type: array
-        description: >-
-          List of prior respiratory/thoracic procedures from Prior Surgical/Procedural 
-          History section with dates, CPT codes, laterality, and findings.
-        x-aws-idp-evaluation-method: LLM
-        x-aws-idp-list-item-description: Each item represents one prior procedure
-        items:
-          type: object
-          properties:
-            procedure_name:
-              type: string
-              description: Name of the procedure.
-            cpt_code:
-              type: string
-              description: CPT code for the procedure.
-            date:
-              type: string
-              description: Date the procedure was performed.
-            facility:
-              type: string
-              description: Facility where procedure was performed.
-            laterality:
-              type: string
-              description: Side of body (LEFT/RIGHT) if applicable.
-            findings_and_outcome:
-              type: string
-              description: >-
-                Key findings from the procedure. Look for 'FINDINGS LED DIRECTLY 
-                TO DECISION' language. Critical for diagnostic_surgical rules.
-      prior_minor_surgery_with_em:
-        type: object
-        description: >-
-          Documentation of prior minor procedure (000/010 global) with same-day E&M 
-          including Modifier 25 and separately identifiable reason. Critical for 
-          minor_surgery_000_010 rule evaluation.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          procedure_date:
-            type: string
-            description: Date of the minor procedure.
-          procedure_cpt:
-            type: string
-            description: CPT code for the minor procedure.
-          global_period:
-            type: string
-            description: Global period (000 or 010 days).
-          same_day_em_code:
-            type: string
-            description: E&M code billed same day with modifier.
-          separately_identifiable_documentation:
-            type: string
-            description: >-
-              Documentation stating E&M was SIGNIFICANT AND SEPARATELY IDENTIFIABLE 
-              and UNRELATED to the procedure decision.
-      hpi_severity_on_arrival:
-        type: string
-        description: >-
-          The patient's severity status on arrival from HPI section including vital 
-          signs (SpO2 percentage, respiratory rate, blood pressure). Look for values 
-          like 'SpO2 88%', 'Severe'. Critical for bundling_31500 rule - supports 
-          emergency intubation criteria.
-        x-aws-idp-evaluation-method: LLM
-      hpi_progression:
-        type: string
-        description: >-
-          Description of how the patient's condition progressed from HPI section. 
-          Look for 'Rapidly deteriorating', 'acute distress'. Critical for 
-          bundling_31500 rule.
-        x-aws-idp-evaluation-method: LLM
-      postoperative_follow_up_visit:
-        type: object
-        description: >-
-          Documentation of postoperative follow-up visit including date, days post-op, 
-          E&M code with Modifier 24, and the UNRELATED condition addressed. Critical 
-          for postoperative_rules evaluation.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          visit_date:
-            type: string
-            description: Date of the postoperative visit.
-          days_post_op:
-            type: string
-            description: Number of days after surgery.
-          within_global_period:
-            type: string
-            description: Confirmation visit is within global period (e.g., 'Within 090-day global').
-          em_code_with_modifier:
-            type: string
-            description: E&M code billed with modifier (e.g., '99213-24').
-          unrelated_condition:
-            type: string
-            description: >-
-              Description of the UNRELATED condition addressed. Must be unrelated 
-              to surgical recovery or complications. Look for 'UNRELATED E&M SERVICE', 
-              'NOT related to recovery from surgical procedure'.
-      diagnostic_study_findings:
-        type: string
-        description: >-
-          Key findings from imaging (CXR, CT) and laboratory studies relevant to 
-          the current encounter.
-        x-aws-idp-evaluation-method: LLM
-    $id: PA-Medical-History
-
-  - $schema: https://json-schema.org/draft/2020-12/schema
-    description: >-
-      Section 3 of a Prior Authorization packet containing the operative report 
-      with detailed surgical narrative, pre/postoperative diagnoses, procedures 
-      performed with CPT codes, modifier documentation boxes (especially Modifier 57 
-      for decision for major surgery), and critical key phrases that determine rule 
-      outcomes. This is the primary source for surgical decision-making documentation, 
-      emergency criteria language, conversion statements, laterality documentation, 
-      and access evaluation statements.
-    type: object
-    x-aws-idp-document-type: PA-Operative-Report
-    properties:
-      patient_name:
-        type: string
-        description: >-
-          The full name of the patient from the operative report header.
-        x-aws-idp-evaluation-method: EXACT
-      date_of_surgery:
-        type: string
+      statement_end_date:
         format: date
-        description: >-
-          The date the surgical procedure was performed.
+        type: string
         x-aws-idp-evaluation-method: DATE
-      surgeon_name:
-        type: string
-        description: >-
-          The name and credentials of the operating surgeon.
-        x-aws-idp-evaluation-method: EXACT
-      preoperative_diagnoses:
+      account_summary:
         type: array
-        description: >-
-          List of diagnoses prior to surgery with ICD-10 codes.
-        x-aws-idp-evaluation-method: LLM
         items:
-          type: string
-      postoperative_diagnoses:
+          $ref: "#/$defs/account_summaryItem"
+        x-aws-idp-evaluation-method: LLM
+      transaction_details:
         type: array
-        description: >-
-          List of diagnoses after surgery with ICD-10 codes.
-        x-aws-idp-evaluation-method: LLM
         items:
-          type: string
-      procedures_performed:
-        type: array
-        description: >-
-          List of procedures performed with CPT codes and descriptions.
+          $ref: "#/$defs/transaction_detail"
         x-aws-idp-evaluation-method: LLM
-        items:
-          type: string
-      modifier_57_documentation:
-        type: string
-        description: >-
-          Documentation from the MODIFIER 57 DOCUMENTATION box stating that E&M 
-          service led to decision for major surgery with 090-day global period. 
-          Look for exact language like 'E&M service...led to decision for major 
-          surgery', '090-day global period'. Critical for major_surgery_090 rule (PASS).
-        x-aws-idp-evaluation-method: LLM
-      emergency_intubation_documentation:
-        type: string
-        description: >-
-          Documentation of emergency/emergent intubation from operative narrative. 
-          Look for exact phrases: 'RAPIDLY DETERIORATING PATIENT', 'required immediate 
-          airway control', 'EMERGENT endotracheal intubation', 'mechanical ventilation'. 
-          Critical for bundling_31500 rule (PASS if documented).
-        x-aws-idp-evaluation-method: LLM
-      access_evaluation_documentation:
-        type: string
-        description: >-
-          Documentation that nasal endoscopy was performed as 'ACCESS EVALUATION' 
-          or 'standard access evaluation' for bronchoscopy. Look for 'performed as 
-          part of the standard access evaluation'. Indicates bundling per 
-          bundling_hcpcs rule (FAIL - should be bundled).
-        x-aws-idp-evaluation-method: LLM
-      diagnostic_findings_lead_to_decision:
-        type: string
-        description: >-
-          Documentation stating diagnostic procedure 'FINDINGS LED DIRECTLY TO THE 
-          DECISION' for surgical intervention. Look for exact phrase 'LED DIRECTLY 
-          TO THE DECISION'. Critical for diagnostic_surgical_cpt_31622_31635 rule 
-          (PASS for 31622 diagnostic bronchoscopy).
-        x-aws-idp-evaluation-method: LLM
-      conversion_to_open_documentation:
-        type: string
-        description: >-
-          Documentation that endoscopic procedure was 'CONVERTED TO OPEN PROCEDURE' 
-          or 'converted to an open procedure'. Look for 'SURGICAL BRONCHOSCOPY WAS 
-          CONVERTED TO AN OPEN PROCEDURE'. Critical for diagnostic_surgical rules 
-          (FAIL for surgical endoscopy 31635 - not separately reportable).
-        x-aws-idp-evaluation-method: LLM
-      intraoperative_bleeding_control:
-        type: string
-        description: >-
-          Documentation of bleeding control during procedure. Look for 'epistaxis 
-          controlled with topical', 'Minor epistaxis...controlled'. Critical for 
-          component_service rule (FAIL - control of bleeding is bundled with 
-          endoscopic procedures).
-        x-aws-idp-evaluation-method: LLM
-      chest_tube_laterality:
-        type: string
-        description: >-
-          Documentation of chest tube placement side. Look for exact terms: 'LEFT', 
-          'RIGHT', 'CONTRALATERAL', 'opposite side from', 'LEFT (CONTRALATERAL) side'. 
-          Critical for separate_procedure_cpt_32551 rule (PASS if contralateral).
-        x-aws-idp-evaluation-method: LLM
-      thoracotomy_side:
-        type: string
-        description: >-
-          The side of the thoracotomy (LEFT/RIGHT). Look for 'right posterolateral 
-          thoracotomy', 'left thoracotomy'. Used to determine if chest tube is 
-          contralateral.
-        x-aws-idp-evaluation-method: EXACT
-      single_incision_documentation:
-        type: string
-        description: >-
-          Documentation of single incision approach for thoracotomy. Look for 
-          'single posterolateral thoracotomy incision', 'single skin incision'. 
-          Critical for bundling_32100 rule - confirms primary procedure with no 
-          separate approach (PASS).
-        x-aws-idp-evaluation-method: LLM
-      operative_narrative_summary:
-        type: string
-        description: >-
-          Summary of the complete operative narrative describing the surgical 
-          procedure sequence and key events.
-        x-aws-idp-evaluation-method: LLM
-    $id: PA-Operative-Report
 
-  - $schema: https://json-schema.org/draft/2020-12/schema
-    description: >-
-      Section 4 of a Prior Authorization packet containing the operative procedure 
-      log with case narrative summary, detailed procedure sequencing table showing 
-      CPT codes with start/end times and outcomes, surgical team information, 
-      anatomical details table, and individual procedure narratives. This section 
-      documents procedure order (diagnostic before surgical), timing, duration, 
-      specific outcomes, and provides corroborating evidence for operative report 
-      claims including missing documentation flags.
-    type: object
-    x-aws-idp-document-type: PA-Procedure-Log
-    properties:
-      patient_name:
-        type: string
-        description: >-
-          The full name of the patient from the procedure log header.
-        x-aws-idp-evaluation-method: EXACT
-      date_of_service:
-        type: string
-        format: date
-        description: >-
-          The date of the procedures.
-        x-aws-idp-evaluation-method: DATE
-      surgery_start_time:
-        type: string
-        description: >-
-          The time surgery began (e.g., '19:02').
-        x-aws-idp-evaluation-method: EXACT
-      surgery_end_time:
-        type: string
-        description: >-
-          The time surgery ended (e.g., '21:47').
-        x-aws-idp-evaluation-method: EXACT
-      procedure_sequence:
-        type: array
-        description: >-
-          Ordered list of procedures from the Procedure Sequence table showing 
-          sequence number, CPT code, description, timing, and outcome. Critical 
-          for verifying procedure order (diagnostic before surgical).
-        x-aws-idp-evaluation-method: LLM
-        x-aws-idp-list-item-description: Each item represents one procedure in sequence
-        items:
-          type: object
-          properties:
-            sequence_number:
-              type: string
-              description: Order in which procedure was performed (1, 2, 3...).
-            cpt_code:
-              type: string
-              description: CPT code for the procedure.
-            procedure_description:
-              type: string
-              description: Description of the procedure.
-            start_time:
-              type: string
-              description: Time procedure started.
-            end_time:
-              type: string
-              description: Time procedure ended.
-            duration:
-              type: string
-              description: Duration of the procedure.
-            outcome:
-              type: string
-              description: >-
-                Outcome of the procedure. Look for key phrases: 'Successful', 
-                'Unsuccessful - converted', 'L side (contralat)', 'Controlled w/ topical', 
-                'FB identified', 'Airway assessment'.
-      emergency_intubation_sequence:
-        type: string
-        description: >-
-          Documentation showing emergency intubation (31500) was the FIRST procedure 
-          performed with timing. Look for sequence #1 with 31500. Supports 
-          bundling_31500 rule evaluation (PASS if first procedure in emergency).
-        x-aws-idp-evaluation-method: LLM
-      diagnostic_before_surgical_evidence:
-        type: string
-        description: >-
-          Evidence that diagnostic procedure (31622) was performed BEFORE surgical 
-          procedure (31635) in the sequence. Look for 31622 with lower sequence 
-          number than 31635. Critical for diagnostic_surgical_cpt_31622_31635 rule.
-        x-aws-idp-evaluation-method: LLM
-      conversion_outcome_evidence:
-        type: string
-        description: >-
-          Documentation of unsuccessful endoscopic attempt and conversion from 
-          procedure outcome column. Look for 'Unsuccessful - converted' for 31635. 
-          Supports diagnostic_surgical rule (FAIL for 31635).
-        x-aws-idp-evaluation-method: LLM
-      chest_tube_placement_outcome:
-        type: string
-        description: >-
-          Outcome details for chest tube (32551) showing side and contralateral 
-          confirmation. Look for 'L side (contralat)', '32Fr placed, L side'. 
-          Supports separate_procedure_cpt_32551 rule (PASS).
-        x-aws-idp-evaluation-method: LLM
-      bleeding_control_timing:
-        type: string
-        description: >-
-          Timing of bleeding control procedure (30901) showing it occurred during 
-          the surgical session (intraoperative). Look for procedure time within 
-          surgery window. Supports component_service rule (FAIL - bundled).
-        x-aws-idp-evaluation-method: LLM
-      codes_without_documentation:
-        type: array
-        description: >-
-          List of CPT codes that appear in the procedure sequence table but have 
-          NO documentation of indication, findings, or outcome in the Outcome column. 
-          Results in INFORMATION_NOT_FOUND for corresponding rules.
-        x-aws-idp-evaluation-method: LLM
-        x-aws-idp-list-item-description: Each item represents a code with missing documentation
-        items:
-          type: object
-          properties:
-            cpt_code:
-              type: string
-              description: The CPT code without documentation.
-            missing_documentation:
-              type: string
-              description: >-
-                What documentation is missing (e.g., 'No indication documented', 
-                'No findings documented', 'Blank outcome field').
-      anatomical_details:
-        type: object
-        description: >-
-          Anatomical details from the anatomy table showing laterality for each 
-          surgical site.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          thoracotomy_side:
-            type: string
-            description: Side of thoracotomy (RIGHT/LEFT).
-          chest_tube_side:
-            type: string
-            description: Side of chest tube placement (RIGHT/LEFT).
-          foreign_body_location:
-            type: string
-            description: Location of foreign body if applicable.
-    $id: PA-Procedure-Log
-
-  # ---------------------------------------------------------------------------
-  # SECTION 5: PA-Claims-Evidence
-  # ---------------------------------------------------------------------------
-  - $schema: https://json-schema.org/draft/2020-12/schema
-    description: >-
-      Section 5 of a Prior Authorization packet containing claims and supporting 
-      evidence including member claim history table (36 months), insurance card 
-      verification (front and back images), employment verification (pay statement), 
-      explanation of benefits (EOB) showing processing status for each CPT code, 
-      and letter of medical necessity. This section provides historical billing 
-      patterns, prior procedure payment status, and current claim line-item 
-      processing results that correlate to rule outcomes.
-    type: object
-    x-aws-idp-document-type: PA-Claims-Evidence
-    properties:
-      member_id:
-        type: string
-        description: >-
-          The insurance member identification number from the claims section header.
-        x-aws-idp-evaluation-method: EXACT
-      member_name:
-        type: string
-        description: >-
-          The name of the insurance member.
-        x-aws-idp-evaluation-method: EXACT
-      claim_history:
-        type: array
-        description: >-
-          Historical claims table showing prior services, CPT codes, amounts, 
-          payment status, and notes relevant to rule evaluation.
-        x-aws-idp-evaluation-method: LLM
-        x-aws-idp-list-item-description: Each item represents one historical claim line
-        items:
-          type: object
-          properties:
-            date_of_service:
-              type: string
-              description: Date of the historical service.
-            claim_number:
-              type: string
-              description: Claim identifier (e.g., 'IL25-778899').
-            service_description:
-              type: string
-              description: >-
-                Description of the service including modifier notes (e.g., 
-                'Office E&M (Mod 25) - HTN mgmt', 'Postop E&M (Mod 24) - unrelated derm').
-            cpt_code:
-              type: string
-              description: CPT code billed.
-            billed_amount:
-              type: string
-              description: Amount billed.
-            paid_amount:
-              type: string
-              description: Amount paid by insurance.
-            status:
-              type: string
-              description: Claim status (PAID, DENIED, UNDER REVIEW).
-      prior_minor_surgery_with_em_claim:
-        type: object
-        description: >-
-          Historical claim evidence of minor surgery (000/010 global) with separately 
-          billed E&M using Modifier 25. Supports minor_surgery_000_010 rule.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          claim_number:
-            type: string
-            description: Claim number for the encounter.
-          procedure_cpt:
-            type: string
-            description: Minor procedure CPT code (e.g., '11102').
-          em_code_with_modifier:
-            type: string
-            description: E&M code with modifier (e.g., '99213-25').
-          both_paid:
-            type: string
-            description: Whether both procedure and E&M were paid ('PAID', 'Yes').
-      prior_diagnostic_procedure_claim:
-        type: object
-        description: >-
-          Historical claim for diagnostic procedure with documented findings that 
-          led to treatment decision. Supports diagnostic_surgical rules.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          claim_number:
-            type: string
-            description: Claim number.
-          procedure_cpt:
-            type: string
-            description: Diagnostic procedure CPT (e.g., '32601').
-          notes:
-            type: string
-            description: >-
-              Notes indicating findings led to decision (e.g., 'findings led 
-              directly to decision for chest tube').
-          status:
-            type: string
-            description: Payment status.
-      postop_visit_claim:
-        type: object
-        description: >-
-          Claim for postoperative visit with Modifier 24 for unrelated condition. 
-          Supports postoperative_rules evaluation.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          claim_number:
-            type: string
-            description: Claim number for postop visit (e.g., 'IL26-889900').
-          em_code_with_modifier:
-            type: string
-            description: E&M code with modifier 24 (e.g., '99213-24').
-          service_description:
-            type: string
-            description: Description noting unrelated condition.
-          status:
-            type: string
-            description: Payment status.
-      current_claim_eob:
-        type: object
-        description: >-
-          Explanation of Benefits for the current claim showing processing status 
-          for each CPT code. Status values correlate to rule outcomes.
-        x-aws-idp-evaluation-method: LLM
-        properties:
-          claim_number:
-            type: string
-            description: Current claim number.
-          claim_status:
-            type: string
-            description: Overall claim status.
-          line_items:
-            type: array
-            items:
-              type: object
-              properties:
-                cpt_code:
-                  type: string
-                  description: CPT code.
-                service_description:
-                  type: string
-                  description: Service description.
-                billed_amount:
-                  type: string
-                  description: Amount billed.
-                allowed_amount:
-                  type: string
-                  description: Amount allowed by payer.
-                paid_amount:
-                  type: string
-                  description: Amount paid.
-                patient_responsibility:
-                  type: string
-                  description: Amount patient owes.
-                status:
-                  type: string
-                  description: >-
-                    Processing status: 'Processed' (PASS), 'Under Review', 
-                    'Pend - No Docs' (INFO NOT FOUND), 'Denied' (FAIL).
-      insurance_card_member_id:
-        type: string
-        description: >-
-          Member ID as shown on insurance card image for verification.
-        x-aws-idp-evaluation-method: EXACT
-      insurance_card_group_number:
-        type: string
-        description: >-
-          Group number as shown on insurance card image.
-        x-aws-idp-evaluation-method: EXACT
-      letter_of_medical_necessity_summary:
-        type: string
-        description: >-
-          Key statements from the letter of medical necessity supporting the claim 
-          including emergency criteria, conversion documentation, laterality 
-          confirmation, and modifier justification.
-        x-aws-idp-evaluation-method: LLM
-    $id: PA-Claims-Evidence
-
-
+# The policy rules of samples/rule-validation/bank-statement-review-policy.pdf:
+# one policy class per section of that policy, one rule per policy rule, each
+# with the text the policy prints. scripts/generate_bank_statement_review_policy.py
+# writes the policy, and its test fails when the two differ. Every policy class
+# applies to a document whose name says it is a bank statement.
 policy_classes:
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: global_periods
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
+    x-aws-idp-policy-type: statement_identity
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      minor_surgery_000_010:
+      institution_named:
         type: string
         description: >-
-          If a procedure has a global period of 000 or 010 days, it is defined
-          as a minor surgical procedure. In general, E&M services on the same
-          date of service as the minor surgical procedure are included in the
-          payment for the procedure. The decision to perform a minor surgical
-          procedure is included in the payment for the minor surgical procedure
-          and shall not be reported separately as an E&M service. However, a
-          significant and separately identifiable E&M service unrelated to the
-          decision to perform the minor surgical procedure is separately
-          reportable with modifier 25. The E&M service and minor surgical
-          procedure do not require different diagnoses. If a minor surgical
-          procedure is performed on a new patient, the same rules for reporting
-          E&M services apply. The fact that the patient is \"new\" to the
-          provider/supplier is not sufficient alone to justify reporting an E&M
-          service on the same date of service as a minor surgical procedure.
-      major_surgery_090:
+          The statement must name the financial institution that
+          issued it. The rule fails when no institution name is
+          printed on the statement.
+      account_holder_named:
         type: string
         description: >-
-          If a procedure has a global period of 090 days, it is defined as a
-          major surgical procedure. If an E&M service is performed on the same
-          date of service as a major surgical procedure for the purpose of
-          deciding whether to perform this surgical procedure, the E&M service
-          is separately reportable with modifier 57. Other preoperative E&M
-          services on the same date of service as a major surgical procedure are
-          included in the global payment for the procedure and are not
-          separately reportable.
-    $id: global_periods
-  - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: same_day_service_rules
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
-    type: object
-    rule_properties:
-      service_rule:
+          The statement must show the full name and the mailing
+          address of the account holder. The rule fails when the name
+          or the address is not printed on the statement.
+      account_number_shown:
         type: string
         description: >-
-          Since National Correct Coding Initiative (NCCI) Procedure-to-Procedure
-          (PTP) edits are applied to same day services by the same
-          provider/supplier to the same beneficiary, certain Global Surgery
-          Rules are applicable to the NCCI program. An E&M service is separately
-          reportable on the same date of service as a procedure with a global
-          period of 000, 010, or 090 days under limited circumstances.
-    $id: same_day_service_rules
+          The statement must show an account number for every account
+          it summarises. The rule fails when an account is listed
+          without an account number.
+    $id: statement_identity
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: postoperative_rules
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
+    x-aws-idp-policy-type: statement_period
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      postoperative_rule:
+      statement_date_shown:
         type: string
         description: >-
-          For major and minor surgical procedures, postoperative E&M services
-          related to recovery from the surgical procedure during the
-          postoperative period are included in the global surgical package as
-          are E&M services related to complications of the surgery.
-          Postoperative visits unrelated to the diagnosis for which the surgical
-          procedure was performed may be reported separately on the same day as
-          a surgical procedure with modifier 24 (\"Unrelated Evaluation and
-          Management Service by the Same Physician or Other Qualified Health
-          Care Professional During a Postoperative Period\"), unless related to
-          a complication of surgery.
-    $id: postoperative_rules
-  - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: bundling
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
-    type: object
-    rule_properties:
-      bundling_31500:
-        type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "31500"
-                      ],
-                      "rule_text": "If laryngoscopy is required for elective or emergency placement of an endotracheal tube, the laryngoscopy is not separately reportable. CPT code 31500 describes an emergency endotracheal intubation procedure and shall not be reported when an elective intubation is performed. For example, if intubation is performed in a rapidly deteriorating patient who requires mechanical ventilation, a separate HCPCS/CPT code may be reported for the emergent intubation. The medical record must document the necessity for emergent intubation.",
-                      "bundled_services": [
-                        "laryngoscopy for elective or emergency placement of endotracheal tube"
-                      ],
-                      "separately_reportable_conditions": [
-                        "intubation is performed in a rapidly deteriorating patient who requires mechanical ventilation"
-                      ]
-          }
-      bundling_hcpcs:
+          The statement must show the date it was issued or the period
+          it covers. The rule fails when the statement prints neither.
+      balance_dates_in_order:
         type: string
         description: >-
-          {"rule_text": "When a diagnostic or surgical endoscopy of the
-          respiratory system is performed, it is a standard of practice to
-          evaluate the access regions. A separate HCPCS/CPT code shall not be
-          reported for this evaluation of the access regions. For example, if an
-          endoscopic anterior ethmoidectomy is performed, a diagnostic nasal
-          endoscopy shall not be reported separately simply because the approach
-          to the ethmoid sinus is transnasal. Similarly, fiberoptic bronchoscopy
-          routinely includes an examination of the nasal cavity, pharynx, and
-          larynx. A separate HCPCS/CPT code shall not be reported with the
-          bronchoscopy HCPCS/CPT code for this latter examination whether it is
-          limited (\"cursory\") or complete.",
-                      "bundled_services": [
-                        "evaluation of access regions",
-                        "examination of nasal cavity, pharynx, and larynx with bronchoscopy"
-                      ],
-                      "separately_reportable_conditions": [
-                        "If medically reasonable and necessary endoscopic procedures are performed on 2 regions of the respiratory system with different types of endoscopes, both procedures may be separately reportable",
-                        "If the findings of a diagnostic endoscopy lead to the decision to perform a non-endoscopic surgical procedure at the same patient encounter, the diagnostic endoscopy may be reported separately"
-                      ],
-                      "examples": "For example, if a patient requires diagnostic bronchoscopy for a lung mass with a fiberoptic bronchoscope and a separate laryngoscopy for a laryngeal mass with a fiberoptic laryngoscope at the same patient encounter, HCPCS/CPT codes for both procedures may be reported separately. It must be medically reasonable and necessary to use 2 separate endoscopes to report both codes."}
-      bundling_30801_30802:
-        type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "30801",
-                        "30802"
-                      ],
-                      "rule_text": "The procedures described by CPT codes 30801 and 30802 (Cautery and/or ablation of mucosa of inferior turbinates) are performed to reduce the size of the inferior turbinates of the nose. These 2 codes shall not be reported for access to the nose or sinuses or for control of intraoperative bleeding with other codes describing nasal or sinus endoscopy or other nasal procedures. Since the procedure described by CPT code 30802 (Intramural, unilateral or bilateral) is more extensive than the procedure described by CPT code 30801 (Superficial, unilateral, or bilateral), both codes shall not be reported for the same patient encounter.",
-                      "bundled_services": [
-                        "CPT codes 30801 and 30802 for access to nose or sinuses or for control of intraoperative bleeding",
-                        "CPT codes 30801 and 30802 together for same patient encounter"
-                      ]
-          }
-      bundling_32100:
-        type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "32100"
-                      ],
-                      "rule_text": "Open procedures of the thorax include the approach and exploration. CPT code 32100 (thoracotomy; with exploration) shall not be reported separately with open thoracic procedures to describe the approach and exploration.",
-                      "bundled_services": [
-                        "approach and exploration with open thoracic procedures"
-                      ],
-                      "separately_reportable_conditions": [
-                        "(1) it is performed on the contralateral side",
-                        "(2) it is performed on the ipsilateral side through a separate skin incision",
-                        "(3) it is performed to obtain a biopsy at a different site than the other open thoracic procedure"
-                      ]
-          }
-      bundling_92502:
-        type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "92502"
-                      ],
-                      "rule_text": "CPT code 92502 (otolaryngologic examination under general anesthesia) is not separately reportable with any other otolaryngologic procedure performed under general anesthesia.",
-                      "bundled_services": [
-                        "otolaryngologic examination under general anesthesia with any other otolaryngologic procedure performed under general anesthesia"
-                      ]
-          }
-    $id: bundling
-  - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: diagnostic_surgical
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
-    type: object
-    rule_properties:
-      diagnostic_surgical_cpt_31622_31635:
+          The date printed for the new balance of an account must be
+          the same as or later than the date printed for its previous
+          balance. The rule fails when the new balance is dated before
+          the previous balance.
+      transactions_within_period:
         type: string
         description: >-
-          {
-
-          "cpt_codes_affected": [
-                        "31622",
-                        "31635"
-                      ],
-          "rule_text": "If an endoscopic procedure is performed at the same
-          patient encounter as a non-endoscopic procedure to ensure that no
-          intraoperative injury occurred or to verify that the procedure was
-          performed correctly, the endoscopic procedure is not separately
-          reportable with the non-endoscopic procedure. A diagnostic endoscopy
-          is not separately reportable with a surgical endoscopy, per CPT
-          Professional instructions. If an endoscopic procedure fails and is
-          converted into an open procedure, the endoscopic procedure is not
-          separately reportable with the open procedure. Neither the surgical
-          endoscopy nor diagnostic endoscopy code shall be reported with the
-          open procedure code when a surgical endoscopy is converted to an open
-          procedure.",
-                      "bundled_services": [
-                        "endoscopic procedure to ensure no intraoperative injury or verify procedure performed correctly",
-                        "diagnostic endoscopy with surgical endoscopy",
-                        "surgical endoscopy converted to open procedure"
-                      ],
-                      "separately_reportable_conditions": [
-                        "diagnostic endoscopy may be reported separately if endoscopic effort fails and open procedure is performed"
-                      ],
-                      "examples": "A patient presents with aspiration of a foreign body. A bronchoscopy is performed identifying lobar foreign body obstruction, and an attempt is made to remove this obstruction during the bronchoscopy. It would be inappropriate to report CPT codes 31622 (Diagnostic bronchoscopy) and 31635 (Surgical bronchoscopy with removal of foreign body). Only the \"surgical\" endoscopy, CPT code 31635, may be reported. In this example, if the endoscopic effort fails and a thoracotomy is performed, the diagnostic bronchoscopy may be reported separately in addition to the thoracotomy. However, the CPT code for the surgical bronchoscopy to remove the foreign body is not separately reportable because the procedure was converted to an open procedure. If the surgeon decides to repeat the bronchoscopy after induction of general anesthesia to confirm the surgical approach to the foreign body, this confirmatory bronchoscopy is not separately reportable although the initial diagnostic bronchoscopy may still be reportable."
-          }
-      diagnostic_surgical_cpt_32601_32604_32606:
-        type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "32601",
-                        "32604",
-                        "32606"
-                      ],
-                      "rule_text": "A diagnostic thoracoscopy (CPT codes 32601, 32604, 32606) is not separately reportable with a surgical thoracoscopy on the ipsilateral side of the thorax. A diagnostic thoracoscopy to assess the surgical field or extent of disease before an open thoracotomy, thoracostomy, or mediastinal procedure is not separately reportable. However, a diagnostic thoracoscopy is separately reportable with an open thoracotomy, thoracostomy, or mediastinal procedure if the findings of the diagnostic thoracoscopy lead to the decision to perform an open thoracotomy, thoracostomy, or mediastinal procedure. If a surgical thoracoscopy is converted to an open thoracotomy, thoracostomy, or mediastinal procedure, the surgical thoracoscopy is not separately reportable. Additionally, a diagnostic thoracoscopy shall not be reported in lieu of the surgical thoracoscopy with the open thoracotomy, thoracostomy, or mediastinal procedure. Neither a surgical thoracoscopy nor diagnostic thoracoscopy code shall be reported with the open thoracotomy, thoracostomy, or mediastinal procedure code when a surgical thoracoscopy is converted to an open procedure.",
-                      "bundled_services": [
-                        "diagnostic thoracoscopy with surgical thoracoscopy on ipsilateral side",
-                        "diagnostic thoracoscopy to assess surgical field or extent of disease before open procedure",
-                        "surgical thoracoscopy converted to open procedure"
-                      ],
-                      "separately_reportable_conditions": [
-                        "findings of the diagnostic thoracoscopy lead to the decision to perform an open thoracotomy, thoracostomy, or mediastinal procedure"
-                      ]
-          }
-    $id: diagnostic_surgical
+          Every transaction listed on the statement must be dated
+          within the period the statement covers and no later than the
+          statement date. The rule fails when a transaction is dated
+          outside that period.
+    $id: statement_period
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: component_service
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
+    x-aws-idp-policy-type: balance_reconciliation
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      component_service:
+      new_balance_reconciles:
         type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "30901",
-                        "30801",
-                        "30903",
-                        "30905",
-                        "31238"
-                      ],
-                      "rule_text": "Control of bleeding is an integral component of endoscopic procedures, and is not separately reportable. For example, control of nasal hemorrhage (CPT code 30901) is not separately reportable for control of bleeding due to a nasal/sinus endoscopic procedure. If bleeding occurs in the postoperative period and requires return to the operating room for treatment, a HCPCS/CPT code for control of the bleeding may be reported with modifier 78 indicating that the procedure was a complication of a prior procedure requiring treatment in the operating room. However, control of postoperative bleeding not requiring return to the operating room is not separately reportable.",
-                      "bundled_services": [
-                        "control of nasal hemorrhage (CPT code 30901)",
-                        "CPT codes 30801, 30903, 30905, 31238 for control of bleeding due to nasal/sinus endoscopic procedure or other nasal procedure"
-                      ],
-                      "separately_reportable_conditions": [
-                        "bleeding occurs in the postoperative period and requires return to the operating room for treatment"
-                      ]
-          }
-    $id: component_service
+        description: >-
+          For each account, the new balance must equal the previous
+          balance, minus checks and other withdrawals, plus deposits
+          and credits, using the amounts printed in the account
+          summary. The rule fails when the printed amounts do not add
+          up to the printed new balance.
+      summary_total_matches_accounts:
+        type: string
+        description: >-
+          The total printed for a group of accounts in the summary of
+          accounts must equal the sum of the balances of the accounts
+          in that group. The rule fails when the total differs from
+          that sum.
+    $id: balance_reconciliation
   - $schema: https://json-schema.org/draft/2020-12/schema
-    x-aws-idp-policy-type: separate_procedure
-    x-aws-idp-document-name-regex: "(?i).*(medicare|medicaid|pa[_ -]?packet|prior[_ -]?auth).*"
+    x-aws-idp-policy-type: transaction_review
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
     type: object
     rule_properties:
-      separate_procedure_cpt_32551:
+      transactions_in_date_order:
         type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "32551"
-                      ],
-                      "rule_text": "A tube thoracostomy (CPT code 32551) may be performed for drainage of an abscess, empyema, or hemothorax. The code descriptor for CPT code 32551 defines it as a \"separate procedure.\" It is not separately reportable when performed at the same patient encounter as another open procedure of the thorax unless it is performed in the thoracic cavity contralateral to the one entered to perform the open thoracic procedure.",
-                      "bundled_services": [
-                        "tube thoracostomy with another open procedure of the thorax on ipsilateral side"
-                      ],
-                      "separately_reportable_conditions": [
-                        "performed in the thoracic cavity contralateral to the one entered to perform the open thoracic procedure"
-                      ]
-          }
-      separate_procedure_cpt_31600:
+        description: >-
+          Transactions must be listed in date order, oldest first,
+          within each account. The rule fails when a transaction is
+          listed after a transaction with a later date.
+      no_duplicate_transactions:
         type: string
-        description: |-
-          {
-          "cpt_codes_affected": [
-                        "31600"
-                      ],
-                      "rule_text": "The descriptor for CPT code 31600 (Tracheostomy, planned (separate procedure)) includes the \"separate procedure\" designation. Therefore, pursuant to the Centers for Medicare & Medicaid Services (CMS) \"separate procedure\" policy, a tracheostomy is not separately reportable with laryngeal surgical procedures that frequently require tracheostomy (e.g., laryngotomy, laryngectomy, laryngoplasty).",
-                      "bundled_services": [
-                        "tracheostomy with laryngeal surgical procedures (e.g., laryngotomy, laryngectomy, laryngoplasty)"
-                      ]
-          }
-    $id: separate_procedure
+        description: >-
+          A transaction must be listed once. The rule fails when two
+          listed transactions have the same date, description,
+          reference number and amount.
+      large_withdrawals_identified:
+        type: string
+        description: >-
+          Every withdrawal of 10,000.00 or more must have a
+          description that identifies the payee. The rule fails when
+          such a withdrawal has no description, or a description that
+          names no payee.
+    $id: transaction_review
 
 rule_validation:
   enabled: true

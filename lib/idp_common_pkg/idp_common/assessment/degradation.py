@@ -18,7 +18,9 @@ only trace either can leave is on the section itself, which is why both go
 through :func:`record_confidence_unavailable`: one error-severity
 ``ProcessingIssue`` (rendered in the Sections panel's **Status** column, and
 persisted by the Assessment Lambda's ``update_document_section`` call) plus one
-``AssessmentConfidenceUnavailable`` count (``#996``'s alarm).
+``AssessmentConfidenceUnavailable`` count (``#996``'s alarm). After a degrade,
+:func:`record_no_confidence_in_result` also writes the issue into the section's
+extraction result, where the Processing Report reads it.
 
 Appending to ``document.errors`` is **not** a trace. ``processresults_function``
 reads a section document's ``errors`` only inside its ``Status.FAILED`` branch,
@@ -31,9 +33,11 @@ the two grew apart.
 """
 
 import logging
-from typing import Optional
+import re
+from typing import Any, Dict, List, Optional
 
-from idp_common import metrics
+from idp_common import metrics, s3, utils
+from idp_common.decision_model import DecisionModelRefused, DecisionModelUnavailable
 from idp_common.models import Document, ProcessingIssue
 
 logger = logging.getLogger(__name__)
@@ -111,6 +115,12 @@ def record_confidence_unavailable(
     return issue
 
 
+def _is_content_filter_block(error: BaseException) -> bool:
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
+
+
 def degrade_section_to_no_confidence(
     document: Document,
     section_id: str,
@@ -133,12 +143,13 @@ def degrade_section_to_no_confidence(
 
     **Where it is visible.** That write goes to the section's DynamoDB record, so the
     issue appears in the **Status** column of the document's Sections panel (and its
-    popover). It does NOT appear in the Visual Editor's **Processing Report** tab:
-    that tab renders ``metadata.processing_issues`` from the section's extraction
-    ``result.json`` in S3, and this degrade path deliberately does not rewrite that
-    file — the assessment run that would have produced a fresh copy is the thing
-    that just failed. (Issues from a *successful* assessment run do reach both,
-    because the service writes them into the result JSON as well.)
+    popover). The Visual Editor's **Processing Report** tab renders
+    ``metadata.processing_issues`` and the processing flow from the section's
+    extraction ``result.json`` in S3, which extraction wrote before this pass ran;
+    the Assessment Lambda calls :func:`record_no_confidence_in_result` next, which
+    writes the issue there too and marks the Confidence stage as having no scores,
+    so the report does not show a confidence pass that scored nothing. That write is
+    best effort: if it fails, the issue is on the section record only.
 
     ``processresults_function`` fails a document only when a section
     document comes back ``Status.FAILED`` (a section's ``errors`` list is read only
@@ -166,6 +177,40 @@ def degrade_section_to_no_confidence(
 
     Returns the recorded ``ProcessingIssue``.
     """
+    # The LLM remedies at the end do not apply to a decision model: its window is
+    # fixed, and list_batch_size does not change what one page holds.
+    if isinstance(error, DecisionModelRefused):
+        remedy = (
+            "The decision model refused a request, or a request was not sent "
+            "because it left no room for page text; a refusal is not retried, and "
+            "the root cause names the pages. If a request was over the model's "
+            "window, lower extraction.confidence.decision_model.max_input_tokens or "
+            "set its input to images; if it left no room for text, raise "
+            "max_input_tokens."
+        )
+    elif isinstance(error, DecisionModelUnavailable):
+        remedy = (
+            "The decision model could not be reached or did not answer, and this "
+            "failure was not retried. The root cause names the error: check the "
+            "function ARN (its name must start with GENAIIDP-), the pipeline's "
+            "permission to invoke it, and the function's own logs."
+        )
+    elif _is_content_filter_block(error):
+        from idp_common.utils.bedrock_utils import content_block_wording
+
+        blocker, fix = content_block_wording(error, "confidence model")
+        remedy = (
+            f"{blocker[0].upper()}{blocker[1:]} the confidence model's "
+            "reply, and a retry would send the same section to the same filter. "
+            f"Review the section's pages, or {fix}."
+        )
+    else:
+        remedy = (
+            "Deterministic failures are not retried; if the confidence model "
+            "rejected the input as too long, use a confidence model with a larger "
+            "context window, reduce extraction.confidence.list_batch_size, or "
+            "process smaller sections."
+        )
     issue = ProcessingIssue(
         stage="assessment",
         severity="error",
@@ -174,15 +219,124 @@ def degrade_section_to_no_confidence(
             "Confidence assessment failed for this section, so its extracted "
             "values have NO confidence scores and are not covered by "
             "confidence-based review (HITL thresholds). The extracted data itself "
-            "is complete and was kept. Deterministic failures are not retried; if "
-            "the confidence model rejected the input as too long, use a "
-            "confidence model with a larger context window, reduce "
-            "extraction.confidence.list_batch_size, or process smaller sections."
+            f"is complete and was kept. {remedy}"
         ),
         root_cause=f"{type(error).__name__}: {error}",
         section_id=section_id,
     )
     return record_confidence_unavailable(document, section_id, issue)
+
+
+#: How a report line marks each issue severity.
+_SEVERITY_ICONS = {"error": "✗", "warning": "⚠", "info": "ℹ"}
+
+#: The Confidence line of the extraction's text report, as
+#: ``ExtractionService._generate_processing_report`` renders the flow stage.
+_REPORT_CONFIDENCE_LINE = re.compile(r"^  \S Confidence: .*$", re.MULTILINE)
+
+#: What the Confidence stage says once the pass has produced no scores.
+_NO_SCORES_DETAIL = "no confidence scores: the confidence pass failed"
+
+
+def merge_assessment_issues_into_result(
+    extraction_data: Dict[str, Any], issues: List[ProcessingIssue]
+) -> None:
+    """Write the assessment stage's ``issues`` into a section's extraction result.
+
+    MERGE, do not replace. Extraction already wrote its own issues
+    (``extraction_incomplete``, ``extraction_validation_failed``, ...) into
+    ``metadata.processing_issues``; the assessment stage owns only the
+    assessment-stage ones, so those are replaced and the rest kept. The issues are
+    also appended to the text ``processing_report``, which extraction wrote before
+    the assessment step ran and so otherwise never mentions them.
+    """
+    metadata = extraction_data.get("metadata") or {}
+    inherited = [
+        pi
+        for pi in (metadata.get("processing_issues") or [])
+        if isinstance(pi, dict) and pi.get("stage") != "assessment"
+    ]
+    merged = inherited + [pi.to_dict() for pi in issues]
+    if not merged:
+        return
+    extraction_data["metadata"] = metadata
+    metadata["processing_issues"] = merged
+    issue_lines = ["", "Processing Issues (assessment):"]
+    for pi in issues:
+        issue_lines.append(
+            f"  {_SEVERITY_ICONS.get(pi.severity, '•')} [{pi.code}] {pi.message}"
+        )
+        if pi.root_cause:
+            issue_lines.append(f"      Root cause: {pi.root_cause}")
+    existing_report = extraction_data.get("processing_report", "")
+    extraction_data["processing_report"] = (
+        existing_report + "\n" + "\n".join(issue_lines)
+    ).strip()
+
+
+def record_no_confidence_in_result(
+    extraction_result_uri: Optional[str], issue: ProcessingIssue
+) -> bool:
+    """Show a degraded section's issue in its Processing Report. Best effort.
+
+    The Processing Report tab and the text report read the section's extraction
+    result in S3. Extraction wrote it before the confidence pass ran, so after a
+    degrade it still shows a Confidence stage as if the pass had scored the
+    section. This writes ``issue`` into that file the way a successful pass writes
+    its own issues, and marks the Confidence stage as having produced no scores.
+
+    A result that already holds ``explainability_info`` is left alone: the failure
+    came after the pass wrote its scores, and marking that file "no confidence
+    scores" would contradict the scores beside it.
+
+    The text report's Confidence line is rewritten in place rather than the report
+    re-rendered. The renderer is ``ExtractionService._generate_processing_report``,
+    and importing the extraction package here would bring strands into the
+    Assessment Lambda, which does not install it. The line's format is pinned to
+    that renderer by a test.
+
+    Returns whether the file was updated. Never raises: the degrade path exists so
+    the document completes, so a failure here is logged and the issue stays on the
+    section record, where the Sections panel shows it.
+    """
+    if not extraction_result_uri:
+        return False
+    try:
+        data = s3.get_json_content(extraction_result_uri)
+        if not isinstance(data, dict):
+            return False
+        if data.get("explainability_info"):
+            logger.warning(
+                "Not marking %s as having no confidence scores: it already holds "
+                "the pass's scores, so the %s failure came after they were written. "
+                "The issue is on the section record.",
+                extraction_result_uri,
+                issue.code,
+            )
+            return False
+        merge_assessment_issues_into_result(data, [issue])
+        flow = (data.get("metadata") or {}).get("processing_flow") or {}
+        for stage in flow.get("stages") or []:
+            if isinstance(stage, dict) and stage.get("key") == "confidence":
+                stage.update(status="warning", detail=_NO_SCORES_DETAIL, fanout=0)
+                stage.pop("model", None)
+        report = data.get("processing_report")
+        if isinstance(report, str):
+            data["processing_report"] = _REPORT_CONFIDENCE_LINE.sub(
+                f"  ⚠ Confidence: {_NO_SCORES_DETAIL}", report, count=1
+            )
+        bucket, key = utils.parse_s3_uri(extraction_result_uri)
+        s3.write_content(data, bucket, key, content_type="application/json")
+        return True
+    except Exception as e:  # noqa: BLE001 - reporting must not fail the degrade
+        logger.warning(
+            "Could not record the %s issue in the extraction result %s, so the "
+            "Processing Report does not show it; it is on the section record. %s",
+            issue.code,
+            extraction_result_uri,
+            e,
+        )
+        return False
 
 
 def skip_section_no_confidence(

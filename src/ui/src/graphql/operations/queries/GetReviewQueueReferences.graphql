@@ -1,0 +1,12 @@
+query GetReviewQueueReferences($queueId: String!, $limit: Int, $nextToken: String) {
+  getReviewQueueReferences(queueId: $queueId, limit: $limit, nextToken: $nextToken) {
+    items {
+      profile
+      revision
+      published
+      ruleId
+      ruleLabel
+    }
+    nextToken
+  }
+}

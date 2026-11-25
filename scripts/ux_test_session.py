@@ -10,7 +10,7 @@ a chosen group, so a UX test never runs as — or risks the password of — a re
 operator's account.
 
 This is deliberately *only* setup and teardown. The browsing, the assertions and
-the UX judgement are the agent's job (see ``.claude/skills/ux-test.md``); putting
+the UX judgement are the agent's job (see ``.claude/skills/ux-test/SKILL.md``); putting
 them here would mean a deterministic script pretending to have opinions about
 usability, which is the thing the harness exists to avoid.
 
@@ -29,7 +29,7 @@ Usage:
 deletes the user.
 
 ``--long-lived`` is the one exception to "throwaway", and exists for the CI review
-stack the unattended MR UX test signs in to (``.claude/skills/ux-test-ci.md``). It
+stack the unattended MR UX test signs in to (``.claude/skills/ux-test-ci/SKILL.md``). It
 creates ``ux-persona-<group>@example.invalid``, a fixed name, so the masked CI
 variable ``UX_TEST_PERSONAS``, scoped to the environment ``ux-review``, can hold its
 password from one run to the next, and prints the entry to merge into that

@@ -11,7 +11,8 @@
  * test reads the generator's own section headings out of
  * `idp_common/evaluation/models.py` and requires each to have a counterpart in
  * the component source, so the two cannot drift apart again without a test
- * saying so.
+ * saying so. The component's headings are react-intl messages, so most
+ * counterparts match the English a message declares (its `defaultMessage`).
  *
  * Consequently a heading rename on the Python side fails THIS test, not a Python
  * one, and the UI suite needs the full repository checkout, not `src/ui` alone. When
@@ -40,28 +41,28 @@ const markdownBody = GENERATOR.slice(GENERATOR.indexOf('def to_markdown'), GENER
  * the second.
  */
 const COUNTERPARTS: Record<string, RegExp> = {
-  '## Summary': /label="Extraction accuracy"/,
-  '**Document Split Classification:**': /label="Split accuracy"/,
-  '## Excluded Sections (Not Evaluated)': /not evaluated`}/,
-  '## Overall Metrics': /headerText="All metrics"/,
-  '### Document Split Classification Metrics': /Document split classification<\/Box>/,
-  '### Document Extraction Metrics': /Document extraction<\/Box>/,
-  '## 📑 Section Split Analysis': /headerText="Section split analysis"/,
-  '### ⚠️ Doc Split Errors': /header="Doc split errors"/,
+  '## Summary': /defaultMessage: 'Extraction accuracy'/,
+  '**Document Split Classification:**': /defaultMessage: 'Split accuracy'/,
+  '## Excluded Sections (Not Evaluated)': /# sections not evaluated\}\}'/,
+  '## Overall Metrics': /defaultMessage: 'All metrics'/,
+  '### Document Split Classification Metrics': /defaultMessage: 'Document split classification'/,
+  '### Document Extraction Metrics': /defaultMessage: 'Document extraction'/,
+  '## 📑 Section Split Analysis': /defaultMessage: 'Section split analysis'/,
+  '### ⚠️ Doc Split Errors': /defaultMessage: 'Doc split errors'/,
   '## Extraction Attribute Evaluation': /<AttributeTable rows=/,
-  '### Section:': /headerText=\{`Section \$\{section\.section_id\}/,
+  '### Section:': /defaultMessage: 'Section \{sectionId\} — \{className\}'/,
   '#### Attributes': /const AttributeTable/,
-  '⚠️ **EVALUATION FAILED**': /header="This section was not evaluated"/,
-  '**How to fix:**': /How to fix<\/Box>/,
+  '⚠️ **EVALUATION FAILED**': /defaultMessage: 'This section was not evaluated'/,
+  '**How to fix:**': /defaultMessage: 'How to fix'/,
   '### Metrics (Failure State)': /placeholders for a section that was\s+never scored/,
-  '#### Metrics': /headerText="Section metrics"/,
+  '#### Metrics': /defaultMessage: 'Section metrics'/,
   'Nested Field Comparisons': /expandableRows=\{\{/,
   'field(s) were excluded from scoring': /excluded from scoring because/,
-  '## Evaluation Methods Used': /headerText="Comparison methods used"/,
-  '### Field-Level Comparison Methods': /Field-level comparison methods<\/Box>/,
-  '### Array-Level Matching': /Array-level matching<\/Box>/,
-  '### Field Weighting': /Field weighting<\/Box>/,
-  '## 📖 Metrics Explanation': /Split metrics<\/Box>/,
+  '## Evaluation Methods Used': /defaultMessage: 'Comparison methods used'/,
+  '### Field-Level Comparison Methods': /defaultMessage: 'Field-level comparison methods'/,
+  '### Array-Level Matching': /defaultMessage: 'Array-level matching'/,
+  '### Field Weighting': /defaultMessage: 'Field weighting'/,
+  '## 📖 Metrics Explanation': /defaultMessage: 'Split metrics'/,
   '### Page Level Accuracy': /<b>Page-level accuracy<\/b>/,
   '### Document Split Accuracy (Without Page Order)': /<b>Split accuracy \(without order\)<\/b>/,
   '### Document Split Accuracy (With Page Order)': /<b>Split accuracy \(with order\)<\/b>/,
@@ -87,7 +88,7 @@ describe('evaluation report parity with the markdown generator', () => {
 
   it('shows the columns the markdown attribute table has', () => {
     for (const column of ['Confidence', 'Score', 'Weight', 'Method', 'Expected', 'Extracted']) {
-      expect(COMPONENT).toMatch(new RegExp(`header: '${column}'`));
+      expect(COMPONENT).toMatch(new RegExp(`defaultMessage: '${column}'`));
     }
   });
 

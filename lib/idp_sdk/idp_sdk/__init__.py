@@ -24,6 +24,8 @@ Example:
 """
 
 from ._core import terraform_stack as _terraform_stack
+from ._core.ids import generate_timestamped_id
+from ._core.region import resolve_region
 from ._core.terraform_deploy import (
     default_pointer_url as default_terraform_pointer_url,
 )
@@ -36,6 +38,7 @@ from .exceptions import (
     IDPStackError,
     IDPTimeoutError,
     IDPValidationError,
+    ReprocessRefusedError,
 )
 from .models import (
     # Assessment models
@@ -65,6 +68,7 @@ from .models import (
     ChatResponse,
     # Config models
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -102,6 +106,7 @@ from .models import (
     FailureAnalysis,
     FailureCause,
     FieldComparison,
+    FitCheckResult,
     # Manifest models
     LoadTestResult,
     ManifestDocument,
@@ -116,8 +121,13 @@ from .models import (
     Pattern,
     # Publish models
     PublishResult,
+    ReprocessOption,
+    ReprocessStepOption,
     RerunStep,
     ReviewInfo,
+    ReviewPolicyFailure,
+    ReviewQueueDefinition,
+    ReviewQueuePage,
     # Search models
     SearchCitation,
     SearchDocumentReference,
@@ -155,13 +165,15 @@ from .models import (
     classify_document_state,
 )
 
-__version__ = "0.6.15"
+__version__ = "0.6.16"
 
 from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 
 __all__ = [
     # Client
     "IDPClient",
+    "resolve_region",
+    "generate_timestamped_id",
     # Exceptions
     "IDPError",
     "IDPConfigurationError",
@@ -170,6 +182,7 @@ __all__ = [
     "IDPValidationError",
     "IDPResourceNotFoundError",
     "IDPTimeoutError",
+    "ReprocessRefusedError",
     # Terraform: the latest-module pointer beside a template URL
     "default_terraform_pointer_url",
     # Enums
@@ -210,11 +223,16 @@ __all__ = [
     # Document models
     "DocumentStatus",
     "ReviewInfo",
+    "ReviewPolicyFailure",
     "ReviewStatus",
+    "ReviewQueueDefinition",
+    "ReviewQueuePage",
     "DocumentUploadResult",
     "DocumentDownloadResult",
     "DocumentRerunResult",
     "DocumentReprocessResult",
+    "ReprocessOption",
+    "ReprocessStepOption",
     "DocumentDeletionResult",
     "DocumentMetadata",
     "DocumentInfo",
@@ -228,6 +246,7 @@ __all__ = [
     "FieldComparison",
     "DeleteResult",
     "UseAsBaselineResult",
+    "FitCheckResult",
     # Assessment models
     "AssessmentConfidenceResult",
     "AssessmentFieldConfidence",
@@ -247,6 +266,7 @@ __all__ = [
     "ConfigActivateResult",
     "ConfigVersionInfo",
     "ConfigListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     "ConfigRevisionInfo",

@@ -11,7 +11,7 @@ import json
 import logging
 import statistics
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import boto3
 from botocore.config import Config
@@ -21,7 +21,12 @@ from rich.table import Table
 from idp_sdk import IDPClient
 
 logger = logging.getLogger(__name__)
+#: Result tables and statistics, which are what `display_*` exists to show.
 console = Console()
+#: Progress lines a search prints while it runs. They go to stderr because the
+#: caller may be putting a payload on stdout: `idp-cli status --batch-id b
+#: --format json` printed both lines ahead of its JSON, so `| jq` failed at char 0.
+err_console = Console(stderr=True)
 
 
 class TrackingTableSearcher:
@@ -49,12 +54,17 @@ class TrackingTableSearcher:
         # Get table name
         self.table_name = self.resources.documents_table
 
-    def search_by_pk_and_status(self, pk: str, object_status: str) -> dict:
+    def search_by_pk_and_status(
+        self, pk: str, object_status: Optional[str] = None
+    ) -> dict:
         """Search for documents by PK substring and ObjectStatus.
 
         Args:
             pk: Primary key substring to search for (uses contains match)
-            object_status: Object status to filter by (e.g., COMPLETED, FAILED, QUEUED)
+            object_status: Object status to filter by (e.g., COMPLETED, FAILED,
+                QUEUED). ``None`` selects every record that carries a status,
+                whatever it is; records with no ``ObjectStatus`` (a document's
+                ``run#`` records) are never selected.
 
         Returns:
             Dict with search results
@@ -66,18 +76,22 @@ class TrackingTableSearcher:
             }
 
         try:
-            console.print(
-                f"[yellow]Searching tracking table for PK containing '{pk}' and ObjectStatus='{object_status}'...[/yellow]"
+            status_label = object_status or "ALL"
+            err_console.print(
+                f"[yellow]Searching tracking table for PK containing '{pk}' and ObjectStatus='{status_label}'...[/yellow]"
             )
 
             # Build scan parameters with filter expression using contains()
+            values: Dict[str, Any] = {":pk": {"S": pk}}
+            if object_status:
+                status_condition = "ObjectStatus = :status"
+                values[":status"] = {"S": object_status}
+            else:
+                status_condition = "attribute_exists(ObjectStatus)"
             scan_kwargs = {
                 "TableName": self.table_name,
-                "FilterExpression": "contains(PK, :pk) AND ObjectStatus = :status",
-                "ExpressionAttributeValues": {
-                    ":pk": {"S": pk},
-                    ":status": {"S": object_status},
-                },
+                "FilterExpression": f"contains(PK, :pk) AND {status_condition}",
+                "ExpressionAttributeValues": values,
             }
 
             # Paginate through all matching documents
@@ -97,14 +111,14 @@ class TrackingTableSearcher:
                     break
 
             count = len(matching_items)
-            console.print(f"[green]✓ Found {count} matching documents[/green]")
+            err_console.print(f"[green]✓ Found {count} matching documents[/green]")
 
             return {
                 "success": True,
                 "count": count,
                 "items": matching_items,
                 "pk": pk,
-                "object_status": object_status,
+                "object_status": status_label,
             }
 
         except Exception as e:

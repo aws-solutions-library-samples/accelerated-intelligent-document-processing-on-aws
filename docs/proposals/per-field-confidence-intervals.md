@@ -3,6 +3,11 @@ SPDX-License-Identifier: MIT-0
 
 # Proposal: per-field sample size and margin of error in Test Results
 
+**Status:** implemented. Test Results shows each field's observation count and 95%
+Wilson margin; see [Field-Level Metrics](../test-studio.md#field-level-metrics) in the
+Test Studio guide. The [natural follow-on](#natural-follow-on-not-in-this-proposal)
+below remains open.
+
 ## The problem
 
 Test Results shows per-field accuracy as a bare point estimate. A reader cannot tell
@@ -13,8 +18,9 @@ This is the failure mode a golden dataset exists to prevent, one level down. A r
 *overall* accuracy firms up quickly — within roughly the first 100 documents — because
 every document contributes to it. A *single field's* accuracy does not, because a field
 appearing once per document yields one observation per document. So a field that is
-badly broken can sit inside a healthy-looking overall score, and today nothing on the
-screen shows that the field's number is built on too little evidence to act on.
+badly broken can sit inside a healthy-looking overall score, and without a sample size
+beside it nothing on the screen shows that the field's number is built on too little
+evidence to act on.
 
 Concretely, at a measured 90% accuracy:
 

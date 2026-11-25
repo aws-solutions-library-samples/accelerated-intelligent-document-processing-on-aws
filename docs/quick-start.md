@@ -25,12 +25,17 @@ A conversational agent:
    than starting from scratch.
 3. **Authors an extraction schema** and shows you the fields in readable form for
    review; you refine it in chat until it's right.
-4. **Creates and activates a configuration profile**, so you can upload a document
-   and start processing immediately — no trip to the Configuration page required.
+4. **Creates a configuration profile and makes it active**, so you can upload a
+   document and start processing immediately — no trip to the Configuration page
+   required. When the stack already has a profile in use, it asks before
+   replacing it. It also chooses how files are split into documents, whether
+   long tables need the advanced extraction engine, and whether each document
+   is summarized, from what you've told it.
 
 For the **highest-fidelity** result, you can attach your own example documents in
 the chat; they run through [Discovery](discovery.md), which infers schemas from
-the *real* documents instead of a prompt-only draft.
+the *real* documents instead of a prompt-only draft, and saves them into a new
+configuration profile of their own.
 
 Quick Start is available two ways:
 
@@ -57,7 +62,12 @@ https://github.com/user-attachments/assets/7096c812-08be-4716-ad37-7ae4f3797fa7
 
 ## Web UI
 
-When `EnableQuickStartWidget=true` (the default), you can open Quick Start from:
+Quick Start is for **Admins**: it creates, and can activate, a configuration profile,
+which only an Admin may create (see [Role-based access control](rbac.md#permission-matrix)).
+Other roles are not offered it, and the chat routes refuse a Quick Start message
+from them.
+
+When `EnableQuickStartWidget=true` (the default), an Admin can open Quick Start from:
 
 - **The side navigation** — the **Quick Start** button at the top, on every page.
 - **The Welcome page** — new users land on a Welcome screen with a **Quick Start**
@@ -92,22 +102,68 @@ ends the conversation.
    zip, through multi-document Discovery, in the background; the agent
    summarizes the discovered document types when they're ready. A schema inferred
    from a real document is higher-fidelity than a prompt-only draft.
-5. **Activate.** When you approve, the agent creates a configuration profile and
-   **activates** it, then confirms it's ready. Upload a document from **Upload
-   Documents** in the side navigation and it's processed with your new
-   configuration.
+
+   Discovery saves what it finds into a **new** profile named
+   `quickstart-<date>-<time>-<code>` (UTC, with a short random code), one per
+   conversation; documents you attach later in the same conversation go into that
+   same profile. On a stack that has no profile of its own yet — `default` is
+   active, and the only other profiles are the stack-managed presets it was
+   deployed with — it becomes active straight away. Otherwise the agent asks
+   before making it the active profile, because the active profile is what every
+   new document on the stack is processed with.
+5. **Save and choose processing options.** When you approve the schema, the agent
+   saves it as a new configuration profile. For that profile it then decides three
+   things from your description and any examples, and tells you in one sentence
+   what it chose:
+
+   | What the agent decides | Its choices | The setting it writes |
+   |---|---|---|
+   | How many documents a file holds | one (an invoice, a W-2, a statement) · several (a loan packet, a bundle of forms) · one per page (a stack of scanned receipts) | **Section splitting** under Classification › *Advanced — known document shape*: `disabled`, `llm_determined` or `page` |
+   | Whether a document can hold a long table | yes (a bank statement, a transaction log, an invoice with pages of line items) · no | **Extraction mode** under Extraction: `advanced` or `simple` |
+   | Whether to summarize each document | off unless you ask for summaries | **Enabled** under *Summarization (Optional)*: `true` or `false` |
+
+   It asks one plain question only when it can't tell, such as *"Does each file
+   hold one invoice, or can one file hold several documents?"* Simple extraction
+   reads a document in one pass and can stop partway through a long list of rows;
+   the advanced engine keeps every row, and takes longer and costs more per
+   document, which is why it's used only where tables run long. If processed
+   documents come out split wrongly or with rows missing, or you change your mind
+   about summaries, tell Quick Start and it changes the setting; then process the
+   documents again. Other extraction settings, such as models and prompts, are not
+   something Quick Start changes: they're under **Extraction** on the Configuration
+   page.
+6. **Activate.** The agent then **activates** the new profile and confirms it's
+   ready. As with attached documents, it
+   activates straight away only on a stack with no profile of its own yet;
+   otherwise it names the profile in use and asks first. Upload a document from
+   **Upload Documents** in the side navigation and it's processed with your new
+   configuration. The new profile takes its **Review Routing** setting from
+   `default`, and a new stack has it on. A document the built-in routing rules
+   hold, such as one with a field under its confidence threshold, then waits in
+   the **Default** [review queue](review-queues.md) instead of completing. Review
+   it there, or turn Review Routing off in the profile (see
+   [The Review Routing switch](review-routing.md#the-review-routing-switch)).
+
+The agent's own writes, processing options included, refuse `default` and
+stack-managed profiles (presets the stack deployed, which a stack update replaces).
+Documents you attach never reach an existing profile, because the panel always sends
+them to the new one it named. The agent is instructed to add a class to another
+existing profile only when you name that profile and ask it to; the refusal of
+`default` and stack-managed profiles is what the code enforces.
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
 [Configuration Profiles](configuration-profiles.md)).
 
-### Disabling the widget
+### Turning Quick Start off
 
-Set `EnableQuickStartWidget=false` at deploy time to hide Quick Start from the web
-UI: the side navigation button, the Welcome page's button and its mention, the
-guided tour's last step, and the floating panel (for example, on a mature
-deployment where every user already has a tuned configuration). It changes only
-the web UI; `idp-cli bootstrap` still works.
+Set `EnableQuickStartWidget=false` at deploy time to turn Quick Start off in the
+web UI (for example, on a mature deployment where every user already has a tuned
+configuration). The UI hides the side navigation button, the Welcome page's button
+and its mention, the guided tour's last step, and the floating panel, and both chat
+routes refuse a Quick Start message, so it cannot be reached by calling the API
+directly either. `idp-cli bootstrap` does not go through the chat routes and still
+works.
 
 ---
 
@@ -147,8 +203,8 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 | `--stack-name` | Target CloudFormation stack. **Omit for local mode** (print schema, no save). |
 | `--class-name` | Document class name to use as the schema `$id` / document type. |
 | `--field-hint` | A field the schema must include. Repeatable: `--field-hint X --field-hint Y`. |
-| `--config-profile` (alias: `--config-version`) | Existing configuration profile to source catalog classes from / merge the new class into. |
-| `--target-profile` (alias: `--target-version`) | Name of the configuration profile to create (default: `bootstrap-<class>`). |
+| `--config-profile` (alias: `--config-version`) | Existing configuration profile whose classes are searched for a template to adapt. Nothing is written to it. |
+| `--target-profile` (alias: `--target-version`) | Configuration profile to create, or to add the class to (default: `bootstrap-<class>`). `default` and stack-managed profiles are refused. |
 | `--count`, `-c` | Number of synthetic documents to generate (default: `3`). |
 | `--threshold` | Generation quality threshold, 1–10 (default: `7`). |
 | `--augment` | Apply scan/fax-style image augmentation to generated documents. |
@@ -196,7 +252,8 @@ minutes per document at the default quality threshold, more at higher thresholds
    IDP format.
 3. **Configuration profile.** The new class is merged into the target profile (creating it
    if needed; default name `bootstrap-<class>`), replacing any class with the same
-   id. In the UI, the agent then activates the profile.
+   id. `default` and stack-managed profiles are refused as targets. In the UI, the
+   agent then activates the profile.
 4. **(Optional) Test set.** If the generator is available, N documents are
    generated, their field names validated against the schema (extras pruned), and
    the packet is registered as a [test set](creating-custom-test-sets.md) named for

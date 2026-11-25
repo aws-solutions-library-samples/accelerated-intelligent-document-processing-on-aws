@@ -11,7 +11,7 @@ Live tests against a deployed stack: temporary Cognito users (one per group + a 
 
 ## Test suites executed
 
-Each suite maps to the AppSec "Minimum Mandatory Security Focused Test Cases for APIs" checklist item (see the [api-rbac-test skill](../../../.claude/skills/api-rbac-test.md)).
+Each suite maps to the AppSec "Minimum Mandatory Security Focused Test Cases for APIs" checklist item (see the [api-rbac-test skill](../../../.claude/skills/api-rbac-test/SKILL.md)).
 
 | Suite | Checklist | Checks | Pass | Hard fail | Known-gap |
 |-------|:---------:|-------:|-----:|----------:|----------:|

@@ -16,7 +16,9 @@ that the old deployment really stops processing, and that destroying the old
 deployment really leaves the adopted resources alone. This script is that run, made
 repeatable:
 
-1. clone the pinned upstream tag (and check the commit it resolves to), deploy its
+1. clone one of the upstream releases ``UPSTREAM_RELEASES`` pins (and check the
+   commit and ``sources/`` it resolves to; ``--upstream-tag rotate``, which the
+   scheduled run passes, takes a different one each week), deploy its
    ``examples/unified-processor`` configuration as ``<old-name>``;
 2. seed it as a user would: two documents processed (``samples/lending_package.pdf``
    and a W-2), two Cognito users with random passwords (an Admin, and an Author
@@ -30,9 +32,13 @@ repeatable:
    configuration edit survived, ``idp-cli config-list`` shows every profile, and a
    new document is processed by the new deployment and not by the old one;
 6. ``detach``, the old deployment's destroy plan, ``check-destroy``, the old
-   deployment's destroy, a second sign-in check against what is left, then the new
-   deployment's ``idp-cli delete --terraform`` and a sweep of what either retained,
-   by name.
+   deployment's destroy, a second sign-in check against what is left and a check
+   that the Region's API Gateway CloudWatch role is the one it was before the
+   destroy and still exists, then the new deployment's ``idp-cli delete
+   --terraform`` and a sweep of what either retained, by name. Before the sweep the
+   setting goes back to what it was when the run started (or, when that is refused,
+   is cleared and a finding names the value to restore), and the run fails if it
+   still leaves the setting naming a role that no longer exists.
 
 Teardown runs in a ``finally``: a failed phase still destroys both deployments
 (new first, then old, since at that point both states may name the shared
@@ -40,8 +46,9 @@ resources) and sweeps by name. ``--keep`` and ``--stop-after`` skip it.
 
 WHAT IT DOES NOT PROVE
 ----------------------
-* Other upstream example configurations (``bda-processor`` and the rest), other
-  upstream tags, or an upstream deployment that is months old (the expiry checks run
+* Other upstream example configurations (``bda-processor`` and the rest), upstream
+  releases ``UPSTREAM_RELEASES`` does not pin (on any one run, any release but the
+  one it took), or an upstream deployment that is months old (the expiry checks run
   against objects minutes old, so ``check-retention`` cannot find anything to
   refuse).
 * The knowledge-base re-sync, the alerts subscription, or the browser sign-in (an
@@ -66,7 +73,8 @@ Running upstream runs third-party code: ``terraform apply`` executes upstream's
 the run's credentials). Upstream ships no provider lock and constrains providers with
 ``>=`` only; the driver installs ``terraform_migration_upstream.terraform.lock.hcl``,
 the lock the passing run resolved, before ``init``, so the provider builds are pinned
-and hash-checked. Upstream's commit and its ``sources/`` submodule are pinned too.
+and hash-checked. Upstream's commit and its ``sources/`` (a submodule or a vendored tree)
+are pinned too, per release.
 
 USAGE
 -----
@@ -100,7 +108,7 @@ import traceback
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -111,16 +119,90 @@ sys.path.insert(0, str(HERE))
 import cognito_srp  # noqa: E402
 
 UPSTREAM_REPO = "https://github.com/awslabs/genai-idp-terraform"
-UPSTREAM_TAG = "v0.6.9-tf.0"
-#: The commit the tag resolved to when this test was written. A tag can be moved;
-#: a clone resolving it anywhere else is refused, because the test would no longer
-#: be exercising what it was written against.
-UPSTREAM_COMMIT = "5fdac033b2376f16beddffc2a391422d18cf2292"
-#: Upstream's ``sources/`` is a git submodule holding this repository at a release
-#: tag, and upstream's README has it initialised after the clone. Pinned for the
-#: same reason as the commit above.
-UPSTREAM_SOURCES_COMMIT = "325794a6ffe1c89bac41a0180c991e681eb70bc8"
+
+
+@dataclass(frozen=True)
+class UpstreamRelease:
+    """One upstream release the run can migrate from, with what its clone must
+    resolve to. A tag can be moved; a clone resolving it anywhere else is refused,
+    because the test would no longer be exercising what it was written against.
+
+    ``sources`` is what ``git ls-tree <commit> sources`` must report: upstream's
+    ``sources/`` holds this repository at a release, as a git submodule
+    (``("commit", <sha>)``, initialised after the clone as upstream's README says)
+    or, in earlier releases, as a vendored tree (``("tree", <sha>)``, which the
+    pinned commit already fixes and which needs no initialising)."""
+
+    tag: str
+    commit: str
+    sources: Tuple[str, str]
+
+
+#: Every release the scheduled run rotates through, oldest first; the last is the
+#: default for a run started by hand. A release belongs here only if the run can
+#: exercise it unchanged: its ``examples/unified-processor`` declares every
+#: variable upstream_tfvars sets (the seed phase needs the evaluation and test-set
+#: features), every resource type it declares is one v0.6.9-tf.0 declares (the
+#: release the command's resource kinds were derived from), and its provider
+#: constraints admit UPSTREAM_LOCK_FILE. Releases before v0.6.4-tf.0 fail the
+#: first test: their example has no ``enable_evaluation`` or ``enable_test_studio``.
+UPSTREAM_RELEASES: Tuple[UpstreamRelease, ...] = (
+    # The oldest release that passes the three checks above, read from its
+    # files; it has not yet been through a live run. Vendors sources/ as a tree.
+    UpstreamRelease(
+        tag="v0.6.4-tf.0",
+        commit="29b62a9ee0f0b53b26e4cc25e7d2bba629804a3b",
+        sources=("tree", "bd0fb105f2a60ed807e02e112de4d71b1473de75"),
+    ),
+    # The newest release, and the one the passing run in the guide measured.
+    UpstreamRelease(
+        tag="v0.6.9-tf.0",
+        commit="5fdac033b2376f16beddffc2a391422d18cf2292",
+        sources=("commit", "325794a6ffe1c89bac41a0180c991e681eb70bc8"),
+    ),
+)
+UPSTREAM_TAG = UPSTREAM_RELEASES[-1].tag
+UPSTREAM_COMMIT = UPSTREAM_RELEASES[-1].commit
+#: ``--upstream-tag rotate``: the release for this run's week (rotated_upstream_tag).
+#: What the scheduled CI run passes. A resumed run keeps the release it recorded.
+ROTATE_UPSTREAM_TAG = "rotate"
 UPSTREAM_EXAMPLE = "examples/unified-processor"
+#: Which old deployment the run migrates. ``base`` is the example with every
+#: data-owning feature on and MCP off, which is what the command handles by
+#: itself. ``mcp`` also turns on upstream's MCP integration, and ``mcp-datasets``
+#: that and both Test Studio datasets. Each puts an ``aws_cloudformation_stack`` in
+#: the old state that ``plan`` refuses, and the run then performs the manual
+#: procedure in docs/terraform-migration.md ("Old deployments with a private
+#: network, MCP or test datasets") before ``plan`` (phase ``pre-plan-features``).
+#: ``mcp-datasets`` cannot pass at the pinned releases: upstream packages its
+#: dataset deployers without their dependencies (``cfnresponse``, read from
+#: modules/processing-environment-api/test-studio.tf), so their custom resources
+#: never answer and both stacks stay CREATE_IN_PROGRESS past Terraform's 30-minute
+#: timeout, which is how its one run (v0.6.9-tf.0) failed at upstream-deploy.
+BASE_VARIANT = "base"
+MCP_VARIANT = "mcp"
+MCP_DATASETS_VARIANT = "mcp-datasets"
+VARIANTS = (BASE_VARIANT, MCP_VARIANT, MCP_DATASETS_VARIANT)
+MCP_VARIANTS = (MCP_VARIANT, MCP_DATASETS_VARIANT)
+#: The override file that turns the two datasets on (datasets_override).
+DATASETS_OVERRIDE_FILE = "zz_idp_ci_datasets_override.tf"
+#: The upstream module call in every upstream example.
+UPSTREAM_MODULE_CALL = "module.genai_idp_accelerator"
+#: What the guide's MCP and test-dataset procedures destroy before ``plan``.
+FEATURE_DESTROY_TARGETS = (
+    f"{UPSTREAM_MODULE_CALL}.module.mcp_integration[0]",
+    f"{UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    ".aws_cloudformation_stack.w2_dataset[0]",
+    f"{UPSTREAM_MODULE_CALL}.module.processing_environment_api[0]"
+    ".aws_cloudformation_stack.fcc_dataset[0]",
+)
+#: The two datasets: test-set id (the tracking-table key ``testset#<id>``) and
+#: the test-set bucket prefix, the same in upstream's deployers and this
+#: repository's (src/lambda/{w2,fcc}_dataset_deployer/index.py).
+DATASETS = (("fake-w2", "fake-w2/"), ("realkie-fcc-verified", "realkie-fcc-verified/"))
+#: The OAuth resource server upstream's MCP integration puts in the pool, which
+#: the module creates too: Cognito refuses a second one with the same identifier.
+MCP_RESOURCE_SERVER = "idp-mcp-connector"
 #: Upstream ships no provider lock file, so its `>=` constraints would resolve to
 #: whatever the registry has on the day. This is the lock the passing run
 #: resolved, copied into the example before `init` so every run uses the same
@@ -246,6 +328,7 @@ PHASES = (
     "upstream-deploy",
     "seed",
     "old-ttl-off",
+    "pre-plan-features",
     "migrate-plan",
     "migrate-check-retention",
     "migrate-freeze",
@@ -338,6 +421,126 @@ def upstream_iam_overrides(
     return files
 
 
+def upstream_release(tag: str) -> UpstreamRelease:
+    """The pinned release for ``tag``; ValueError for a tag UPSTREAM_RELEASES does
+    not pin, since there would be no commit to hold the clone to."""
+    for release in UPSTREAM_RELEASES:
+        if release.tag == tag:
+            return release
+    raise ValueError(
+        f"upstream tag {tag!r} is not one of the pinned releases "
+        f"({', '.join(r.tag for r in UPSTREAM_RELEASES)}); add it to "
+        "UPSTREAM_RELEASES with the commit and sources/ it resolves to"
+    )
+
+
+def rotated_upstream_tag(
+    day: date, releases: Sequence[UpstreamRelease] = UPSTREAM_RELEASES
+) -> str:
+    """The release a scheduled run on ``day`` migrates from.
+
+    One release per Monday-to-Sunday week, in list order, so runs a week apart
+    take consecutive releases and every release is covered once in
+    ``len(releases)`` weekly runs. A rerun the same week gets the same release,
+    and ``--upstream-tag <that tag>`` reproduces it on any day. The date is read
+    when the driver starts, so a schedule firing just before Monday 00:00 UTC
+    can land either side of the boundary and repeat a release."""
+    if not releases:
+        raise ValueError("no upstream releases to rotate through")
+    week = (day.toordinal() - 1) // 7  # date.min (ordinal 1) is a Monday
+    return releases[week % len(releases)].tag
+
+
+def resolve_upstream_tag(
+    requested: Optional[str], stored: Optional[str], day: date
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(tag, None)`` for the release this invocation uses, or ``(None, why)``.
+
+    A work directory whose run recorded a release keeps it: its old deployment
+    was cloned and deployed from that release, so a teardown or a resume on
+    another one would plan the wrong configuration against its state. That holds
+    for ``rotate`` (a run resumed in a later week, or reaped by a later build)
+    and for no tag at all, and is refused for an explicit tag that differs. With
+    nothing recorded, no tag means the newest release."""
+    if stored:
+        if requested not in (None, ROTATE_UPSTREAM_TAG, stored):
+            return None, (
+                f"the upstream tag is {requested!r} here but {stored!r} in this "
+                "work directory's run"
+            )
+        tag = stored
+    elif requested == ROTATE_UPSTREAM_TAG:
+        tag = rotated_upstream_tag(day)
+    else:
+        tag = requested or UPSTREAM_TAG
+    try:
+        upstream_release(tag)
+    except ValueError as e:
+        return None, str(e)
+    return tag, None
+
+
+def iam_role_name(role_arn: str) -> str:
+    """The role name in ``arn:<partition>:iam::<account>:role/<path/><name>``."""
+    return role_arn.rsplit("/", 1)[-1]
+
+
+def api_gateway_role_problems(
+    before: str, after: str, after_exists: Optional[bool]
+) -> List[str]:
+    """What destroying the old deployment did to the Region's API Gateway
+    CloudWatch role, given the setting before and after the destroy and whether
+    the role ``after`` names still exists (None: could not be read).
+
+    The setting is one per account and Region, shared by every REST API there, so
+    a destroy that clears it, points it elsewhere or deletes the role it names
+    stops API Gateway logging for all of them. Nothing to check when the Region
+    had no role before the destroy."""
+    if not before:
+        return []
+    if not after:
+        return [
+            f"the old destroy cleared the Region's API Gateway CloudWatch role "
+            f"(it was {before})"
+        ]
+    if after != before:
+        return [
+            f"the old destroy changed the Region's API Gateway CloudWatch role "
+            f"from {before} to {after}"
+        ]
+    if after_exists is False:
+        return [
+            f"the Region's API Gateway CloudWatch role is still {after}, but the "
+            "old destroy deleted that role"
+        ]
+    if after_exists is None:
+        return [
+            f"could not read whether the API Gateway CloudWatch role {after} exists"
+        ]
+    return []
+
+
+def api_gateway_role_left_problems(
+    start: str, start_exists: Optional[bool], now: str, now_exists: Optional[bool]
+) -> List[str]:
+    """Whether the run leaves the Region's API Gateway CloudWatch role setting
+    naming a role that no longer exists, given the setting when the run started
+    and now (and whether each named role existed then). Not reported when the
+    Region was already in exactly that state before the run."""
+    if not now or now_exists is True:
+        return []
+    if now_exists is None:
+        return [f"could not read whether the API Gateway CloudWatch role {now} exists"]
+    if now == start and start_exists is False:
+        return []
+    return [
+        f"the Region's API Gateway CloudWatch role setting names {now}, a role "
+        f"that no longer exists (when the run started it was {start or 'unset'}); "
+        "API Gateway logging in this Region fails until it is set to a role that "
+        "exists"
+    ]
+
+
 def validate_names(old_name: str, new_name: str) -> List[str]:
     """Reasons the two deployment names cannot be used; empty when they can.
 
@@ -381,9 +584,13 @@ def make_password(rng: Optional[secrets.SystemRandom] = None) -> str:
     return "".join(chars)
 
 
-def upstream_tfvars(old_name: str, run_id: str, region: str) -> str:
+def upstream_tfvars(
+    old_name: str, run_id: str, region: str, variant: str = BASE_VARIANT
+) -> str:
     """The upstream example's ``terraform.tfvars``: every feature that owns data
-    the migration has to keep is on, so each kept resource kind exists to check."""
+    the migration has to keep is on, so each kept resource kind exists to check.
+    The ``mcp-datasets`` variant turns MCP on as well (the test datasets are not an
+    input of the example; see :func:`datasets_override`)."""
     return (
         f'region      = "{region}"\n'
         f'prefix      = "{old_name}"\n'
@@ -396,12 +603,105 @@ def upstream_tfvars(old_name: str, run_id: str, region: str) -> str:
         "enable_test_studio          = true\n"
         "enable_agent_companion_chat = true\n"
         "enable_agent_analytics      = true\n"
-        "enable_mcp                  = false\n"
+        f"enable_mcp                  = {'true' if variant in MCP_VARIANTS else 'false'}\n"
         "enable_finetuning           = false\n\n"
         "rbac   = { enabled = true }\n"
         "web_ui = { enabled = true }\n\n"
         f'tags = {{ Project = "terraform-migration-test", Run = "{run_id}" }}\n'
     )
+
+
+def _block_end(text: str, open_brace: int) -> int:
+    """The index just past the ``}`` closing the ``{`` at ``open_brace``, skipping
+    braces inside strings and ``#`` or ``//`` comments. ValueError when unclosed."""
+    depth, i, n = 0, open_brace, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c == "#" or text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ValueError("unclosed block")
+
+
+def datasets_override(main_tf: str) -> str:
+    """An override file for the upstream example that turns on both Test Studio
+    datasets. The example passes the upstream module a literal ``api = { ... }``
+    without the two flags, and Terraform's override files replace a module
+    argument whole, so the override restates the example's own ``api`` expression,
+    read from its ``main.tf``, with the flags added. Upstream's files stay as the
+    pinned commit has them. ValueError when the example's layout has changed."""
+    call = re.search(r'^module\s+"genai_idp_accelerator"\s*\{', main_tf, re.MULTILINE)
+    if not call:
+        raise ValueError('no module "genai_idp_accelerator" block')
+    body = main_tf[call.end() - 1 : _block_end(main_tf, call.end() - 1)]
+    api = re.search(r"^(\s*)api\s*=\s*\{", body, re.MULTILINE)
+    if not api:
+        raise ValueError("the module call has no literal api = { ... } argument")
+    end = _block_end(body, api.end() - 1)
+    expression = body[api.end() - 1 : end]
+    if re.search(r"\benable_(w2|fcc)_dataset\b", expression):
+        raise ValueError("the example already sets a dataset flag")
+    indent = api.group(1).lstrip("\n")
+    flags = (
+        f"{indent}  enable_w2_dataset  = true\n{indent}  enable_fcc_dataset = true\n"
+    )
+    expression = expression[:-1].rstrip() + "\n" + flags + indent + "}"
+    return (
+        "# Written by scripts/sdlc/terraform_migration_test.py (variant\n"
+        f"# {MCP_DATASETS_VARIANT}): the example's api argument with both Test Studio\n"
+        "# datasets on.\n"
+        'module "genai_idp_accelerator" {\n'
+        f"{indent}api = {expression}\n"
+        "}\n"
+    )
+
+
+def feature_destroy_problems(plan: Dict[str, Any]) -> List[str]:
+    """Each change in the targeted destroy of the MCP integration and the dataset
+    stacks that the guide's procedure does not allow: anything but a delete, and a
+    delete of anything but a resource of a type the migration command recreates
+    anyway, one of the dataset or gateway stacks, or the MCP integration's own
+    resource server. An empty plan is a problem too: the procedure would then have
+    destroyed nothing."""
+    # The command's own list, so this check cannot drift from what `plan` recreates.
+    from idp_sdk._core.terraform_migrate import RECREATE_SAFE_TYPES  # noqa: TID251
+
+    mcp_module = FEATURE_DESTROY_TARGETS[0] + "."
+    problems: List[str] = []
+    deleted = 0
+    for rc in plan.get("resource_changes", []):
+        actions = (rc.get("change") or {}).get("actions", [])
+        if actions == ["no-op"] or rc.get("mode") == "data":
+            continue
+        address, tf_type = rc.get("address", ""), rc.get("type", "")
+        if actions != ["delete"]:
+            problems.append(f"{address}: {'/'.join(actions)}, not a delete")
+            continue
+        deleted += 1
+        if tf_type in RECREATE_SAFE_TYPES:
+            continue
+        if tf_type == "aws_cloudformation_stack" and (
+            address in FEATURE_DESTROY_TARGETS or address.startswith(mcp_module)
+        ):
+            continue
+        if tf_type == "aws_cognito_resource_server" and address.startswith(mcp_module):
+            continue
+        problems.append(f"{address}: deletes a {tf_type}")
+    if not deleted:
+        problems.append("the targeted destroy deletes nothing")
+    return problems
 
 
 def state_instances(state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -757,10 +1057,14 @@ def stored_name_problems(
     old_name: str,
     new_name: str,
     upstream_iam_path: Optional[str] = None,
+    variant: str = BASE_VARIANT,
 ) -> List[str]:
     """Each run name given on the command line that differs from the one the work
     directory's run recorded. The upstream IAM path counts as a name: a resumed
-    run under another path would plan every upstream role for replacement."""
+    run under another path would plan every upstream role for replacement. So does
+    the variant: a resumed run of another variant would apply a different old
+    configuration over the one deployed. A run recorded before variants existed
+    was the base one."""
     problems = []
     for key, given in (("oldName", old_name), ("newName", new_name)):
         stored = ctx.get(key)
@@ -772,6 +1076,12 @@ def stored_name_problems(
         problems.append(
             f"the upstream IAM path is {upstream_iam_path!r} here but "
             f"{ctx['upstreamIamPath']!r} in this work directory's run"
+        )
+    stored_variant = ctx.get("variant", BASE_VARIANT) if "oldName" in ctx else variant
+    if stored_variant != variant:
+        problems.append(
+            f"the variant is {variant!r} here but {stored_variant!r} in this work "
+            "directory's run"
         )
     return problems
 
@@ -878,8 +1188,11 @@ class Settings:
     terraform_bin: str
     module_url: str
     upstream_repo: str = UPSTREAM_REPO
-    upstream_tag: str = UPSTREAM_TAG
-    upstream_commit: str = UPSTREAM_COMMIT
+    #: A tag UPSTREAM_RELEASES pins, ROTATE_UPSTREAM_TAG, or None for the release
+    #: the work directory's run recorded, else the newest (resolve_upstream_tag).
+    upstream_tag: Optional[str] = None
+    #: Overrides the release's pinned commit; None holds the clone to the pin.
+    upstream_commit: Optional[str] = None
     assume_role_arn: Optional[str] = None
     keep: bool = False
     resume: bool = False
@@ -899,6 +1212,8 @@ class Settings:
     #: ``s3://<bucket>/<prefix>/`` (see parse_state_mirror), or None for a run
     #: whose states stay in its work directory.
     state_mirror: Optional[str] = None
+    #: One of VARIANTS: which old deployment the run migrates.
+    variant: str = BASE_VARIANT
 
 
 def first_party_pythonpath() -> str:
@@ -934,8 +1249,30 @@ class Run:
         self.started = time.monotonic()
         self.preflight_passed = False
         self._mirror_cleared = False
+        #: Set by resolve_release, before any phase runs.
+        self.release: Optional[UpstreamRelease] = None
 
     # -- plumbing --------------------------------------------------------------
+
+    def resolve_release(self) -> Optional[str]:
+        """Fix the upstream release this invocation uses (resolve_upstream_tag)
+        and record it in the context; why it cannot, or None."""
+        tag, problem = resolve_upstream_tag(
+            self.s.upstream_tag,
+            self.ctx.get("upstreamTag"),
+            datetime.now(timezone.utc).date(),
+        )
+        if problem or tag is None:
+            return problem or "no upstream release"
+        self.release = upstream_release(tag)
+        self.ctx["upstreamTag"] = tag
+        return None
+
+    @property
+    def upstream(self) -> UpstreamRelease:
+        if self.release is None:
+            raise PhaseFailed("the upstream release was not resolved")
+        return self.release
 
     @property
     def old_dir(self) -> Path:
@@ -1221,6 +1558,24 @@ class Run:
         self.ctx["findings"].append(text)
         print(f"  ✗ {text}", flush=True)
 
+    # -- the Region's API Gateway CloudWatch role ------------------------------
+
+    def role_exists(self, role_arn: str) -> Optional[bool]:
+        """Whether the IAM role ``role_arn`` names exists; None when that cannot
+        be read."""
+        try:
+            self.boto("iam").get_role(RoleName=iam_role_name(role_arn))
+            return True
+        except Exception as e:  # noqa: BLE001 - classified below
+            code = getattr(e, "response", {}).get("Error", {}).get("Code")
+            return False if code == "NoSuchEntity" else None
+
+    def api_gateway_role(self) -> Dict[str, Any]:
+        """The Region's API Gateway CloudWatch role setting (``""`` when unset) and
+        whether the role it names exists (None when unset or unreadable)."""
+        arn = self.boto("apigateway").get_account().get("cloudwatchRoleArn") or ""
+        return {"arn": arn, "exists": self.role_exists(arn) if arn else None}
+
     # -- secrets -----------------------------------------------------------------
 
     def secrets(self) -> Dict[str, Any]:
@@ -1240,7 +1595,11 @@ class Run:
         credentials are for another account than it ran in."""
         problems = validate_names(self.s.old_name, self.s.new_name)
         problems += stored_name_problems(
-            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+            self.ctx,
+            self.s.old_name,
+            self.s.new_name,
+            self.s.upstream_iam_path,
+            self.s.variant,
         )
         account = self.boto("sts").get_caller_identity()["Account"]
         if self.ctx.get("account") and self.ctx["account"] != account:
@@ -1260,6 +1619,13 @@ class Run:
         problems = self.identity_problems()
         if problems:
             raise PhaseFailed("; ".join(problems))
+        if self.s.variant in MCP_VARIANTS and not shutil.which("pip3"):
+            # Upstream builds its AgentCore gateway manager with `pip3 install` in a
+            # local-exec, whatever build.lambda_local says.
+            raise PhaseFailed(
+                "the mcp-datasets variant needs pip3 on PATH: upstream's MCP "
+                "integration builds its gateway manager with it"
+            )
         ident = {"Account": self._account}
         self.ctx["account"] = ident["Account"]
         if self.s.expected_account and ident["Account"] != self.s.expected_account:
@@ -1293,6 +1659,15 @@ class Run:
                     "reach something this run did not create: "
                     + ", ".join(clashes[:10])
                 )
+        if "apiGatewayRoleAtStart" not in self.ctx:
+            # Before upstream's deploy, which sets the Region's role to its own:
+            # what leftover-check compares the end of the run against.
+            try:
+                self.ctx["apiGatewayRoleAtStart"] = self.api_gateway_role()
+            except Exception as e:  # noqa: BLE001 - reported as the refusal
+                raise PhaseFailed(
+                    f"cannot read the Region's API Gateway account settings: {e}"
+                ) from e
         self.preflight_passed = True
         return f"account ok, {headroom} roles of headroom, terraform {self.ctx['terraformVersion']}"
 
@@ -1322,7 +1697,7 @@ class Run:
                     "--depth",
                     "1",
                     "--branch",
-                    self.s.upstream_tag,
+                    self.upstream.tag,
                     self.s.upstream_repo,
                     str(target),
                 ],
@@ -1331,44 +1706,57 @@ class Run:
         head = self.sh(
             ["git", "rev-parse", "HEAD"], "upstream-clone.log", cwd=target
         ).stdout.strip()
-        if head != self.s.upstream_commit:
+        release = self.upstream
+        commit = self.s.upstream_commit or release.commit
+        if head != commit:
             raise PhaseFailed(
-                f"{self.s.upstream_tag} resolves to {head}, not the pinned {self.s.upstream_commit}; "
+                f"{release.tag} resolves to {head}, not the pinned {commit}; "
                 "the tag has moved, so read the new commit before pinning it"
             )
+        kind, sources = release.sources
         pinned = self.sh(
             ["git", "ls-tree", "HEAD", "sources"], "upstream-clone.log", cwd=target
         ).stdout.split()
-        if len(pinned) < 3 or pinned[2] != UPSTREAM_SOURCES_COMMIT:
+        if pinned[1:3] != [kind, sources]:
             raise PhaseFailed(
-                f"upstream pins sources/ at {pinned[2:3]}, not {UPSTREAM_SOURCES_COMMIT}"
+                f"upstream has sources/ as {' '.join(pinned[1:3]) or 'nothing'}, "
+                f"not the pinned {kind} {sources}"
             )
-        # Upstream's README: `sources/` is a submodule, initialised after the clone.
-        self.sh(
-            ["git", "submodule", "update", "--init", "--depth", "1", "sources"],
-            "upstream-clone.log",
-            cwd=target,
-            timeout=1800,
-        )
-        checked_out = self.sh(
-            ["git", "rev-parse", "HEAD"], "upstream-clone.log", cwd=target / "sources"
-        ).stdout.strip()
-        if checked_out != UPSTREAM_SOURCES_COMMIT:
-            raise PhaseFailed(
-                f"sources/ checked out {checked_out}, not {UPSTREAM_SOURCES_COMMIT}"
+        if kind == "commit":
+            # Upstream's README: `sources/` is a submodule, initialised after the
+            # clone. A vendored tree is already checked out at the pinned commit.
+            self.sh(
+                ["git", "submodule", "update", "--init", "--depth", "1", "sources"],
+                "upstream-clone.log",
+                cwd=target,
+                timeout=1800,
             )
+            checked_out = self.sh(
+                ["git", "rev-parse", "HEAD"],
+                "upstream-clone.log",
+                cwd=target / "sources",
+            ).stdout.strip()
+            if checked_out != sources:
+                raise PhaseFailed(f"sources/ checked out {checked_out}, not {sources}")
         self.ctx["upstreamCommit"] = head
-        return (
-            f"{self.s.upstream_tag} at {head[:12]}, sources/ at "
-            f"{UPSTREAM_SOURCES_COMMIT[:12]}"
-        )
+        return f"{release.tag} at {head[:12]}, sources/ {kind} {sources[:12]}"
 
     def prepare_old_root(self) -> str:
         """Write what the upstream example's root needs beside upstream's own
         files: the tfvars, the IAM overrides, the backend and the provider lock.
         The same for the deploy and for a teardown in a rebuilt work directory."""
-        tfvars = upstream_tfvars(self.s.old_name, self.ctx["runId"], self.s.region)
+        tfvars = upstream_tfvars(
+            self.s.old_name, self.ctx["runId"], self.s.region, self.s.variant
+        )
         (self.old_dir / "terraform.tfvars").write_text(tfvars)
+        if self.s.variant == MCP_DATASETS_VARIANT:
+            try:
+                override = datasets_override((self.old_dir / "main.tf").read_text())
+            except ValueError as e:
+                raise PhaseFailed(
+                    f"cannot turn the test datasets on in the upstream example: {e}"
+                ) from e
+            (self.old_dir / DATASETS_OVERRIDE_FILE).write_text(override)
         if self.s.state_mirror:
             self.write_backend(self.old_dir, OLD_BACKEND_FILE, "old")
         lock = self.old_dir / ".terraform.lock.hcl"
@@ -1666,6 +2054,13 @@ class Run:
 
     # Snapshot -----------------------------------------------------------------------
 
+    def snapshot_pool(self) -> str:
+        """The user pool :meth:`snapshot` reads. Here it is the old deployment's,
+        which the new one adopts; the upgrade test
+        (``scripts/sdlc/terraform_upgrade_test.py``), which reuses this snapshot,
+        reads its one deployment's instead."""
+        return self.ctx["old"]["user_pool_id"]
+
     def snapshot(self, label: str) -> Dict[str, Any]:
         """Objects, items, users and groups of every bucket and table the old
         state holds that REQUIRED_KEPT or the plan keeps."""
@@ -1694,7 +2089,7 @@ class Run:
                 for item in page.get("Items", []):
                     items[item_key(item, keys)] = item
             snap["tables"][table] = items
-        pool = self.ctx["old"]["user_pool_id"]
+        pool = self.snapshot_pool()
         for page in cognito.get_paginator("list_users").paginate(UserPoolId=pool):
             for u in page["Users"]:
                 sub = next(
@@ -1776,6 +2171,252 @@ class Run:
 
     # Migration phases -------------------------------------------------------------------
 
+    # The guide's manual procedure for MCP and the test datasets --------------------
+
+    def dataset_snapshot(self, bucket: str, table: str) -> Dict[str, Any]:
+        """Each dataset's tracking-table record and every object under its prefix,
+        with the time it was written, so that a re-download (identical content,
+        hence an identical ETag) still shows."""
+        ddb, s3 = self.boto("dynamodb"), self.boto("s3")
+        out: Dict[str, Any] = {}
+        for test_set, prefix in DATASETS:
+            item = ddb.get_item(
+                TableName=table,
+                Key={"PK": {"S": f"testset#{test_set}"}, "SK": {"S": "metadata"}},
+                ConsistentRead=True,
+            ).get("Item")
+            objects: Dict[str, List[str]] = {}
+            for page in s3.get_paginator("list_objects_v2").paginate(
+                Bucket=bucket, Prefix=prefix
+            ):
+                for o in page.get("Contents", []):
+                    objects[o["Key"]] = [o["ETag"], o["LastModified"].isoformat()]
+            out[test_set] = {"record": item, "objects": objects}
+        return out
+
+    def dataset_problems(self, snap: Dict[str, Any]) -> List[str]:
+        """Why a dataset snapshot shows nothing to keep."""
+        problems = []
+        for test_set, _prefix in DATASETS:
+            record = snap[test_set]["record"]
+            if not record:
+                problems.append(f"no testset#{test_set} record")
+            elif (record.get("status") or {}).get("S") == "FAILED":
+                problems.append(f"testset#{test_set} is FAILED")
+            if not snap[test_set]["objects"]:
+                problems.append(f"no {test_set} objects")
+        return problems
+
+    def phase_pre_plan_features(self) -> str:
+        """The guide's MCP and test-dataset procedures: one targeted destroy of the
+        MCP integration and both dataset stacks in the old directory, checked as the
+        guide says to check it, then checks that it removed the gateway and the
+        resource server and left every dataset record and file as it was."""
+        if self.s.variant not in MCP_VARIANTS:
+            return f"nothing to do for the {self.s.variant} variant"
+        with_datasets = self.s.variant == MCP_DATASETS_VARIANT
+        targets = (
+            FEATURE_DESTROY_TARGETS if with_datasets else FEATURE_DESTROY_TARGETS[:1]
+        )
+        insts = state_instances(self.old_state())
+        stacks = {
+            i["address"]: i["attributes"]
+            for i in insts
+            if i["type"] == "aws_cloudformation_stack"
+        }
+        gateway_stack = f"{FEATURE_DESTROY_TARGETS[0]}.aws_cloudformation_stack.agentcore_gateway[0]"
+        wanted = {gateway_stack, *targets[1:]}
+        if set(stacks) != wanted:
+            raise PhaseFailed(
+                "the old state's CloudFormation stacks are not the ones the variant "
+                f"deploys: missing {sorted(wanted - set(stacks))}, "
+                f"unexpected {sorted(set(stacks) - wanted)}"
+            )
+        gateway_id = (stacks[gateway_stack].get("outputs") or {}).get("GatewayId")
+        if not gateway_id:
+            raise PhaseFailed(f"{gateway_stack} records no GatewayId output")
+        pool_id = self.ctx["old"]["user_pool_id"]
+        cognito = self.boto("cognito-idp")
+        cognito.describe_resource_server(
+            UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
+        )
+
+        before: Dict[str, Any] = {}
+        if with_datasets:
+            bucket, table = self.dataset_location(insts)
+            before = self.dataset_snapshot(bucket, table)
+            empty = self.dataset_problems(before)
+            if empty:
+                raise PhaseFailed(
+                    "the old deployment's datasets did not deploy, so the variant "
+                    "would prove nothing about keeping them: " + "; ".join(empty)
+                )
+            write_private(
+                self.work / "datasets-before.json", json.dumps(before, default=str)
+            )
+            self.ctx["datasets"] = {"bucket": bucket, "table": table}
+
+        plan_file = "features-destroy.tfplan"
+        self.terraform(
+            self.old_dir,
+            "plan",
+            "-destroy",
+            "-input=false",
+            f"-out={plan_file}",
+            *(f"-target={t}" for t in targets),
+            log="old-features-destroy.log",
+        )
+        plan = json.loads(
+            self.terraform_capture(self.old_dir, "show", "-json", plan_file)
+        )
+        destroyed = sorted(
+            rc["address"]
+            for rc in plan.get("resource_changes", [])
+            if (rc.get("change") or {}).get("actions") == ["delete"]
+        )
+        self.ctx["featureDestroy"] = destroyed
+        self.save()
+        problems = feature_destroy_problems(plan)
+        if problems:
+            (self.old_dir / plan_file).unlink(missing_ok=True)
+            raise PhaseFailed(
+                "the targeted destroy goes beyond what the guide allows: "
+                + "; ".join(problems)
+            )
+        self.terraform(
+            self.old_dir,
+            "apply",
+            "-input=false",
+            plan_file,
+            log="old-features-destroy.log",
+        )
+        (self.old_dir / plan_file).unlink(missing_ok=True)
+
+        findings: List[str] = []
+        left = sorted(
+            i["address"]
+            for i in state_instances(self.old_state())
+            if i["type"] == "aws_cloudformation_stack"
+        )
+        if left:
+            findings.append(f"the old state still holds stacks {left}")
+        cf = self.boto("cloudformation")
+        for address, attrs in stacks.items():
+            try:
+                status = cf.describe_stacks(StackName=attrs["id"])["Stacks"][0][
+                    "StackStatus"
+                ]
+            except Exception:  # noqa: BLE001 - gone
+                status = "DELETE_COMPLETE"
+            if status != "DELETE_COMPLETE":
+                findings.append(f"stack {attrs.get('name')} is {status}")
+        try:
+            self.boto("bedrock-agentcore-control").get_gateway(
+                gatewayIdentifier=gateway_id
+            )
+            findings.append(f"the old AgentCore gateway {gateway_id} still exists")
+        except Exception as e:  # noqa: BLE001 - expected: not found
+            if "ResourceNotFound" not in type(e).__name__ + str(e):
+                findings.append(f"cannot read the old gateway {gateway_id}: {e}")
+        try:
+            cognito.describe_resource_server(
+                UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
+            )
+            findings.append(
+                f"the resource server {MCP_RESOURCE_SERVER} is still in the pool"
+            )
+        except cognito.exceptions.ResourceNotFoundException:
+            pass
+        after = self.dataset_snapshot(bucket, table) if with_datasets else {}
+        for test_set in after:
+            if after[test_set] != before[test_set]:
+                findings.append(
+                    f"dataset {test_set} changed: record "
+                    f"{'same' if after[test_set]['record'] == before[test_set]['record'] else 'differs'}, "
+                    f"{len(before[test_set]['objects'])} objects before, "
+                    f"{len(after[test_set]['objects'])} after"
+                )
+        if findings:
+            raise PhaseFailed("; ".join(findings))
+        counts = {t: len(before[t]["objects"]) for t in before}
+        return (
+            f"destroyed {len(destroyed)} resources (the stacks, the gateway and the "
+            "resource server are gone)"
+            + (f"; datasets unchanged: {counts} objects" if with_datasets else "")
+        )
+
+    def dataset_location(self, insts: List[Dict[str, Any]]) -> Tuple[str, str]:
+        """The test-set bucket and tracking table the old deployment's W-2 deployer
+        was given. Upstream's Terraform names the bucket ``TEST_SET_BUCKET``
+        (``test_studio_env_base`` in test-studio.tf); its deployers' own code reads
+        ``TESTSET_BUCKET``, the name upstream's SAM template uses, so either is
+        accepted."""
+        deployer = next(
+            (
+                i
+                for i in insts
+                if i["type"] == "aws_lambda_function"
+                and i["name"] == "w2_dataset_deployer"
+            ),
+            None,
+        )
+        if deployer is None:
+            raise PhaseFailed("the old state has no w2_dataset_deployer function")
+        env = (deployer["attributes"].get("environment") or [{}])[0].get(
+            "variables"
+        ) or {}
+        bucket = env.get("TEST_SET_BUCKET") or env.get("TESTSET_BUCKET")
+        table = env.get("TRACKING_TABLE")
+        if not bucket or not table:
+            raise PhaseFailed(
+                "the w2_dataset_deployer function's environment names no test-set "
+                f"bucket or tracking table (it has {sorted(env)})"
+            )
+        return bucket, table
+
+    def verify_features(self, findings: List[str]) -> str:
+        """For the mcp-datasets variant: the new deployment has its own gateway,
+        and every dataset record and file is as it was before the targeted destroy
+        (none rewritten, so the new deployment's deployers did not download them
+        again)."""
+        if self.s.variant not in MCP_VARIANTS:
+            return ""
+        name = f"{self.s.new_name}-analytics-gateway"
+        control = self.boto("bedrock-agentcore-control")
+        gateways = [
+            g
+            for page in control.get_paginator("list_gateways").paginate()
+            for g in page.get("items", [])
+            if g.get("name") == name
+        ]
+        if len(gateways) != 1:
+            findings.append(f"{len(gateways)} AgentCore gateways named {name}, not 1")
+        if self.s.variant != MCP_DATASETS_VARIANT:
+            return f"; new gateway {name}"
+        before = json.loads((self.work / "datasets-before.json").read_text())
+        loc = self.ctx["datasets"]
+        after = json.loads(
+            json.dumps(self.dataset_snapshot(loc["bucket"], loc["table"]), default=str)
+        )
+        for test_set, _prefix in DATASETS:
+            b, a = before[test_set], after[test_set]
+            missing = [k for k in b["objects"] if k not in a["objects"]]
+            rewritten = [
+                k
+                for k in b["objects"]
+                if k in a["objects"] and a["objects"][k] != b["objects"][k]
+            ]
+            if missing or rewritten:
+                findings.append(
+                    f"dataset {test_set}: {len(missing)} objects missing, "
+                    f"{len(rewritten)} rewritten"
+                )
+            if a["record"] is None:
+                findings.append(f"the testset#{test_set} record is gone")
+            elif a["record"].get("datasetVersion") != b["record"].get("datasetVersion"):
+                findings.append(f"the testset#{test_set} record's version changed")
+        return f"; new gateway {name}; datasets kept without a re-download"
+
     def phase_migrate_plan(self) -> str:
         old_state_file = self.work / "old.tfstate"
         write_private(
@@ -1796,14 +2437,18 @@ class Run:
         ]
         if self.s.assume_role_arn:
             args += ["--terraform-assume-role-arn", self.s.assume_role_arn]
+        parameters = []
         if self.s.upstream_permissions_boundary_arn:
             # The new deployment's roles need the run's boundary too: the deploy
             # role creates a role only when it carries that boundary, and the
             # module attaches PermissionsBoundaryArn to every role it creates.
-            args += [
-                "--parameters",
-                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}",
-            ]
+            parameters.append(
+                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}"
+            )
+        if self.s.variant in MCP_VARIANTS:
+            parameters.append("EnableMCP=true")
+        if parameters:
+            args += ["--parameters", ",".join(parameters)]
         if self.s.state_mirror:
             # Before the command's own `init`, so the new state is in the bucket
             # from its first write.
@@ -2190,12 +2835,14 @@ class Run:
             "oldRuns": len(old_runs),
         }
 
+        features = self.verify_features(findings)
         if findings:
             raise PhaseFailed("; ".join(findings))
         added = sum(c["added"] for c in report["buckets"].values())
         return (
             f"snapshot preserved ({added} objects added since); both users sign in with old passwords and keep "
             f"their scope; config edit kept; new document {statuses[key]} by the new deployment only"
+            + features
         )
 
     def _executions_since(
@@ -2274,6 +2921,16 @@ class Run:
         self.ctx["oldNames"] = merge_names(
             self.ctx.get("oldNames") or {}, physical_names(self.old_state())
         )
+        if "apiGatewayRoleBeforeOldDestroy" not in self.ctx:
+            # Once: a resumed destroy compares against the setting before the first
+            # attempt, not against what a partial destroy left. None when it cannot
+            # be read, which verify-after-old-destroy reports rather than passes.
+            try:
+                arn: Optional[str] = self.api_gateway_role()["arn"]
+            except Exception as e:  # noqa: BLE001 - the destroy still runs
+                print(f"  ⚠ cannot read the API Gateway account settings: {e}")
+                arn = None
+            self.ctx["apiGatewayRoleBeforeOldDestroy"] = arn
         self.save()
         self.terraform(
             self.old_dir,
@@ -2309,9 +2966,22 @@ class Run:
                     f"adopted table {table} is gone after the old destroy: {e}"
                 )
         self.check_users(handles, findings)
+        role = self.api_gateway_role()
+        if self.ctx.get("apiGatewayRoleBeforeOldDestroy") is not None:
+            findings += api_gateway_role_problems(
+                self.ctx["apiGatewayRoleBeforeOldDestroy"], role["arn"], role["exists"]
+            )
+        else:
+            findings.append(
+                "the Region's API Gateway CloudWatch role was not recorded before "
+                "the old destroy, so what the destroy did to it is unknown"
+            )
         if findings:
             raise PhaseFailed("; ".join(findings))
-        return "adopted buckets and tables stand; both users still sign in"
+        return (
+            "adopted buckets and tables stand; both users still sign in; the "
+            f"Region's API Gateway CloudWatch role is {role['arn'] or 'unset'}"
+        )
 
     # Teardown ------------------------------------------------------------------------------
 
@@ -2359,6 +3029,7 @@ class Run:
             set(names.get("bda_projects", [])) | set(self.ctx.get("bdaProjects") or [])
         )
         sweeper = Sweeper(self, names)
+        self.hand_back_api_gateway_role(sweeper)
         deleted, errors = sweeper.sweep()
         self.ctx["swept"] = deleted
         if errors:
@@ -2367,6 +3038,80 @@ class Run:
                 + "; ".join(errors[:10])
             )
         return f"{len(deleted)} retained resources deleted"
+
+    def hand_back_api_gateway_role(self, sweeper: "Sweeper") -> None:
+        """Before the sweep: if the Region's API Gateway CloudWatch role setting
+        names a role the sweep would delete, set it back to what it was when the
+        run started.
+
+        Upstream's deploy points the setting at its own role, and the migration
+        keeps both (destroying either would stop logging for every API in the
+        Region), so at teardown the setting names a role carrying this run's name.
+        Deleting that role while the setting still names it is the same harm.
+
+        The start role is restored unless it was known not to exist; one whose
+        existence could not be read is restored too, rather than cleared. A start
+        that names a role the sweep selects was recorded after upstream's deploy
+        (a context from before the start was recorded), so it says nothing about
+        the Region before the run and the setting is cleared. When the restore is
+        refused (the run's role may pass only roles under the ``idp`` prefix), the
+        setting is cleared instead, which passes no role, and a finding names the
+        value to restore: keeping the run's role would not help, because the
+        build's IAM clean-up deletes every role under the run's boundary."""
+        start = self.ctx.get("apiGatewayRoleAtStart")
+        if start is None:
+            return
+        try:
+            arn = self.api_gateway_role()["arn"]
+        except Exception as e:  # noqa: BLE001 - leftover-check reports it again
+            self.finding(f"sweep: cannot read the API Gateway account settings: {e}")
+            return
+        if not arn or not sweeper.owned(iam_role_name(arn), "roles"):
+            return
+        start_arn = start.get("arn") or ""
+        if start_arn and sweeper.owned(iam_role_name(start_arn), "roles"):
+            start_arn = ""
+        target = start_arn if start.get("exists") is not False else ""
+        problem = self.set_api_gateway_role(target)
+        if problem is None:
+            print(
+                "  the Region's API Gateway CloudWatch role is back to "
+                f"{target or 'unset'}",
+                flush=True,
+            )
+            return
+        restore = (
+            "; restore it with `aws apigateway update-account --patch-operations "
+            f"op=replace,path=/cloudwatchRoleArn,value={target}` as a principal "
+            "that may pass that role"
+        )
+        cleared = self.set_api_gateway_role("") if target else problem
+        if cleared is None:
+            self.finding(
+                "sweep: could not set the Region's API Gateway CloudWatch role back "
+                f"to {target} ({problem}), so it is now unset and API Gateway "
+                f"logging in the Region is off{restore}"
+            )
+            return
+        self.finding(
+            "sweep: could not set the Region's API Gateway CloudWatch role back to "
+            f"{target or 'unset'} ({problem}) or clear it ({cleared}), so it still "
+            f"names {iam_role_name(arn)}, which the sweep deletes"
+            + (restore if target else "")
+        )
+
+    def set_api_gateway_role(self, arn: str) -> Optional[str]:
+        """Set the Region's API Gateway CloudWatch role (``""`` clears it); why
+        that was refused, or None."""
+        try:
+            self.boto("apigateway").update_account(
+                patchOperations=[
+                    {"op": "replace", "path": "/cloudwatchRoleArn", "value": arn}
+                ]
+            )
+        except Exception as e:  # noqa: BLE001 - the caller reports it
+            return str(e) or type(e).__name__
+        return None
 
     def phase_leftover_check(self) -> str:
         names = merge_names(
@@ -2388,6 +3133,19 @@ class Run:
             if managed:
                 left.append(f"the {label} state still lists {len(managed)} resources")
         self.ctx["leftovers"] = left
+        start = self.ctx.get("apiGatewayRoleAtStart")
+        if start is not None:
+            # A finding, not a leftover: no teardown can rebuild a deleted role, so
+            # a later build's reap would retry it for nothing.
+            try:
+                now = self.api_gateway_role()
+                problems = api_gateway_role_left_problems(
+                    start["arn"], start["exists"], now["arn"], now["exists"]
+                )
+            except Exception as e:  # noqa: BLE001 - the leftover verdict still runs
+                problems = [f"cannot read the API Gateway account settings: {e}"]
+            for problem in problems:
+                self.finding(f"leftover-check: {problem}")
         # A KMS key cannot be deleted at once; pending deletion is the end state.
         if left:
             raise PhaseFailed(
@@ -2555,6 +3313,9 @@ class Run:
         problems = self.identity_problems()
         if not self.ctx.get("created"):
             problems.append("the work directory's run created nothing")
+        release_problem = self.resolve_release()
+        if release_problem:
+            problems.append(release_problem)
         if problems:
             print("✗ teardown refused: " + "; ".join(problems), flush=True)
             return 2
@@ -2602,21 +3363,30 @@ class Run:
 
     def execute(self) -> int:
         stored = stored_name_problems(
-            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+            self.ctx,
+            self.s.old_name,
+            self.s.new_name,
+            self.s.upstream_iam_path,
+            self.s.variant,
         )
         if stored:
             # Refuse before touching the context: overwriting its names would let a
             # later teardown sweep for the wrong deployment.
             print("✗ " + "; ".join(stored), flush=True)
             return 2
+        refusal = self.resolve_release()
+        if refusal:
+            print(f"✗ {refusal}", flush=True)
+            return 2
+        print(f"upstream release {self.upstream.tag}", flush=True)
         self.ctx.pop("leftovers", None)
         self.ctx.update(
             oldName=self.s.old_name,
             newName=self.s.new_name,
             upstreamIamPath=self.s.upstream_iam_path,
+            variant=self.s.variant,
             region=self.s.region,
             moduleUrl=self.s.module_url,
-            upstreamTag=self.s.upstream_tag,
         )
         failed = False
         stopped = False
@@ -2681,7 +3451,7 @@ class Run:
             "region": self.s.region,
             "moduleUrl": self.s.module_url,
             "upstreamRepo": self.s.upstream_repo,
-            "upstreamTag": self.s.upstream_tag,
+            "upstreamTag": self.ctx.get("upstreamTag"),
             "upstreamCommit": self.ctx.get("upstreamCommit", ""),
             "terraformVersion": self.ctx.get("terraformVersion"),
             "phases": self.ctx["phases"],
@@ -2787,7 +3557,7 @@ class Sweeper:
                 state = kms.describe_key(KeyId=key)["KeyMetadata"]["KeyState"]
             except Exception:  # noqa: BLE001 - NotFound
                 continue
-            if state not in ("PendingDeletion", "PendingReplicaDeletion"):
+            if state not in KMS_KEY_DELETION_STATES:
                 out.append(key)
         return out
 
@@ -2814,6 +3584,21 @@ class Sweeper:
                 out.append(name)
         return out
 
+    def _gateways(self) -> List[Tuple[str, str]]:
+        """AgentCore gateways (id, name) under the run's names: upstream's MCP
+        integration names its gateway ``<prefix>-api-analytics-gateway`` and the
+        module ``<stack>-analytics-gateway``. Only the mcp-datasets variant creates
+        any, so the base variant does not need the service to be reachable."""
+        if self.owner.s.variant not in MCP_VARIANTS:
+            return []
+        control = self.owner.boto("bedrock-agentcore-control")
+        return sorted(
+            (g["gatewayId"], g["name"])
+            for page in control.get_paginator("list_gateways").paginate()
+            for g in page.get("items", [])
+            if self.owned(g.get("name", ""), "gateways")
+        )
+
     def inventory(self) -> List[str]:
         return (
             [f"stack {n}" for n in self._stacks()]
@@ -2824,6 +3609,7 @@ class Sweeper:
             + [f"role {n}" for n in self._roles()]
             + [f"kms key {k}" for k in self._keys()]
             + [f"bda project {a}" for a in self._bda()]
+            + [f"agentcore gateway {i} ({n})" for i, n in self._gateways()]
         )
 
     def sweep(self) -> Tuple[List[str], List[str]]:
@@ -2879,16 +3665,77 @@ class Sweeper:
                 f"bda project {arn}",
                 lambda a=arn: bda.delete_data_automation_project(projectArn=a),
             )
+        for gateway_id, name in self._gateways():
+            attempt(
+                f"agentcore gateway {gateway_id} ({name})",
+                lambda g=gateway_id: delete_gateway(
+                    self.owner.boto("bedrock-agentcore-control"), g
+                ),
+            )
         for key in self._keys():
             attempt(
                 f"kms key {key} (scheduled)",
-                lambda k=key: kms.schedule_key_deletion(KeyId=k, PendingWindowInDays=7),
+                lambda k=key: schedule_key_deletion(kms, k),
             )
         for role in self._roles():
             attempt(
                 f"role {role}", lambda r=role: delete_role(self.owner.boto("iam"), r)
             )
         return deleted, errors
+
+
+#: KMS key states in which deletion is already under way: a key in one of them
+#: needs nothing more from a sweep.
+KMS_KEY_DELETION_STATES = ("PendingDeletion", "PendingReplicaDeletion")
+
+#: The shortest pending window KMS accepts. A KMS key cannot be deleted at once,
+#: only scheduled for deletion, so this is as close to "deleted" as a sweep gets.
+KMS_MIN_PENDING_WINDOW_DAYS = 7
+
+
+def schedule_key_deletion(kms, key_id: str) -> bool:
+    """Schedule ``key_id`` for deletion with the minimum pending window.
+
+    Returns True when this call scheduled it, and False when there was nothing
+    to do: the key is already pending deletion, or it no longer exists. Any other
+    failure, of the describe or of the schedule, raises. Shared with the
+    nightly's retained-resource sweep (``codebuild_deployment``), so the two
+    teardowns handle a retained key the same way.
+    """
+    try:
+        state = kms.describe_key(KeyId=key_id)["KeyMetadata"]["KeyState"]
+    except Exception as e:
+        code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code")
+        if code == "NotFoundException":
+            return False
+        raise
+    if state in KMS_KEY_DELETION_STATES:
+        return False
+    kms.schedule_key_deletion(
+        KeyId=key_id, PendingWindowInDays=KMS_MIN_PENDING_WINDOW_DAYS
+    )
+    return True
+
+
+def delete_gateway(control, gateway_id: str, timeout: int = 300) -> None:
+    """Delete an AgentCore gateway: its targets first, which the service requires."""
+    for page in control.get_paginator("list_gateway_targets").paginate(
+        gatewayIdentifier=gateway_id
+    ):
+        for target in page.get("items", []):
+            control.delete_gateway_target(
+                gatewayIdentifier=gateway_id, targetId=target["targetId"]
+            )
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            control.delete_gateway(gatewayIdentifier=gateway_id)
+            return
+        except control.exceptions.ValidationException:
+            # Targets still deleting.
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(10)
 
 
 def empty_and_delete_bucket(s3, bucket: str) -> None:
@@ -2998,8 +3845,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         "--terraform-assume-role-arn", help="role the new deployment's providers assume"
     )
     p.add_argument("--upstream-repo", default=UPSTREAM_REPO)
-    p.add_argument("--upstream-tag", default=UPSTREAM_TAG)
-    p.add_argument("--upstream-commit", default=UPSTREAM_COMMIT)
+    p.add_argument(
+        "--upstream-tag",
+        choices=[r.tag for r in UPSTREAM_RELEASES] + [ROTATE_UPSTREAM_TAG],
+        help=f"the release to migrate from; {ROTATE_UPSTREAM_TAG!r} takes this "
+        "week's (the scheduled run's choice); default: the release a resumed run "
+        f"recorded, else {UPSTREAM_TAG}",
+    )
+    p.add_argument(
+        "--upstream-commit",
+        help="override the release's pinned commit (default: the pin)",
+    )
     p.add_argument("--expected-account", help="refuse to run in any other account")
     p.add_argument(
         "--upstream-iam-path",
@@ -3014,6 +3870,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         help="permissions boundary for every upstream role (with the path above)",
     )
     p.add_argument("--min-role-headroom", type=int, default=400)
+    p.add_argument(
+        "--variant",
+        choices=VARIANTS,
+        default=BASE_VARIANT,
+        help=f"{MCP_VARIANT!r} also deploys upstream's MCP integration, and "
+        f"{MCP_DATASETS_VARIANT!r} that and both Test Studio datasets; either runs the "
+        "guide's manual procedure for them before plan",
+    )
     p.add_argument(
         "--accept-change",
         action="append",
@@ -3079,6 +3943,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         upstream_iam_path=a.upstream_iam_path,
         upstream_permissions_boundary_arn=a.upstream_permissions_boundary_arn,
         state_mirror=a.state_mirror,
+        variant=a.variant,
     )
 
 

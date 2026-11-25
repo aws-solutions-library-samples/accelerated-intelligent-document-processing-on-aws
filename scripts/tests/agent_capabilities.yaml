@@ -17,7 +17,7 @@
 # for each external output, a control that limits it or a finding that lists it.
 #
 # The gate checks that these declarations are complete and resolve. It does not
-# check that they are true; .claude/skills/agent-capability-review.md is the audit
+# check that they are true; .claude/skills/agent-capability-review/SKILL.md is the audit
 # that does, surface by surface.
 
 vocabulary:
@@ -68,6 +68,11 @@ vocabulary:
       note: >-
         Pages of the shared review stack in a browser, which show documents and text
         from the merge request under test.
+    operator_stack_pages:
+      origin: document
+      note: >-
+        Pages of a stack the operator names, in a browser: they show whatever
+        documents that stack processed and the values extracted from them.
     change_under_review:
       origin: external
       note: A merge or pull request's diff, description and discussion.
@@ -112,6 +117,11 @@ vocabulary:
     review_stack_session:
       private: true
       note: A signed-in browser session on the shared review stack.
+    operator_stack_session:
+      private: true
+      note: >-
+        A signed-in browser session on a stack the operator names, which sees all
+        that stack holds; nothing checks that it holds sample data only.
     repository_checkout:
       private: false
       note: The public repository's own files.
@@ -142,6 +152,11 @@ vocabulary:
     review_comment:
       external: true
       note: A comment on a merge or pull request, read by people and other tools.
+    local_files:
+      external: false
+      note: >-
+        Files written on the operator's machine and posted nowhere, unredacted
+        screenshots included; who else sees them is the operator's call.
     configuration_write:
       external: false
       note: A configuration profile or revision saved in the stack.
@@ -206,20 +221,22 @@ roles:
       - {kind: write, bucket: OutputBucket, key: /*/summary/fulltext.txt,
          uses: Chat with Document caches the assembled text at
            <document key>/summary/fulltext.txt}
-  # The MCP handler's batch tools upload, read, reprocess and clean up documents
-  # through idp_sdk; its S3 scope is the batch tools' and is declared as granted.
+  # The MCP handler's batch tools upload and read documents through idp_sdk; its S3
+  # scope is the batch tools' and is declared as granted. It deletes nothing: the
+  # reprocess tool invokes the reprocess resolver, which clears and queues a
+  # document under its own role.
   AgentCoreMCPHandlerFunction:
     template: template.yaml
     object_access:
       - {kind: read, bucket: InputBucket, key: /*, uses: batch tools read uploaded documents}
       - {kind: read, bucket: OutputBucket, key: /*, uses: get_results reads processing output}
       - {kind: write, bucket: InputBucket, key: /*, uses: batch_run uploads documents}
-      - {kind: write, bucket: OutputBucket, key: /*, uses: batch_reprocess rewrites output}
+      - {kind: write, bucket: OutputBucket, key: /*,
+         uses: "batch_run records the batch at cli-batches/<batch id>/metadata.json
+           (idp_sdk batch_processor, _store_batch_metadata)"}
       - {kind: write, bucket: MCPContentBucket, key: /*, uses: batch_run stages content under temp/}
       - {kind: write, bucket: ReportingBucket, key: /*,
          uses: "search runs Athena, which writes results with the caller's credentials"}
-      - {kind: delete, bucket: OutputBucket, key: /*,
-         uses: batch_reprocess clears prior output (idp_sdk rerun_processor)}
   ExtractionFunction:
     template: patterns/unified/template.yaml
     object_access:
@@ -257,6 +274,13 @@ roles:
       - {kind: delete, bucket: OutputBucket, key: /*,
          unused: "S3CrudPolicy grants it; no delete call on this function's code path.
            Inferred from source, not measured."}
+    invoke:
+      - {resource: "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-*",
+         uses: "Advanced extraction runs its model calls and its confidence pass here:
+           LambdaHook inference, and decision-model confidence through
+           idp_common/decision_model/invoker.py, whose endpoint function names must
+           start with GENAIIDP- (FUNCTION_NAME_PREFIX). The ARN is chosen by
+           configuration, not by a tool."}
   MultiDocDiscoveryAnalyzeFunction:
     template: nested/multi-doc-discovery/template.yaml
     object_access:
@@ -430,20 +454,30 @@ entries:
       - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::refine_schema
       - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::request_document_generation
       - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::search_catalog
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::set_processing_options
     note: >-
       Pinned as the single conversational agent of its mode, with the caller's own
       memory. Its reads are configuration profiles and the schema catalog, so the
-      combination rule does not apply.
-    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
+      combination rule does not apply. It runs only from the Quick Start panel:
+      Document Analytics does not list it, and submitAgentQuery and the analytics
+      processor refuse it, so AgentProcessorFunction is not a role it runs under.
+      On a stack deployed with EnableQuickStartWidget=false, both chat routes refuse
+      it too.
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction]
     reads: [configuration_profiles]
     inputs: [user_prompt, conversation_history, configuration]
     outputs: [ui_rendered, configuration_write, generation_queue]
     control:
       - *safe_markdown_images
       - *safe_markdown_schema
+      - {symbol: lib/idp_common_pkg/idp_common/synthesis/bootstrap.py::refuse_protected_profile,
+         limits: configuration_write}
     test:
       - *safe_markdown_test
       - *markdown_surfaces_test
+      - lib/idp_common_pkg/tests/unit/config/test_managed_flag_survives_saves.py::test_bootstrap_leaves_a_managed_profile_as_it_was
+      - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestProtectedProfiles::test_a_stack_managed_profile_is_refused
+      - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestSetProcessingOptions::test_a_protected_profile_is_refused
 
   sample-calculator-agent:
     surfaces:
@@ -501,9 +535,14 @@ entries:
       - lib/idp_common_pkg/idp_common/discovery/classes_discovery.py::ClassesDiscovery.discovery_classes_with_document_and_ground_truth
       - lib/idp_common_pkg/idp_common/discovery/rules_discovery.py::RulesDiscovery.discovery_rules_from_document
     note: >-
-      Single-document class and rule discovery: one model call per document, no
-      tools. Declared because the derivation reads only tool-holding constructions,
-      and the result is saved into a profile and shown in the UI.
+      Single-document class and rule discovery. Class discovery is one model call per
+      document with no tools. Agentic rule discovery calls structured_output, so it
+      runs the extraction agent's tools over the one document it was given; with
+      extraction.agentic.table_parsing on in the copied config that includes
+      parse_table, built without the section text, so the model passes the table
+      Markdown it read from that same document. Declared because the derivation
+      reads only tool-holding constructions, and the result is saved into a profile
+      and shown in the UI.
     reads: [this_document]
     inputs: [document_content]
     outputs: [configuration_write, ui_rendered]
@@ -523,6 +562,11 @@ entries:
     surfaces:
       - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::Agent
       - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::BedrockModel
+      # parse_table is built as tool(parse_table), not @tool, because its description
+      # depends on whether it holds the section text; the census derives that
+      # call as this construct: surface. (@tool(description=...) would derive both
+      # a tool: and a construct: surface for the one tool.)
+      - construct:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool::tool
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.apply_json_patches
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_tool
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_with_confidence_tool
@@ -539,7 +583,6 @@ entries:
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_existing_extraction
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::write_buffer_date
       - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_map_table_to_schema_tool.map_table_to_schema
-      - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool.parse_table
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::create_todo_list
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::update_todo
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::view_todo_list
@@ -691,12 +734,17 @@ entries:
     surfaces: [harness:scripts/ux_runner/agent.py::claude_argv]
     note: >-
       The MR UX test and the first-time-user stories (ai_ux_test, ai_ux_test_stories),
-      driving a confined browser against the shared review stack.
-    reads: [review_stack_session]
-    inputs: [review_stack_pages]
-    outputs: [review_comment]
+      driving a confined browser against the shared review stack and posting a
+      redacted comment; and the screen review of a translated UI
+      (ai_ux_translation_review), which signs in to a stack the operator names in the
+      same confined browser, may only look, and writes local files, its screenshots
+      unredacted, and posts nothing.
+    reads: [review_stack_session, operator_stack_session]
+    inputs: [review_stack_pages, operator_stack_pages]
+    outputs: [review_comment, local_files]
     control:
       - {symbol: scripts/ux_test_proxy.py::EgressRules.permits, limits: review_stack_session}
+      - {symbol: scripts/ux_test_proxy.py::EgressRules.permits, limits: operator_stack_session}
       - {symbol: scripts/ux_runner/artifacts.py::redactor_for, limits: review_comment}
     test:
       - scripts/tests/test_ux_test_proxy.py::test_unlisted_and_internal_targets_are_refused_before_any_lookup

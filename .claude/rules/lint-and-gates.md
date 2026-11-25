@@ -54,8 +54,8 @@ exemptions are handled, and how CI parity is kept.
 ## Sources
 - [CLAUDE.md](../../CLAUDE.md): lint coverage, cfn-lint and the link checker, the
   gate exemption registry, and CI parity
-- [.claude/skills/code-review.md](../skills/code-review.md): pre-submit checks
-- [.claude/skills/srt-security-scan.md](../skills/srt-security-scan.md): SRT
+- [.claude/skills/code-review/SKILL.md](../skills/code-review/SKILL.md): pre-submit checks
+- [.claude/skills/srt-security-scan/SKILL.md](../skills/srt-security-scan/SKILL.md): SRT
   triage and suppression
-- [.claude/skills/testing-qa.md](../skills/testing-qa.md): how to write a gate
+- [.claude/skills/testing-qa/SKILL.md](../skills/testing-qa/SKILL.md): how to write a gate
   exemption

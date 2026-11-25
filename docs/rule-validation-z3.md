@@ -67,11 +67,23 @@ Z3 rules require:
 
 ### Z3 Engine Settings (Optional)
 
-Add these to the `rule_validation` section to customize Z3 behavior:
+The deployed pipeline reads one Z3 setting from the `rule_validation` section:
 
 ```yaml
 rule_validation:
   z3_timeout_ms: 5000          # Solver timeout (1–300000 ms, default 5000)
+```
+
+The schema also accepts `z3_rule_translator` and `z3_value_extraction` blocks, but
+**only the standalone engine reads them** (`Z3Engine`, as used from notebooks and
+scripts). A deployed stack ignores both: the **Generate RuleJSON** button calls a
+resolver that translates with the packaged prompts in
+`z3/config/translator_config.yaml`, and per-document parameter values are taken from
+the facts the `fact_extraction` step produced, using that step's model settings. Set
+them only when you drive `Z3Engine` yourself:
+
+```yaml
+rule_validation:
   z3_rule_translator:          # LLM for rule → SMT-LIB translation
     model: us.anthropic.claude-sonnet-4-6
     temperature: 0
@@ -87,7 +99,7 @@ rule_validation:
     task_prompt: "..."
 ```
 
-If `z3_rule_translator` and `z3_value_extraction` are both omitted, the engine uses built-in default prompts from `z3/config/translator_config.yaml`.
+If `z3_rule_translator` and `z3_value_extraction` are both omitted, the standalone engine uses the same packaged prompts from `z3/config/translator_config.yaml`.
 
 ## How It Works
 
@@ -128,12 +140,26 @@ Document Data → [Path Extraction or LLM Extraction] → Parameter Values
    `x-aws-idp-rule-id` schema field described above, which you author and which does
    need to be unique.
 
-2. **Extraction**: In the orchestration step, an LLM call extracts typed parameter values from the collected facts (gathered per-section in the prior step).
+2. **Extraction**: In the consolidation step (`PolicyRuleConsolidationStep`), an LLM call extracts typed parameter values from the collected facts (gathered per-section in the prior step).
 
 3. **Validation**: The Z3 solver checks whether the extracted values satisfy the constraints:
-   - `sat` → **Pass** (rule satisfied)
-   - `unsat` → **Fail** (rule violated)
-   - `error` / missing parameters → **Information Not Found**
+   - `sat` → **Pass** (rule satisfied), verdict `pass`
+   - `unsat` → **Fail** (rule violated), verdict `fail`
+   - `error` / missing parameters → **Information Not Found**, verdict `not_found`
+
+### Rule ids and verdicts in the output
+
+Every policy rule in the output has the id `policy_type.rule_key` as `rule_id`, and
+its result as both `recommendation` (the label) and `verdict` (`pass`, `fail`,
+`not_found` or `unknown`); see
+[JSON Output](./rule-validation.md#json-output). The `x-aws-idp-rule-id` you author
+for a Z3 rule is reported beside it as `z3_rule_id`. A
+[review routing rule](./review-routing.md#policy-rule-verdicts-in-routing-rules)
+names a policy rule by `rule_id` and tests its `verdict`, whichever engine decided it.
+
+The verdict pass runs for every document that reaches consolidation, including a
+document with one section. A rule the solver decided needs no model call for its
+verdict; each other rule takes one.
 
 ### A numeric reading must be exact in its declared type
 

@@ -205,7 +205,7 @@ Process documents from S3 or base64 content. To process documents via S3:
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143000",
+  "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "documents_queued": 5,
   "message": "Successfully queued 5 documents for processing"
 }
@@ -213,15 +213,23 @@ Process documents from S3 or base64 content. To process documents via S3:
 
 ### reprocess
 
-Reprocess documents from classification or extraction steps.
+Process documents again, starting at a pipeline step. The run produces the output of
+that step and of every later step again; what the earlier steps produced is kept. The
+tool asks the stack's reprocess function to do the work, as the web UI, the SDK and the
+CLI do, so it offers the same steps and refuses the same requests (see
+[Reprocessing](./document-versions.md#reprocessing)).
 
 **Input Schema:**
 ```json
 {
   "step": {
     "type": "string",
-    "enum": ["classification", "extraction"],
-    "description": "Pipeline step to reprocess from"
+    "description": "Pipeline step to start at. One of: beginning, classification, extraction, assessment, policy_rule_validation, summarization, evaluation, ocr, resume. 'ocr' is the beginning; 'resume' starts each document at the first step it has no output for. In BDA mode 'classification' and 'extraction' mean the beginning, and 'assessment' does not exist."
+  },
+  "skip": {
+    "type": "array",
+    "items": { "type": "string" },
+    "description": "Optional steps to leave out of the run; their existing output is kept. Any of: assessment, policy_rule_validation, summarization, evaluation."
   },
   "document_ids": {
     "type": "string",
@@ -238,16 +246,34 @@ Reprocess documents from classification or extraction steps.
 }
 ```
 
+`step` is required. The step names are listed in the description rather than as an
+`enum`, and a value outside the list is refused by the server with `UNKNOWN_STEP`.
+
 **Output Schema:**
 ```json
 {
   "success": "boolean",
   "batch_id": "string",
   "documents_queued": "integer",
+  "documents_failed": "integer",
   "step": "string",
+  "summary": { "queued": "integer", "failed": "integer" },
+  "results": [
+    {
+      "document_id": "string",
+      "status": "QUEUED | REFUSED | FAILED",
+      "start_step": "string",
+      "reason": "string",
+      "message": "string"
+    }
+  ],
   "message": "string"
 }
 ```
+
+A document the server refuses (it is being processed, it lacks the output of the
+earlier steps, the step does not exist in its processing mode) is reported in
+`results` with its reason; it does not fail the call or stop the other documents.
 
 **Example Request:**
 ```json
@@ -257,7 +283,8 @@ Reprocess documents from classification or extraction steps.
     "name": "reprocess",
     "arguments": {
       "step": "extraction",
-      "batch_id": "mcp-batch-20250124-143000"
+      "skip": ["evaluation"],
+      "batch_id": "mcp-batch-20250124-143000-5c1d9e2a"
     }
   }
 }
@@ -267,10 +294,15 @@ Reprocess documents from classification or extraction steps.
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143000",
+  "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "documents_queued": 5,
+  "documents_failed": 0,
   "step": "extraction",
-  "message": "Successfully queued 5 documents for extraction reprocessing"
+  "summary": { "queued": 5, "failed": 0 },
+  "results": [
+    { "document_id": "mcp-batch-20250124-143000-5c1d9e2a/invoice-1.pdf", "status": "QUEUED", "start_step": "extraction" }
+  ],
+  "message": "Queued 5 of 5 documents for reprocessing from extraction"
 }
 ```
 
@@ -330,7 +362,7 @@ Exactly one of `batch_id` or `document_id` must be provided; passing neither ret
   "params": {
     "name": "get_results",
     "arguments": {
-      "batch_id": "mcp-batch-20250124-143022",
+      "batch_id": "mcp-batch-20250124-143022-a40f7b13",
       "section_id": 1,
       "limit": 10
     }
@@ -342,13 +374,13 @@ Exactly one of `batch_id` or `document_id` must be provided; passing neither ret
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143022",
+  "batch_id": "mcp-batch-20250124-143022-a40f7b13",
   "section_id": 1,
   "count": 1,
   "total_in_batch": 1,
   "documents": [
     {
-      "document_id": "mcp-batch-20250124-143022/document-001.pdf",
+      "document_id": "mcp-batch-20250124-143022-a40f7b13/document-001.pdf",
       "document_class": "invoice",
       "fields": {
         "vendor_info": {
@@ -429,7 +461,8 @@ no error-detail field either way. What you get instead is the **count** of failu
     "completed": "integer",
     "in_progress": "integer",
     "failed": "integer",
-    "queued": "integer"
+    "queued": "integer",
+    "awaiting_review": "integer"
   },
   "progress": {
     "percentage": "number"
@@ -437,6 +470,16 @@ no error-detail field either way. What you get instead is the **count** of failu
   "all_complete": "boolean"
 }
 ```
+
+`all_complete` is `true` once no document is queued or running. A document
+waiting for human review (`awaiting_review`, status `HITL_IN_PROGRESS`) counts as
+settled, because nothing more happens to it until its review ends in the web UI's
+review queues (completed, rejected or sent back), so an agent polling this tool
+stops rather than
+waiting on a person. It does not mean every document has an outcome: check
+`awaiting_review` before treating the batch's results as final.
+`progress.percentage` is the share of documents that **completed**, so it stays
+below 100 while any document is failed or awaiting review.
 
 With `options.detailed: true` the response gains a `documents` array, one entry per
 document in the batch, each with `document_id`, `status`, `duration_seconds` and
@@ -449,7 +492,7 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
   "params": {
     "name": "status",
     "arguments": {
-      "batch_id": "mcp-batch-20250124-143000",
+      "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
       "options": {
         "detailed": true
       }
@@ -462,13 +505,14 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
 ```json
 {
   "success": true,
-  "batch_id": "mcp-batch-20250124-143000",
+  "batch_id": "mcp-batch-20250124-143000-5c1d9e2a",
   "status": {
     "total": 5,
     "completed": 3,
     "in_progress": 1,
     "failed": 0,
-    "queued": 1
+    "queued": 1,
+    "awaiting_review": 0
   },
   "progress": {
     "percentage": 60.0
@@ -699,8 +743,8 @@ the functions' IAM roles bound what the server as a whole can reach:
 
 - The MCP handler reads the tracking and configuration tables, reads and writes the
   Input, Output, Reporting and MCP content buckets (processing copies documents into
-  the Input bucket), and may delete only in the Output bucket (reprocessing replaces
-  a document's earlier section results). It runs the analytics agent for `search`
+  the Input bucket), and may invoke the stack's reprocess function, which does the
+  clearing and queueing of a reprocess; the handler itself deletes nothing. It runs the analytics agent for `search`
   against the reporting database.
 - The caller interceptor reads the user pool (`AdminGetUser`), the Users table, the
   credential registry and its signing key, and nothing else.

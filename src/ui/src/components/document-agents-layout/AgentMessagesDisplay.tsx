@@ -3,6 +3,176 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { Container, Header, Box, Spinner, SpaceBetween, Button, Modal } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { useFormatters } from '../../i18n/format';
+
+// Named `uiMessages` because `messages` below is the agent's own message list.
+const uiMessages = defineMessages<{
+  databaseInfoRetrieved: NoMessageValues;
+  toolRequest: { readonly toolName: string };
+  unknownTool: NoMessageValues;
+  noContent: NoMessageValues;
+  noTextContent: NoMessageValues;
+  viewSql: NoMessageValues;
+  viewCode: NoMessageValues;
+  viewInfo: NoMessageValues;
+  title: NoMessageValues;
+  description: NoMessageValues;
+  waiting: NoMessageValues;
+  thinking: NoMessageValues;
+  sqlTitle: NoMessageValues;
+  codeTitle: NoMessageValues;
+  schemaTitle: NoMessageValues;
+  copy: NoMessageValues;
+  close: NoMessageValues;
+  noSql: NoMessageValues;
+  noCode: NoMessageValues;
+  noSchema: NoMessageValues;
+}>({
+  databaseInfoRetrieved: {
+    id: 'agents.thoughtProcess.databaseInfoRetrieved',
+    defaultMessage: 'Database schema information was retrieved by the agent',
+    description: 'Note that the agent read the database schema, kept with that step of the agent thought process.',
+  },
+  toolRequest: {
+    id: 'agents.thoughtProcess.toolRequest',
+    defaultMessage: 'Tool request initiated for tool: {toolName}',
+    description: "Text of a tool step in the agent thought process. {toolName} is the tool's technical name, as is.",
+  },
+  unknownTool: {
+    id: 'agents.thoughtProcess.unknownTool',
+    defaultMessage: 'unknown',
+    description: 'Tool name shown on a tool step of the agent thought process when the agent named no tool.',
+  },
+  noContent: {
+    id: 'agents.thoughtProcess.noContent',
+    defaultMessage: "'<No content>'",
+    description:
+      'Shown in the agent thought process for a message with no content. The apostrophes keep the angle brackets as text; keep them.',
+  },
+  noTextContent: {
+    id: 'agents.thoughtProcess.noTextContent',
+    defaultMessage: "'<No text content>'",
+    description:
+      'Shown in the agent thought process for a message with no text. The apostrophes keep the angle brackets as text; keep them.',
+  },
+  viewSql: {
+    id: 'agents.thoughtProcess.viewSql',
+    defaultMessage: 'View SQL',
+    description: 'Button on a query step of the agent thought process that shows the SQL query the agent ran.',
+  },
+  viewCode: {
+    id: 'agents.thoughtProcess.viewCode',
+    defaultMessage: 'View Code',
+    description: 'Button on a code step of the agent thought process that shows the Python code the agent ran.',
+  },
+  viewInfo: {
+    id: 'agents.thoughtProcess.viewInfo',
+    defaultMessage: 'View Info',
+    description: 'Button on the schema step of the agent thought process that shows the database schema reference.',
+  },
+  title: {
+    id: 'agents.thoughtProcess.title',
+    defaultMessage: 'Agent Thought Process',
+    description: "Heading of the panel that lists the agent's messages and steps while it works.",
+  },
+  description: {
+    id: 'agents.thoughtProcess.description',
+    defaultMessage: 'Real-time agent conversation',
+    description: 'Description under the agent thought process heading.',
+  },
+  waiting: {
+    id: 'agents.thoughtProcess.waiting',
+    defaultMessage: 'Waiting for agent to start...',
+    description: "Shown in the agent thought process before the agent's first message.",
+  },
+  thinking: {
+    id: 'agents.thoughtProcess.thinking',
+    defaultMessage: 'Agent is thinking...',
+    description: 'Shown at the end of the agent thought process while the agent works.',
+  },
+  sqlTitle: {
+    id: 'agents.thoughtProcess.sqlTitle',
+    defaultMessage: 'SQL Query',
+    description: 'Title of the dialog that shows the SQL query the agent ran.',
+  },
+  codeTitle: {
+    id: 'agents.thoughtProcess.codeTitle',
+    defaultMessage: 'Python Code',
+    description: 'Title of the dialog that shows the Python code the agent ran.',
+  },
+  schemaTitle: {
+    id: 'agents.thoughtProcess.schemaTitle',
+    defaultMessage: 'Database Schema Information',
+    description: 'Title of the dialog that shows the database schema reference.',
+  },
+  copy: {
+    id: 'agents.thoughtProcess.copy',
+    defaultMessage: 'Copy to Clipboard',
+    description: 'Button in the SQL, code and schema dialogs that copies the text shown.',
+  },
+  close: {
+    id: 'agents.thoughtProcess.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the SQL, code or schema dialog.',
+  },
+  noSql: {
+    id: 'agents.thoughtProcess.noSql',
+    defaultMessage: 'No SQL query available',
+    description: 'Shown in the SQL dialog when there is no query to show.',
+  },
+  noCode: {
+    id: 'agents.thoughtProcess.noCode',
+    defaultMessage: 'No Python code available',
+    description: 'Shown in the code dialog when there is no code to show.',
+  },
+  noSchema: {
+    id: 'agents.thoughtProcess.noSchema',
+    defaultMessage: 'No database information available',
+    description: 'Shown in the schema dialog when there is no schema reference to show.',
+  },
+});
+
+/** The role names above each message, one per role the agent log records. */
+const roleMessages = defineMessages<{
+  user: NoMessageValues;
+  assistant: NoMessageValues;
+  tool: NoMessageValues;
+  throttling: NoMessageValues;
+  exception: NoMessageValues;
+  unknown: NoMessageValues;
+}>({
+  user: {
+    id: 'agents.thoughtProcess.role.user',
+    defaultMessage: 'User',
+    description: 'Role name above a message the user sent, in the agent thought process.',
+  },
+  assistant: {
+    id: 'agents.thoughtProcess.role.assistant',
+    defaultMessage: 'Assistant',
+    description: 'Role name above a message the agent wrote, in the agent thought process.',
+  },
+  tool: {
+    id: 'agents.thoughtProcess.role.tool',
+    defaultMessage: 'Tool',
+    description: 'Role name above a tool step, in the agent thought process.',
+  },
+  throttling: {
+    id: 'agents.thoughtProcess.role.throttling',
+    defaultMessage: 'Throttling',
+    description: 'Role name above a notice that the model service throttled the agent, in the agent thought process.',
+  },
+  exception: {
+    id: 'agents.thoughtProcess.role.exception',
+    defaultMessage: 'Exception',
+    description: 'Role name above an error the agent ran into, in the agent thought process.',
+  },
+  unknown: {
+    id: 'agents.thoughtProcess.role.unknown',
+    defaultMessage: 'Unknown',
+    description: 'Role name above a message that has no role, in the agent thought process.',
+  },
+});
 
 interface AgentMessage {
   role: string;
@@ -24,6 +194,8 @@ interface AgentMessagesDisplayProps {
 }
 
 const AgentMessagesDisplay = ({ agentMessages = null, isProcessing = false }: AgentMessagesDisplayProps): React.JSX.Element | null => {
+  const intl = useIntl();
+  const { formatTime } = useFormatters();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [sqlModalVisible, setSqlModalVisible] = useState(false);
@@ -97,7 +269,7 @@ const AgentMessagesDisplay = ({ agentMessages = null, isProcessing = false }: Ag
           item && (item.toolUse as Record<string, unknown>) && (item.toolUse as Record<string, unknown>).name === 'get_database_info',
       );
       // For get_database_info, there typically isn't input data, but we can check for tool result
-      return dbInfoItem ? 'Database schema information was retrieved by the agent' : null;
+      return dbInfoItem ? intl.formatMessage(uiMessages.databaseInfoRetrieved) : null;
     }
 
     return null;
@@ -138,6 +310,7 @@ const AgentMessagesDisplay = ({ agentMessages = null, isProcessing = false }: Ag
   // Show database info modal with error handling
   const showDatabaseInfo = useCallback(async () => {
     try {
+      // Stays English: it mirrors the analytics agent's schema prompt (idp_common/agents/analytics/schema_provider.py) and is copied as is.
       const databaseSchemaInfo = `# Comprehensive Athena Database Schema
 
 ## Overview
@@ -621,11 +794,12 @@ JOIN metering m ON ds."document_id" = m."document_id"
               // Parse and add tool use message
               try {
                 const toolUse = JSON.parse(match);
-                const toolName = ((toolUse.toolUse as Record<string, unknown>)?.name as string) || 'unknown';
+                const toolName =
+                  ((toolUse.toolUse as Record<string, unknown>)?.name as string) || intl.formatMessage(uiMessages.unknownTool);
                 splitMessages.push({
                   ...message,
                   role: 'tool',
-                  content: `Tool request initiated for tool: ${toolName}`,
+                  content: intl.formatMessage(uiMessages.toolRequest, { toolName }),
                   tool_name: toolName,
                   timestamp: message.timestamp,
                   originalMessage: message, // Store original message for SQL extraction
@@ -677,7 +851,9 @@ JOIN metering m ON ds."document_id" = m."document_id"
               }
 
               // Add tool use message
-              const toolName = (((item as Record<string, unknown>).toolUse as Record<string, unknown>)?.name as string) || 'unknown';
+              const toolName =
+                (((item as Record<string, unknown>).toolUse as Record<string, unknown>)?.name as string) ||
+                intl.formatMessage(uiMessages.unknownTool);
               splitMessages.push({
                 ...message,
                 role: 'tool',
@@ -732,7 +908,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
     } catch (error) {
       return [];
     }
-  }, [agentMessages]);
+  }, [agentMessages, intl]);
 
   // Auto-scroll to bottom within the messages container (not the whole page)
   useEffect(() => {
@@ -746,7 +922,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
     if (!timestamp) return '';
     try {
       const date = new Date(timestamp);
-      return date.toLocaleTimeString();
+      return formatTime(date);
     } catch (error) {
       return timestamp;
     }
@@ -756,24 +932,25 @@ JOIN metering m ON ds."document_id" = m."document_id"
   const getRoleInfo = (role: string, messageType?: string) => {
     switch (role) {
       case 'user':
-        return { display: 'User', color: '#0073bb', icon: '👤' };
+        return { display: intl.formatMessage(roleMessages.user), color: '#0073bb', icon: '👤' };
       case 'assistant':
-        return { display: 'Assistant', color: '#037f0c', icon: '🤖' };
+        return { display: intl.formatMessage(roleMessages.assistant), color: '#037f0c', icon: '🤖' };
       case 'tool':
-        return { display: 'Tool', color: '#8b5a00', icon: '🔧' };
+        return { display: intl.formatMessage(roleMessages.tool), color: '#8b5a00', icon: '🔧' };
       case 'exception':
         if (messageType === 'throttling_exception') {
-          return { display: 'Throttling', color: '#ff9900', icon: '⚠️' };
+          return { display: intl.formatMessage(roleMessages.throttling), color: '#ff9900', icon: '⚠️' };
         }
-        return { display: 'Exception', color: '#d13212', icon: '❌' };
+        return { display: intl.formatMessage(roleMessages.exception), color: '#d13212', icon: '❌' };
       default:
-        return { display: role || 'Unknown', color: '#666', icon: '❓' };
+        // Any other role shows as it arrives.
+        return { display: role || intl.formatMessage(roleMessages.unknown), color: '#666', icon: '❓' };
     }
   };
 
   // Extract text content from message content (handles both string and object formats)
   const extractTextContent = (content: string | Array<Record<string, unknown>> | Record<string, unknown> | null | undefined): string => {
-    if (!content) return '<No content>';
+    if (!content) return intl.formatMessage(uiMessages.noContent);
 
     // If content is a string, return it directly
     if (typeof content === 'string') {
@@ -797,7 +974,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
       });
 
       const result = textParts.join('\n').trim();
-      return result || '<No text content>';
+      return result || intl.formatMessage(uiMessages.noTextContent);
     }
 
     // If content is an object with a text property, extract it
@@ -826,7 +1003,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
     if (message.role === 'tool' && message.tool_name) {
       // If the content is just a generic success message, show the tool name instead
       if (textContent === "Tool completed with status 'success'." || textContent.includes('Tool completed with status')) {
-        textContent = `Tool request initiated for tool: ${message.tool_name}`;
+        textContent = intl.formatMessage(uiMessages.toolRequest, { toolName: message.tool_name });
       }
     }
 
@@ -946,7 +1123,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
                   (e.target as HTMLButtonElement).style.borderColor = '#0073bb';
                 }}
               >
-                View SQL
+                <FormattedMessage {...uiMessages.viewSql} />
               </button>
             )}
             {hasPythonCode && (
@@ -975,7 +1152,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
                   (e.target as HTMLButtonElement).style.borderColor = '#0073bb';
                 }}
               >
-                View Code
+                <FormattedMessage {...uiMessages.viewCode} />
               </button>
             )}
             {hasDatabaseInfo && (
@@ -1004,7 +1181,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
                   (e.target as HTMLButtonElement).style.borderColor = '#0073bb';
                 }}
               >
-                View Info
+                <FormattedMessage {...uiMessages.viewInfo} />
               </button>
             )}
           </div>
@@ -1035,8 +1212,8 @@ JOIN metering m ON ds."document_id" = m."document_id"
     <>
       <Container
         header={
-          <Header variant="h3" description="Real-time agent conversation">
-            Agent Thought Process
+          <Header variant="h3" description={intl.formatMessage(uiMessages.description)}>
+            <FormattedMessage {...uiMessages.title} />
           </Header>
         }
       >
@@ -1057,7 +1234,9 @@ JOIN metering m ON ds."document_id" = m."document_id"
               messages.map((message, index) => renderMessage(message, index))
             ) : (
               <Box textAlign="center" padding="s" color="text-body-secondary">
-                <em>Waiting for agent to start...</em>
+                <em>
+                  <FormattedMessage {...uiMessages.waiting} />
+                </em>
               </Box>
             )}
 
@@ -1073,7 +1252,9 @@ JOIN metering m ON ds."document_id" = m."document_id"
                   }}
                 >
                   <Spinner size="normal" />
-                  <span style={{ marginLeft: '6px' }}>Agent is thinking...</span>
+                  <span style={{ marginLeft: '6px' }}>
+                    <FormattedMessage {...uiMessages.thinking} />
+                  </span>
                 </div>
               </Box>
             )}
@@ -1089,16 +1270,16 @@ JOIN metering m ON ds."document_id" = m."document_id"
         <Modal
           onDismiss={handleModalDismiss}
           visible={sqlModalVisible}
-          header="SQL Query"
+          header={intl.formatMessage(uiMessages.sqlTitle)}
           size="large"
           footer={
             <Box float="right">
               <SpaceBetween direction="horizontal" size="xs">
                 <Button variant="normal" onClick={handleCopyToClipboard}>
-                  Copy to Clipboard
+                  <FormattedMessage {...uiMessages.copy} />
                 </Button>
                 <Button variant="primary" onClick={handleModalDismiss}>
-                  Close
+                  <FormattedMessage {...uiMessages.close} />
                 </Button>
               </SpaceBetween>
             </Box>
@@ -1120,7 +1301,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
                 wordBreak: 'break-word',
               }}
             >
-              {currentSqlQuery || 'No SQL query available'}
+              {currentSqlQuery || <FormattedMessage {...uiMessages.noSql} />}
             </div>
           </Box>
         </Modal>
@@ -1131,16 +1312,16 @@ JOIN metering m ON ds."document_id" = m."document_id"
         <Modal
           onDismiss={handleCodeModalDismiss}
           visible={codeModalVisible}
-          header="Python Code"
+          header={intl.formatMessage(uiMessages.codeTitle)}
           size="large"
           footer={
             <Box float="right">
               <SpaceBetween direction="horizontal" size="xs">
                 <Button variant="normal" onClick={handleCopyCodeToClipboard}>
-                  Copy to Clipboard
+                  <FormattedMessage {...uiMessages.copy} />
                 </Button>
                 <Button variant="primary" onClick={handleCodeModalDismiss}>
-                  Close
+                  <FormattedMessage {...uiMessages.close} />
                 </Button>
               </SpaceBetween>
             </Box>
@@ -1162,7 +1343,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
                 wordBreak: 'break-word',
               }}
             >
-              {currentPythonCode || 'No Python code available'}
+              {currentPythonCode || <FormattedMessage {...uiMessages.noCode} />}
             </div>
           </Box>
         </Modal>
@@ -1173,16 +1354,16 @@ JOIN metering m ON ds."document_id" = m."document_id"
         <Modal
           onDismiss={handleDatabaseInfoModalDismiss}
           visible={databaseInfoModalVisible}
-          header="Database Schema Information"
+          header={intl.formatMessage(uiMessages.schemaTitle)}
           size="large"
           footer={
             <Box float="right">
               <SpaceBetween direction="horizontal" size="xs">
                 <Button variant="normal" onClick={handleCopyDatabaseInfoToClipboard}>
-                  Copy to Clipboard
+                  <FormattedMessage {...uiMessages.copy} />
                 </Button>
                 <Button variant="primary" onClick={handleDatabaseInfoModalDismiss}>
-                  Close
+                  <FormattedMessage {...uiMessages.close} />
                 </Button>
               </SpaceBetween>
             </Box>
@@ -1204,7 +1385,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
                 wordBreak: 'break-word',
               }}
             >
-              {currentDatabaseInfo || 'No database information available'}
+              {currentDatabaseInfo || <FormattedMessage {...uiMessages.noSchema} />}
             </div>
           </Box>
         </Modal>

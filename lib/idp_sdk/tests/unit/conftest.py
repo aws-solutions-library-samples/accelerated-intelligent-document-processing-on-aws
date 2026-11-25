@@ -106,3 +106,130 @@ def aws_credentials(monkeypatch):
 def aws_region():
     """The region `aws_credentials` pins, for tests that must name it."""
     return AWS_TEST_REGION
+
+
+RESOLVER_FUNCTION_ARN = (
+    "arn:aws:lambda:us-east-1:111122223333:function:idp-ApiResolverFunction"
+)
+
+
+class _ResolverStack:
+    """The nested API resolver stack's outputs, as ``invoke_api_resolver`` reads them.
+
+    ``outputs`` maps (nested stack pattern, output key) to a value; ``lookups``
+    records every (stack, pattern, output key) asked for. ``function_arn`` is the
+    function the ``api_resolver`` fixture answers for.
+    """
+
+    function_arn = RESOLVER_FUNCTION_ARN
+
+    def __init__(self):
+        self.outputs: dict = {}
+        self.lookups: list = []
+
+    def has(self, output_key, pattern="apiresolver"):
+        """Give the stack the output, holding the resolver function's ARN."""
+        self.outputs[(pattern, output_key)] = self.function_arn
+
+    def stack_info_class(self):
+        owner = self
+
+        class FakeStackInfo:
+            """The nested-stack output lookup, and nothing else of ``StackInfo``."""
+
+            def __init__(self, stack_name, region=None):
+                self.stack_name = stack_name
+                self.region = region
+
+            def get_nested_stack_output(self, nested_stack_pattern, output_key):
+                owner.lookups.append(
+                    (self.stack_name, nested_stack_pattern, output_key)
+                )
+                try:
+                    return owner.outputs[(nested_stack_pattern, output_key)]
+                except KeyError:
+                    raise ValueError(
+                        f"Output '{output_key}' not found in nested stack matching "
+                        f"'{nested_stack_pattern}'"
+                    ) from None
+
+        return FakeStackInfo
+
+
+class _ApiResolver:
+    """An API resolver function as the SDK sees it: queued answers to ``Invoke``.
+
+    A real botocore Lambda client behind a ``Stubber``, so an ``Invoke`` parameter
+    the service does not have fails the test, and each expected request is
+    compared with the one the SDK sends.
+    """
+
+    def __init__(self, monkeypatch, function_arn):
+        from botocore.stub import Stubber
+
+        from idp_sdk._core import resolver_invoke
+
+        self.function_arn = function_arn
+        self.client = boto3.client("lambda", region_name=AWS_TEST_REGION)
+        self.stubber = Stubber(self.client)
+        self.stubber.activate()
+        self.regions: list = []
+        monkeypatch.setattr(resolver_invoke, "_lambda_client", self._client)
+
+    def _client(self, region):
+        self.regions.append(region)
+        return self.client
+
+    def respond(self, expected_payload, body, function_error=""):
+        import io
+        import json
+
+        from botocore.response import StreamingBody
+
+        data = json.dumps(body).encode()
+        response = {
+            "StatusCode": 200,
+            "Payload": StreamingBody(io.BytesIO(data), len(data)),
+        }
+        if function_error:
+            response["FunctionError"] = function_error
+        self.stubber.add_response(
+            "invoke",
+            response,
+            {
+                "FunctionName": self.function_arn,
+                "InvocationType": "RequestResponse",
+                "Payload": json.dumps(expected_payload),
+            },
+        )
+
+    def answers(self, field, arguments, body):
+        self.respond({"info": {"fieldName": field}, "arguments": arguments}, body)
+
+    def raises(self, field, arguments, error_type, message):
+        self.respond(
+            {"info": {"fieldName": field}, "arguments": arguments},
+            {"errorType": error_type, "errorMessage": message},
+            function_error="Unhandled",
+        )
+
+    def done(self):
+        self.stubber.assert_no_pending_responses()
+
+
+@pytest.fixture
+def resolver_stack(monkeypatch, aws_credentials):
+    """The stack an SDK call looks its resolver function up in (no outputs yet)."""
+    from idp_sdk._core import resolver_invoke
+
+    stack = _ResolverStack()
+    resolver_invoke.forget_stack_lookups()
+    monkeypatch.setattr(resolver_invoke, "StackInfo", stack.stack_info_class())
+    yield stack
+    resolver_invoke.forget_stack_lookups()
+
+
+@pytest.fixture
+def api_resolver(monkeypatch, resolver_stack):
+    """The resolver function behind ``RESOLVER_FUNCTION_ARN``, answering in order."""
+    return _ApiResolver(monkeypatch, RESOLVER_FUNCTION_ARN)

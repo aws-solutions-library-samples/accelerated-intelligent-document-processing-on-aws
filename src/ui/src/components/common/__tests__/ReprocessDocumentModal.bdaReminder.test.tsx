@@ -15,6 +15,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const state = vi.hoisted(() => ({
   configs: {} as Record<string, Record<string, unknown>>,
@@ -57,6 +58,8 @@ vi.mock('../../../hooks/use-configuration', async () => {
 });
 
 vi.mock('../ConfigRevisionSelector', () => ({ default: () => null }));
+// The dialog also asks which steps the run can start at; that is not what this suite is about.
+vi.mock('../../run-plan/run-plan-api', () => ({ getReprocessOptions: async () => [] }));
 
 import ReprocessDocumentModal from '../ReprocessDocumentModal';
 
@@ -71,6 +74,12 @@ const dialog = (visible: boolean, configVersion: string) => (
   />
 );
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const settle = (ms = 30) =>
   act(async () => {
     await new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,7 +91,7 @@ beforeEach(() => {
 
 describe('ReprocessDocumentModal — Sync To BDA reminder', () => {
   it('shows the reminder once a BDA-mode profile has loaded', async () => {
-    render(dialog(true, 'bda-profile'));
+    render(dialog(true, 'bda-profile'), { wrapper: English });
     expect(screen.queryByText(REMINDER)).not.toBeInTheDocument();
 
     await settle();
@@ -90,14 +99,14 @@ describe('ReprocessDocumentModal — Sync To BDA reminder', () => {
   });
 
   it('does not show it for a pipeline-mode profile', async () => {
-    render(dialog(true, 'pipeline-profile'));
+    render(dialog(true, 'pipeline-profile'), { wrapper: English });
     await settle();
 
     expect(screen.queryByText(REMINDER)).not.toBeInTheDocument();
   });
 
   it("does not show the previous profile's answer while the next profile loads", async () => {
-    const { rerender } = render(dialog(true, 'bda-profile'));
+    const { rerender } = render(dialog(true, 'bda-profile'), { wrapper: English });
     await settle();
     expect(screen.getByText(REMINDER)).toBeInTheDocument();
 
@@ -112,7 +121,7 @@ describe('ReprocessDocumentModal — Sync To BDA reminder', () => {
   });
 
   it("does not show the previous profile's answer when the next profile cannot be read", async () => {
-    const { rerender } = render(dialog(true, 'bda-profile'));
+    const { rerender } = render(dialog(true, 'bda-profile'), { wrapper: English });
     await settle();
     expect(screen.getByText(REMINDER)).toBeInTheDocument();
 

@@ -28,7 +28,19 @@ import { generateClient } from '../../api/client-shim';
 import { addDocumentsToTestSet, addDocumentsToTestSetFromUpload, listBucketFiles } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { BUCKET_OPTIONS, TIME_FILTER_OPTIONS } from './testSetOptions';
+import { customCutoffIsInvalid, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import AddProcessedDocumentsModal from './AddProcessedDocumentsModal';
+import { createLatestResponseGuard } from './latestResponseOnly';
+import { useFormatters } from '../../i18n/format';
+import { useIntl } from 'react-intl';
+import {
+  formatLeftOut,
+  memberNames,
+  patternPreviewMessages,
+  setInputPattern,
+  splitPatternMatches,
+  type PatternPreview,
+} from './patternPreview';
 
 const client = generateClient();
 
@@ -80,22 +92,35 @@ interface AddDocumentsModalsProps {
 }
 
 const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocumentsModalsProps): React.JSX.Element => {
+  const { formatFixed } = useFormatters();
+  const intl = useIntl();
   const [filePattern, setFilePattern] = useState('');
   const [selectedBucket, setSelectedBucket] = useState<SelectProps.Option>(BUCKET_OPTIONS[0]);
   const [selectedTimeFilter, setSelectedTimeFilter] = useState<SelectProps.Option>(TIME_FILTER_OPTIONS[0]);
   const [customDate, setCustomDate] = useState('');
   const [customTime, setCustomTime] = useState('00:00:00');
   const [matchingFiles, setMatchingFiles] = useState<string[]>([]);
-  const [fileCount, setFileCount] = useState(0);
+  const [preview, setPreview] = useState<PatternPreview | null>(null);
+  // The cutoff the preview above was computed against. A relative window ("last
+  // 24 hours") is resolved to an absolute time when Check Files is sent, and Add
+  // sends that same time: resolving it again would move the cutoff later and
+  // leave out counted files that aged out in between. Cleared with the preview.
+  const [checkedCutoff, setCheckedCutoff] = useState<{ modifiedAfter: string | undefined } | null>(null);
   const [showFilesModal, setShowFilesModal] = useState(false);
   const [zipFile, setZipFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFileStructure, setShowFileStructure] = useState(() => localStorage.getItem('testset-show-file-structure') !== 'false');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Check Files' reply is about the inputs it was sent with; one landing after an
+  // edit (or after the dialog reopened) describes a source the form no longer shows.
+  const checkGuard = useRef(createLatestResponseGuard());
 
   // Fresh form each time a dialog opens, seeded from the target set.
   useEffect(() => {
+    // Closing invalidates a check still running, as opening does, so its reply
+    // cannot open the Matching Files list over the page once the dialog is gone.
+    checkGuard.current.claim();
     if (!mode) return;
     setFilePattern(mode === 'pattern' ? (testSet?.filePattern ?? '') : '');
     setSelectedBucket(BUCKET_OPTIONS[0]);
@@ -103,46 +128,72 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
     setCustomDate('');
     setCustomTime('00:00:00');
     setMatchingFiles([]);
-    setFileCount(0);
+    setPreview(null);
+    setCheckedCutoff(null);
     setZipFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setError('');
   }, [mode, testSet?.id]);
+
+  /** What the last Check Files found the copy would add; nothing until a check runs. */
+  const fileCount = preview?.documents.length ?? 0;
+  const leftOut = preview ? formatLeftOut(intl, preview) : '';
+
+  /** A changed source, pattern or time filter makes the last check's result stale. */
+  const clearCheck = () => {
+    checkGuard.current.claim();
+    setPreview(null);
+    setCheckedCutoff(null);
+  };
 
   const close = () => {
     setError('');
     onDismiss();
   };
 
-  const getModifiedAfterTimestamp = (): string | undefined => {
-    const filterValue = selectedTimeFilter.value;
-    if (!filterValue) return undefined;
-    if (filterValue === 'custom') {
-      if (!customDate) return undefined;
-      return `${customDate}T${customTime || '00:00:00'}.000Z`;
-    }
-    const date = new Date(Date.now() - parseInt(filterValue, 10) * 60 * 60 * 1000);
-    return date.toISOString();
-  };
+  // "Modified after" is shown for the Input bucket only, so a filter left set
+  // before switching to the Test Set bucket neither applies nor blocks a check.
+  const timeFilterValue = selectedBucket.value === 'input' ? selectedTimeFilter.value : undefined;
+  const customDateTimeInvalid = customCutoffIsInvalid(timeFilterValue, customDate, customTime);
+  const getModifiedAfterTimestamp = (): string | undefined => resolveModifiedAfter(timeFilterValue, customDate, customTime);
 
   const handleCheckFiles = async () => {
-    if (!filePattern.trim()) return;
+    if (!filePattern.trim() || !testSet) return;
+    if (customDateTimeInvalid) {
+      setError(intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime));
+      return;
+    }
+    setError('');
+    const bucketType = selectedBucket.value ?? '';
+    const isCurrent = checkGuard.current.claim();
+    const modifiedAfter = getModifiedAfterTimestamp();
     setLoading(true);
     try {
-      const result = await client.graphql({
-        query: listBucketFiles,
-        variables: {
-          bucketType: selectedBucket.value ?? '',
-          filePattern: filePattern.trim(),
-          modifiedAfter: getModifiedAfterTimestamp(),
-        },
-      });
+      // The set's own input/ folder is listed alongside the pattern, because the
+      // copy leaves a file the set already holds as it is and the count should say so.
+      const [result, existing] = await Promise.all([
+        client.graphql({
+          query: listBucketFiles,
+          variables: { bucketType, filePattern: filePattern.trim(), modifiedAfter },
+        }),
+        client.graphql({
+          query: listBucketFiles,
+          variables: { bucketType: 'testset', filePattern: setInputPattern(testSet.id) },
+        }),
+      ]);
       const files = (result.data.listBucketFiles || []).filter((f): f is string => f !== null);
+      const members = memberNames(
+        testSet.id,
+        (existing.data.listBucketFiles || []).filter((f): f is string => f !== null),
+      );
+      if (!isCurrent()) return;
+      const split = splitPatternMatches(bucketType, files, members);
       setMatchingFiles(files);
-      setFileCount(files.length);
+      setPreview(split);
+      setCheckedCutoff({ modifiedAfter });
       setShowFilesModal(true);
     } catch (err) {
-      setError(`Failed to check files: ${getErrorMessage(err)}`);
+      if (isCurrent()) setError(`Failed to check files: ${getErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -163,7 +214,9 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           filePattern: filePattern.trim(),
           bucketType: selectedBucket.value ?? '',
           fileCount,
-          modifiedAfter: getModifiedAfterTimestamp(),
+          // Add is enabled only once a check has answered, so the stored cutoff is
+          // there; resolving now covers a future path that enables Add without one.
+          modifiedAfter: checkedCutoff ? checkedCutoff.modifiedAfter : getModifiedAfterTimestamp(),
         },
       });
       const updated = result.data.addDocumentsToTestSet;
@@ -251,7 +304,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
               selectedOption={selectedBucket}
               onChange={({ detail }) => {
                 setSelectedBucket(detail.selectedOption);
-                setFileCount(0);
+                clearCheck();
               }}
               options={BUCKET_OPTIONS}
             />
@@ -270,7 +323,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                 value={filePattern}
                 onChange={({ detail }) => {
                   setFilePattern(detail.value);
-                  setFileCount(0);
+                  clearCheck();
                 }}
                 placeholder={selectedBucket.value === 'testset' ? 'test-set-prefix*/input/*' : 'prefix*/*'}
               />
@@ -281,13 +334,17 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           </FormField>
 
           {selectedBucket.value === 'input' && (
-            <FormField label="Modified after" description="Optional: only include files modified within this time period">
+            <FormField
+              label="Modified after"
+              description="Optional: only include files modified within this time period"
+              errorText={customDateTimeInvalid ? intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime) : undefined}
+            >
               <SpaceBetween size="xs">
                 <Select
                   selectedOption={selectedTimeFilter}
                   onChange={({ detail }) => {
                     setSelectedTimeFilter(detail.selectedOption);
-                    setFileCount(0);
+                    clearCheck();
                   }}
                   options={TIME_FILTER_OPTIONS}
                 />
@@ -297,7 +354,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                       value={customDate}
                       onChange={({ detail }) => {
                         setCustomDate(detail.value);
-                        setFileCount(0);
+                        clearCheck();
                       }}
                       placeholder="YYYY/MM/DD"
                       openCalendarAriaLabel={(selectedDate) => `Choose date${selectedDate ? `, selected date is ${selectedDate}` : ''}`}
@@ -306,13 +363,13 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                       value={customTime}
                       onChange={({ detail }) => {
                         setCustomTime(detail.value);
-                        setFileCount(0);
+                        clearCheck();
                       }}
                       format="hh:mm:ss"
                       placeholder="HH:mm:ss"
                     />
                     <Box variant="small" padding={{ top: 'xs' }}>
-                      UTC
+                      {intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}
                     </Box>
                   </SpaceBetween>
                 )}
@@ -322,10 +379,17 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
 
           {fileCount > 0 && (
             <Box>
-              <Badge color="green">
-                {fileCount} {fileCount === 1 ? 'file' : 'files'} found
-              </Badge>
+              <Badge color="green">{intl.formatMessage(patternPreviewMessages.filesToAdd, { count: fileCount })}</Badge>
+              {leftOut && (
+                <Box variant="small" display="inline" padding={{ left: 'xs' }}>
+                  {intl.formatMessage(patternPreviewMessages.leftOutNote, { leftOut })}
+                </Box>
+              )}
             </Box>
+          )}
+
+          {fileCount === 0 && preview && matchingFiles.length > 0 && (
+            <Alert type="warning">{intl.formatMessage(patternPreviewMessages.noneToAdd, { count: matchingFiles.length, leftOut })}</Alert>
           )}
 
           {selectedBucket.value === 'input' && (
@@ -398,7 +462,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                   return;
                 }
                 if (file.size > MAX_ZIP_SIZE_BYTES) {
-                  setError(`Zip file size (${(file.size / 1024 / 1024 / 1024).toFixed(2)} GB) exceeds maximum limit of 1 GB`);
+                  setError(`Zip file size (${formatFixed(file.size / 1024 / 1024 / 1024, 2)} GB) exceeds maximum limit of 1 GB`);
                   setZipFile(null);
                   return;
                 }
@@ -410,7 +474,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
             {zipFile && (
               <Box margin={{ top: 'xs' }}>
                 <Badge color="blue">
-                  {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(1)} MB)
+                  {zipFile.name} ({formatFixed(zipFile.size / 1024 / 1024, 1)} MB)
                 </Badge>
               </Box>
             )}

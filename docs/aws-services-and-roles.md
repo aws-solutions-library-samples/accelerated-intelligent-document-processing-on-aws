@@ -130,9 +130,10 @@ Deploying this solution requires an IAM role/user with the following permissions
 > access. See also [Deployment → Administrator Access Requirements](./deployment.md#administrator-access-requirements).
 >
 > That role is a **deployment** role, not a least-privilege one. It still holds
-> `cloudformation:*` plus service wildcards on 25 services, because a
-> CloudFormation service role must be able to create, update, **and roll back**
-> every resource type in every optional feature of the templates. What contains
+> `cloudformation:*` plus a service wildcard for each service the templates
+> deploy, because a CloudFormation service role must be able to create, update,
+> **and roll back** every resource type in every optional feature of the
+> templates. What contains
 > it is not narrow actions but three constraints, which its own template now
 > requires: a mandatory `CreatedRolePermissionsBoundaryArn` (its `iam:CreateRole`
 > grant carries an `iam:PermissionsBoundary` condition, so it cannot mint a role
@@ -230,6 +231,26 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`
   * `logs:*`
 
+* **Routing Role** (the Review Routing step, which decides after policy rule validation whether a document is held in a review queue, continues or ends as rejected):
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query` on `HITLTable` and its indexes (only on a stack that has one): the document's review item, the queue definitions, the item of a document it places and its history. No delete
+  * `dynamodb:GetItem`, `dynamodb:UpdateItem` on the Tracking table (the review attributes of the document's row)
+  * SAM `DynamoDBReadPolicy` on the Configuration table, `s3:GetObject` on `config_revisions/*` in the Configuration bucket and `s3:ListBucket` limited to that prefix (the configuration at the revision the document is pinned to). No write
+  * `s3:GetObject` on the Output bucket (section results and the policy rule validation summary) and `s3:DeleteObject` limited to `*/review/*` in it (the status object of a review the run withdraws). No write to the Output bucket
+  * `s3:GetObject`, `s3:PutObject` on `compressed_documents/*` in the Working bucket (the document passed between states)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+  * `logs:CreateLogStream`, `logs:PutLogEvents`
+
+* **Apply Review Changes Role** (the first step of the run that follows a completed review, which writes the reviewer's corrections onto the section results):
+  * `dynamodb:GetItem`, `dynamodb:UpdateItem`, `dynamodb:Query` on `HITLTable` and its indexes (only on a stack that has one): the document's review item and the reviewer's drafts. It creates no item
+  * `dynamodb:GetItem`, `dynamodb:UpdateItem` on the Tracking table (the document's row after the review is applied)
+  * SAM `DynamoDBReadPolicy` on the Configuration table, `s3:GetObject` on `config_revisions/*` in the Configuration bucket and `s3:ListBucket` limited to that prefix. No write
+  * `s3:GetObject`, `s3:PutObject` on the Output bucket (the section results it rewrites and the drafts it reads). No delete
+  * `s3:GetObject`, `s3:PutObject` on `compressed_documents/*` in the Working bucket (the document passed between states)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+  * `logs:CreateLogStream`, `logs:PutLogEvents`
+
 * **BDA Integration Role** (BDA mode, `use_bda: true`):
   * `bedrock:InvokeDataAutomationAsync`
   * `bedrock:GetDataAutomationProject`, `bedrock:ListDataAutomationProjects`, `bedrock:GetBlueprint`, `bedrock:GetBlueprintRecommendation`
@@ -246,9 +267,9 @@ The solution creates various IAM roles to run different components of the system
   * `lambda:InvokeFunction` on the stack's resolver functions (by function-name prefix) and the main-stack resolver ARNs in its field → function map
   * `ssm:GetParameter` on the stack's field → function map parameter, read at cold start
 
-* **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
+* **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG` and `ManageApiGatewayAccountSettings` is `true`, the default):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
-  * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working.
+  * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working. With `ManageApiGatewayAccountSettings=false` neither the role nor the setting is created and the deployment uses the role the Region already has — see [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role).
 
 * **Configuration Resolver Role** (API resolver Lambda for configuration CRUD + Z3 RuleJSON generation):
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`
@@ -256,6 +277,7 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
+  * `dynamodb:GetItem`, `dynamodb:Query` on `HITLTable` (the table only, and only on a stack that has one), to check that each review queue a [routing rule](./review-routing.md) names is a production queue when a profile's routing rules are saved. No write: this role never creates, changes or seeds a queue
 
 * **Notifications Resolver Role** (API resolver Lambda that serves each user's own [Inbox](./web-ui.md#inbox)):
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
@@ -266,6 +288,7 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:GetItem`, `Query`, `UpdateItem` on the Tracking table; `Scan`, `GetItem`, `Query` on the Configuration table; `GetItem`, `Query` on the Users table
   * `sqs:SendMessage` on the DocumentQueue (finalize runs); S3 read/write of `review/` objects in the Output bucket and writes to the Working bucket
   * `cognito-idp:ListUsersInGroup`, `ListUsers`, `AdminListGroupsForUser` on the user pool; the customer-managed key; `cloudwatch:PutMetricData` in the stack's namespace
+  * `lambda:InvokeFunction` on the Reprocess Document Resolver function only (`sendBackReviewItem` asks it for the run), and `s3:GetObject` on `config_revisions/*` in the Configuration bucket with `s3:ListBucket` limited to that prefix (`testRoutingTable` reads the configuration a document is pinned to). The bulk review roles below do not have these two
 
 * **Bulk Review Resolver Role** (API resolver Lambda for `bulkSkipAllReviews`, `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` and `sendToReview`):
   * The Review Queues Resolver's grants (the skips go through the same review queue service)
@@ -285,6 +308,32 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
   * `cloudwatch:PutMetricData`, limited to the stack's namespace
 
+* **Reprocess Document Resolver Role** (API resolver Lambda for `reprocessDocument`, which runs a document again from the beginning or from a later step):
+  * SAM `DynamoDBCrudPolicy` on the Tracking table: the document's row is recreated for a run from the beginning and updated for a run from a later step
+  * `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `ConditionCheckItem`, `BatchWriteItem` on `HITLTable` and its indexes (only on a stack that has one), to withdraw the document's review, and the Inbox producer set on `NotificationsTable`
+  * SAM `DynamoDBReadPolicy` on the Configuration table (the config prefix mappings and each profile's processing mode). No write
+  * `s3:GetObject` on `config_revisions/*` in the Configuration bucket, and `s3:ListBucket` limited to that prefix: the configuration at the revision a document is pinned to, which decides the steps a run can start at
+  * `sqs:SendMessage` on the DocumentQueue
+  * SAM `S3ReadPolicy` on the Input bucket and `S3CrudPolicy` on the Output bucket (deleting the output a run produces again)
+  * `s3:PutObject` on `compressed_documents/*` in the Working bucket: the document a run from a later step queues. No read
+  * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's configuration scope)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+
+* **Process Changes Resolver Role** (API resolver Lambda for `processChanges`, which queues a run after saved edits, `getProcessChangesPlan`, which reads where that run would start and its steps and writes nothing, and `updateDocumentSections`, which saves a new page grouping):
+  * SAM `DynamoDBCrudPolicy` on the Tracking table (the document's row)
+  * `dynamodb:GetItem`, `dynamodb:DeleteItem` on `HITLTable` (the table only, and only on a stack that has one): the document's review item, to check that the caller holds it before a page grouping is saved during a review, and the reviewer's drafts of the sections that grouping removes. It creates and changes no item
+  * `dynamodb:GetItem`, `dynamodb:Scan` on the Configuration table, `s3:GetObject` on `config_revisions/*` in the Configuration bucket and `s3:ListBucket` limited to that prefix: the processing mode of the configuration a document is pinned to. No write
+  * `sqs:SendMessage` on the DocumentQueue
+  * SAM `S3CrudPolicy` on the Output and Working buckets
+  * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's test-set and configuration scope)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
+* **Delete Document Resolver Role** (API resolver Lambda for deleting documents from the web UI):
+  * SAM `S3CrudPolicy` on the Input and Output buckets
+  * `s3:ListBucketVersions` on the Input and Output buckets and `s3:DeleteObjectVersion` on their objects: both buckets are versioned, and a delete removes every version and delete marker of the document's keys. `S3CrudPolicy` grants only the unversioned forms
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
 * **Inbox producers**. A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
   * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
   * read access to the Configuration table (for retention and the per-user cap)
@@ -298,7 +347,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **API Dispatcher, Document Versions, Delete Document, Abort Workflow, Copy-to-Baseline and Test Results resolver roles**, scope additions: `dynamodb:Query` and `dynamodb:GetItem` on the UsersTable and its indexes, to resolve the caller's configuration scope before acting on one document or test run.
 
-* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser`, `listUsers` and `setUserTenant`):
+* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser`, `listUsers`, `setUserTenant` and `selectActiveTenant`, with which a user chooses their active tenant when [`TenantSelection`](./multi-tenancy.md#letting-a-user-choose-among-their-tenants) is `UserSelect`):
   * `dynamodb` CRUD on the UsersTable
   * `dynamodb:GetItem` on the ConfigurationTable, restricted by a `dynamodb:LeadingKeys` condition to the single key `TenantIndex#__index` (reads the [tenant declarations](./multi-tenancy.md) so that a user's configuration scope cannot be set across tenants)
   * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `ListUsers`, `ListUsersInGroup` on the stack's user pool
@@ -345,6 +394,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **Workflow Tracking Role**:
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
+  * `s3:ListBucketVersions` on the Input and Output buckets, and `s3:DeleteObjectVersion` on their objects: when a redacted copy supersedes an original, every version of the original's upload and of its output objects is deleted
   * `cloudwatch:PutMetricData`
   * `logs:*`
   
@@ -364,7 +414,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **Agent Roles** (the functions that run the analytics agent: `AgentChatProcessorFunction`, `ChatStreamProcessorFunction`, `AgentProcessorFunction`, and `AgentCoreMCPHandlerFunction` for the MCP `search` tool):
   * `bedrock-agentcore:*CodeInterpreter*` session actions on the AWS-managed interpreter only (`arn:<partition>:bedrock-agentcore:*:aws:code-interpreter/*`)
-  * `lambda:InvokeFunction` on the document lookup function (`LookupFunction`) only
+  * `lambda:InvokeFunction` on the document lookup function (`LookupFunction`) only. `AgentCoreMCPHandlerFunction` may also invoke the reprocess resolver (`ReprocessDocumentResolverFunction`), which is what its `reprocess` tool asks to process documents again: the resolver checks the caller the tool acts for, clears the outputs the run produces again and queues the documents under its own role. The MCP handler holds no `s3:DeleteObject`
   * On the reporting bucket, the three chat and agent processors hold read (`S3ReadPolicy`) plus `s3:PutObject` under `athena-results/` (where Athena writes query results with the caller's credentials); `ChatStreamProcessorFunction` also reads the output bucket and writes only `<document key>/summary/fulltext.txt` there, for Chat with Document
   * Asserted, with the S3 object access each function declares, by `scripts/tests/test_analytics_role_grants.py`
 
@@ -405,6 +455,11 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` (scoped to `metering/*` under the reporting bucket) for the copy-then-delete relocation
   * KMS on the stack CMK
   * See [Reporting SQL Layer](reporting-sql-layer.md) §2.3 for the migration's purpose (backwards-compat upgrade to the `hour`-partitioned metering layout)
+
+* **Customer Managed KMS Key Check Role** (`CustomerManagedKmsKeyCheckFunction`, the `Custom::CustomerManagedKmsKeyCheck` handler that keeps [`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md) a creation-time choice):
+  * `cloudformation:DescribeStacks` on the stack's own stack ARN only, to tell a new stack from an existing one being updated and an update from a rollback
+  * `kms:DescribeKey` on the supplied key's ARN only, and only when a key is supplied
+  * No data-plane access and no other KMS action
 
 * **Control-Plane Lambda cost-telemetry (in-band, all control-plane Lambdas that hit Athena or Bedrock):**
   * `cloudwatch:PutMetricData` scoped to namespace `IDPControlPlane` (already granted via the existing app-metrics grant)
@@ -477,7 +532,7 @@ When deploying this solution, consider the following security best practices:
 
 1. **Encryption**:
    * Enable SSE-KMS encryption for all S3 buckets
-   * Use customer-managed CMKs for sensitive data
+   * Use customer-managed CMKs for sensitive data; to use a centrally managed key of your own rather than the one the stack creates, see [Customer Managed KMS Key](./customer-managed-kms-key.md)
    * Enable encryption for DynamoDB tables
 
 2. **Network Security**:

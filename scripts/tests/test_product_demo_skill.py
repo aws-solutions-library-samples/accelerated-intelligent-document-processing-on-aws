@@ -11,7 +11,6 @@ the skill is findable from both assistants.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -19,8 +18,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL = REPO_ROOT / ".claude" / "skills" / "product-demo.md"
-CLINE_SKILL = REPO_ROOT / ".cline" / "skills" / "product-demo.md"
+SKILL = REPO_ROOT / ".claude" / "skills" / "product-demo" / "SKILL.md"
 STORYBOARDS = REPO_ROOT / "scripts" / "demo_storyboards.yaml"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from rbac_common import template_group_names  # noqa: E402
@@ -138,8 +136,8 @@ class TestTheSkill:
 
     def test_reuses_the_sibling_skills_rather_than_restating_them(self):
         text = _skill()
-        assert ".claude/skills/ux-test.md" in text
-        assert ".claude/skills/pr-review.md" in text
+        assert ".claude/skills/ux-test/SKILL.md" in text
+        assert ".claude/skills/pr-review/SKILL.md" in text
         assert "scripts/demo_storyboards.yaml" in text
 
     def test_states_the_privacy_rule_and_the_no_commit_rule(self):
@@ -159,11 +157,7 @@ class TestTheSkill:
 
     def test_is_registered_in_claude_md(self):
         claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-        assert ".claude/skills/product-demo.md" in claude_md
-
-    def test_cline_copy_is_a_symlink(self):
-        assert CLINE_SKILL.is_symlink(), f"{CLINE_SKILL} must be a symlink"
-        assert os.path.realpath(CLINE_SKILL).endswith(".claude/skills/product-demo.md")
+        assert ".claude/skills/product-demo/SKILL.md" in claude_md
 
     def test_scripts_readme_documents_demo_mode(self):
         readme = (REPO_ROOT / "scripts" / "README.md").read_text(encoding="utf-8")

@@ -12,7 +12,7 @@
 ## 1. Overview
 
 This guide details the security controls implemented in the GenAI IDP Accelerator
-to mitigate the 109 identified threats. Controls are organized by security domain
+to mitigate the 123 identified threats. Controls are organized by security domain
 and mapped to the specific threats they address.
 
 > **A control listed here is a control that exists in the shipped templates and
@@ -21,10 +21,10 @@ and mapped to the specific threats they address.
 > changes this guide has tracked that way, the dispatcher's default deny (**#928**),
 > uniform hook failure containment (**#919**) and the converged log-redaction
 > denylist (**#921**) have merged and are described below as controls; the
-> deployment service role's permissions boundary (**#927**) has merged while its
-> own `iam:*` is unchanged; and **#920** closed without giving the chat streaming
-> transport a verified per-user subject, so its group and ownership checks remain
-> absent (§3.1a).
+> deployment service role's permissions boundary and stack-name-prefix confinement
+> of its IAM writes (**#927**) have merged while its service wildcards stay broad by
+> design; and the chat streaming transport verifies the caller's ID token and the
+> session owner (§3.1a).
 
 ## 2. Authentication & Identity (AUTH)
 

@@ -88,6 +88,7 @@ class TestAggregatedResults:
                 document_text,
                 config,
                 rule_json=None,
+                policy_rule_id=None,
             ):
                 return {
                     "policy_type": policy_type,
@@ -97,7 +98,13 @@ class TestAggregatedResults:
                 }
 
             async def mock_llm(
-                rule, user_history, policy_type, config, extraction_results=None
+                rule,
+                user_history,
+                policy_type,
+                config,
+                extraction_results=None,
+                policy_rule_id=None,
+                z3_rule_id=None,
             ):
                 return {
                     "policy_type": policy_type,
@@ -146,6 +153,7 @@ class TestAggregatedResults:
                 document_text,
                 config,
                 rule_json=None,
+                policy_rule_id=None,
             ):
                 return {
                     "policy_type": policy_type,
@@ -155,7 +163,13 @@ class TestAggregatedResults:
                 }
 
             async def mock_llm(
-                rule, user_history, policy_type, config, extraction_results=None
+                rule,
+                user_history,
+                policy_type,
+                config,
+                extraction_results=None,
+                policy_rule_id=None,
+                z3_rule_id=None,
             ):
                 return {
                     "policy_type": policy_type,

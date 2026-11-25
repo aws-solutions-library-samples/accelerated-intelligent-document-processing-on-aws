@@ -83,6 +83,7 @@ client.stack.deploy(...)
 client.stack.delete(...)
 client.stack.get_resources()
 client.stack.exists()
+client.stack.get_parameters()
 client.stack.get_status()
 client.stack.check_in_progress()
 client.stack.monitor(...)
@@ -101,6 +102,8 @@ client.batch.get_results(...)
 client.batch.get_confidence(...)
 client.batch.list()
 client.batch.download_results(...)
+client.batch.list_versions(...)
+client.batch.download_version(...)
 client.batch.download_sources(...)
 client.batch.delete_documents(...)
 client.batch.stop_workflows()
@@ -113,7 +116,14 @@ client.document.list(...)
 client.document.download_results(...)
 client.document.download_source(...)
 client.document.reprocess(...)
+client.document.reprocess_options(...)
 client.document.delete(...)
+
+# Review queue operations (queue administration)
+client.review_queues.list(...)
+client.review_queues.create(...)
+client.review_queues.update(...)
+client.review_queues.delete(...)
 
 # Discovery operations (schema generation)
 client.discovery.run(...)
@@ -149,6 +159,8 @@ client.config.revisions(...)
 client.config.activate(...)
 client.config.delete(...)
 client.config.sync_bda(...)
+client.config.routing_to_dmn(...)
+client.config.routing_from_dmn(...)
 
 # Manifest operations
 client.manifest.generate(...)
@@ -157,8 +169,35 @@ client.manifest.validate(...)
 # Terraform-only operations (genai-idp-terraform migration)
 client.terraform.migrate_from_genai_idp_terraform.plan(...)
 
+# Fit check (sample documents against the stack)
+client.fit_check.run(...)
+
+# Tenancy operations (multi-tenant isolation)
+client.tenancy.list()
+client.tenancy.put(...)
+client.tenancy.audit(...)
+client.tenancy.verify(...)
+
+# MCP service credentials
+client.mcp.list_credentials()
+client.mcp.create_credential(...)
+client.mcp.rotate_credential(...)
+client.mcp.revoke_credential(...)
+
+# Publish operations (build artifacts and template variants)
+client.publish.build(...)
+client.publish.transform_template_headless(...)
+client.publish.transform_template_govcloud(...)
+client.publish.print_deployment_urls(...)
+
+# Agent Companion Chat
+client.chat.send_message(...)
+
 # Testing operations
 client.testing.load_test(...)
+client.testing.get_test_result(...)
+client.testing.compare_test_runs(...)
+client.testing.abort_test_run(...)
 ```
 
 ## Client Initialization
@@ -182,6 +221,18 @@ client.stack_name = "new-stack"
 |-----------|------|----------|-------------|
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
+
+With no `region`, the client uses the Region boto3's default session resolves:
+`AWS_DEFAULT_REGION`, then the `region` of the selected profile, or a Region given
+to `boto3.setup_default_session`. Operations that work out the Region before
+calling AWS (configuration operations that read a stack, discovery,
+`stack.deploy()` including its `from_code` build and the upload of a local
+`custom_config`, `publish.build()`, and `batch.reprocess()` and
+`document.reprocess()`) then fall back to `AWS_REGION`, which boto3 itself
+does not read, and pass the Region to every client they build. No operation falls
+back to a hard-coded Region; one that needs a Region and finds none says so.
+`idp_sdk.resolve_region(region)` returns that answer (explicit Region, then
+boto3's, then `AWS_REGION`, else `None`).
 
 ### Terraform deployments
 
@@ -223,6 +274,7 @@ migration.freeze(apply=True, wait=True)
 migration.fix_config(apply=True)
 migration.adopt_user_pool(apply=True)
 result = migration.apply(apply=True)
+migration.restore_config(apply=True)
 migration.detach("./old-idp", apply=True)
 migration.check_destroy("destroy-plan.json")
 ```
@@ -232,9 +284,10 @@ migration.check_destroy("destroy-plan.json")
 | `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
 | `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. `notes` says what was not checked. |
 | `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30, ignore_documents=())` | `TerraformMigrationStepResult` | `details` separates documents in flight from documents awaiting review. |
-| `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
+| `fix_config(terraform_dir=None, *, apply=False, restore=None, restore_after_apply=False)` | `TerraformMigrationStepResult` | `backup_path` names the backup. A `restore` is refused once the first apply has recorded a revision history for a backed-up profile, unless `restore_after_apply=True`, which discards that history; `restore_config` is the usual remedy. |
 | `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
 | `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=(), accept_changes=(), ignore_documents=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts; `details["review"]` lists the allowed in-place changes to adopted resources. `accept_changes` takes `"<address>:<rule>"` as a finding names it. |
+| `restore_config(terraform_dir=None, *, apply=False)` | `TerraformMigrationStepResult` | Restores, as a new revision, each kept profile whose published revision the first deploy cut over it. See [step 6a](./terraform-migration.md#6a-restore-the-configuration-profiles-the-first-deploy-replaced). |
 | `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
 | `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
 
@@ -260,8 +313,11 @@ Process a single document (upload and queue for processing).
 - `file_path` (str, required): Path to local file to upload
 - `document_id` (str, optional): Custom document ID (defaults to filename without extension)
 - `stack_name` (str, optional): Stack name override
+- `attributes` (dict, optional, keyword-only): [Document attributes](./document-attributes.md) stored with the document and returned with its results. Invalid attributes raise `IDPConfigurationError` before anything is uploaded
 
 **Returns:** `DocumentUploadResult` with `document_id`, `status`, and `timestamp`
+
+The file is uploaded under its own generated prefix, so `document_id` is `single-doc-<YYYYMMDD-HHMMSS>-<8 hex characters>/<filename>`.
 
 ```python
 result = client.document.process(
@@ -282,7 +338,11 @@ Get processing status for a single document.
 - `document_id` (str, required): Document identifier (S3 key format: batch-id/filename)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, and errors
+**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, errors, and `bucket` — the progress bucket the document is reported under: `completed`, `failed`, `awaiting_review` (held for human review), `running` or `queued`. For a document in a review queue, or one whose review has ended, `review` holds the review status (`in_review`, `complete` or `rejected`), the queue (`queue`, `queue_name`), the reviewer, and `routed_by`: the routing rule that placed the document (`ruleId`, `ruleLabel`, `tableId`). For a document a routing rule placed, `review` also holds what its reviewer is told:
+
+- `reason` (str or `None`): the routing rule's [reason](review-routing.md#the-reason) with the document's values filled in, or the generated reason when the routing rule has none. It can hold extracted values, so treat it as document content.
+- `policy_failures` (list of `ReviewPolicyFailure`): the first policy rules the document failed, whichever routing rule placed it. Each has `rule_id` (`<policy type>.<rule key>`), `policy`, `name`, `reason` (the explanation policy rule validation gave) and `pages`.
+- `policy_failure_count` (int): how many policy rules the document failed in all; `policy_failures` may list fewer. See [Failed policy rules](review-routing.md#failed-policy-rules).
 
 ```python
 status = client.document.get_status(document_id="batch-123/invoice.pdf")
@@ -290,6 +350,12 @@ status = client.document.get_status(document_id="batch-123/invoice.pdf")
 print(f"Status: {status.status.value}")
 print(f"Pages: {status.num_pages}")
 print(f"Duration: {status.duration_seconds}s")
+
+# A document held for review: why, and which policy rules it failed
+if status.review and status.review.reason:
+    print(f"Reason: {status.review.reason}")
+    for failure in status.review.policy_failures:
+        print(f"  {failure.rule_id}: {failure.reason} (pages {failure.pages})")
 ```
 
 ### document.download_results()
@@ -336,24 +402,72 @@ print(f"Downloaded to: {file_path}")
 
 ### document.reprocess()
 
-Reprocess a single document from a specific pipeline step.
+Process a document again, starting at a step. The stack does the work: the SDK
+invokes the stack's reprocess function, which checks that the document can start at
+the step, clears the outputs the run will produce again, and queues the run. The
+web UI, the CLI and the MCP tool reprocess the same way, so they offer the same
+steps and refuse the same requests. See
+[Reprocessing](./document-versions.md#reprocessing).
 
 **Parameters:**
 - `document_id` (str, required): Document identifier (S3 key)
-- `step` (str or RerunStep, required): Pipeline step to reprocess from (e.g., "classification", "extraction", RerunStep.EXTRACTION)
+- `step` (str or RerunStep, optional): The step the run starts at. Default `"beginning"`.
+  One of `beginning` (alias `ocr`), `classification`, `extraction`, `assessment`,
+  `policy_rule_validation`, `summarization`, `evaluation`, or `resume` for a failed
+  document (start at the first step whose output is missing). Classification,
+  extraction and assessment are steps of Pipeline mode
+- `skip` (sequence of str or RerunStep, optional): Optional steps the run leaves out:
+  `assessment`, `policy_rule_validation`, `summarization`, `evaluation`
+- `version` (str, optional): Configuration profile to run under. A profile other than
+  the document's own starts at the beginning only
+- `revision` (int, optional): Configuration revision to run under
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentReprocessResult` with `document_id`, `step`, and `queued` status
+**Returns:** `DocumentReprocessResult` with `document_id`, `step`, `queued`, and the
+server's answer for the document: `status` (`QUEUED`, `REFUSED` or `FAILED`),
+`start_step`, `reason` (a code such as `RUN_IN_PROGRESS`, `OUTPUT_MISSING`,
+`STEP_NOT_IN_MODE`, `NOT_FAILED`) and `message`. A document the server refuses is a
+result, not an exception.
 
 ```python
 from idp_sdk import RerunStep
 
 result = client.document.reprocess(
     document_id="batch-123/invoice.pdf",
-    step=RerunStep.EXTRACTION
+    step=RerunStep.EXTRACTION,
 )
 
-print(f"Queued: {result.queued}")
+if result.queued:
+    print(f"Queued from {result.start_step}")
+else:
+    print(f"Not queued: {result.reason}: {result.message}")
+```
+
+`rerun()` is a deprecated alias of `reprocess()`.
+
+**Permissions.** The caller's AWS credentials need `lambda:InvokeFunction` on the
+stack's reprocess resolver function, and `cloudformation:DescribeStackResources` and
+`cloudformation:DescribeStacks` on the stack, which is how the SDK finds the function
+(an output of the nested API resolver stack). A stack deployed from a release that
+has no such function is reported as such, naming the release.
+
+### document.reprocess_options()
+
+List the steps documents can be reprocessed from. Reads only.
+
+**Parameters:**
+- `document_ids` (str or sequence of str, required): One or more document identifiers
+- `version`, `revision` (optional): The configuration the reprocess would run under
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** a list of `ReprocessOption`, one per document: `document_id`, `mode`
+(`pipeline` or `bda`), `default_step`, and `steps`, each with `id`, `available`,
+`skippable` and, when it is not available, the `reason` code.
+
+```python
+for option in client.document.reprocess_options(["batch-123/invoice.pdf"]):
+    for step in option.steps:
+        print(step.id, "available" if step.available else f"no: {step.reason}")
 ```
 
 ### document.delete()
@@ -452,13 +566,14 @@ Process multiple documents through the IDP pipeline.
 - `s3_uri` (str, optional): S3 URI (s3://bucket/prefix/)
 - `test_set` (str, optional): Test set identifier
 - `batch_id` (str, optional): Custom batch ID
-- `batch_prefix` (str, optional): Batch ID prefix (default: "sdk-batch")
+- `batch_prefix` (str, optional): Batch ID prefix (default: "sdk-batch"). When `batch_id` is omitted the ID is generated as `<prefix>-<YYYYMMDD-HHMMSS>-<8 hex characters>` (UTC time, then a random suffix), so two batches with the same prefix started in the same second do not share an ID or an S3 prefix. `idp_sdk.generate_timestamped_id(prefix)` produces the same shape.
 - `file_pattern` (str, optional): File pattern for filtering (default: "*.pdf")
 - `recursive` (bool, optional): Recursively process subdirectories (default: True)
 - `number_of_files` (int, optional): Limit number of files to process
 - `config_path` (str, optional): Path to custom configuration file
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to use for processing
 - `context` (str, optional): Context for test set processing
+- `attributes` (dict, optional, keyword-only): [Document attributes](./document-attributes.md) for every document in the batch; a manifest row's own `attributes` override them per key. Refused with `test_set`
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `BatchProcessResult` with `batch_id`, `document_ids`, `queued`, `uploaded`, `failed`, `baselines_uploaded`, `source`, `output_prefix`, and `timestamp`
@@ -496,10 +611,11 @@ Get processing status for all documents in a batch.
 - `batch_id` (str, required): Batch identifier
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `success_rate`, and `all_complete`
+**Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `awaiting_review`, `success_rate`, and `all_complete`
 
 ⚠️ **`all_complete` is the only correct thing to poll on.** It is
-`completed + failed == total`, and it is what accounts for a document that has
+`completed + failed + awaiting_review == total` — true once no document is
+queued or running — and it is what accounts for a document that has
 been accepted but has no tracking row yet — the row is written asynchronously by
 the queue sender, so for the first 60 seconds of a batch such a document is
 reported under `queued` rather than `failed`. Re-deriving completeness from the
@@ -510,12 +626,24 @@ fixed. Past that window a document with no row is reported as failed with
 `Document not found in tracking table`; `IDP_NOT_FOUND_GRACE_SECONDS` sets the
 window.
 
+**A document waiting for human review settles the batch without completing it.**
+With Review Routing on, a document that a routing rule holds for review (with the
+built-in routing rules, one that raises a confidence alert, for example) ends its
+first processing run as `HITL_IN_PROGRESS` and stays there until its review ends
+in the web UI's review queues (completed, rejected or sent back). `get_status` counts it in
+`awaiting_review` (bucket `awaiting_review`), not in `in_progress`, and
+`all_complete` treats it as settled, so a polling loop ends rather than waiting
+on a person. `all_complete` is therefore not "every document has an outcome":
+check `awaiting_review` before treating the batch's results as final, and poll
+again after the reviews to see each document's outcome. `success_rate` is over
+completed and failed documents only.
+
 ⚠️ **Read a document's progress bucket from `doc.bucket`, not from
 `doc.status`.** `NOT_FOUND` is the one status whose bucket is not a function of
 the status: inside the window it means "queued", past it "failed", and the
 status string is the same either way, so code that derives a bucket from the
 status counts an in-flight document as a failure. `bucket` is one of `queued`,
-`running`, `completed` or `failed`, and `get_status` sets it on every document
+`running`, `completed`, `failed` or `awaiting_review`, and `get_status` sets it on every document
 it returns. It is `Optional`, because `DocumentStatus` has other producers that
 record no bucket; fall back to `idp_sdk.classify_document_state(doc.status)`
 when it is `None`.
@@ -558,7 +686,7 @@ Get extracted metadata and fields for all documents in a batch, with pagination 
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list of per-document result dicts), and optional `next_token`
+**Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list of per-document result dicts), and optional `next_token`. A document that carries [document attributes](./document-attributes.md) has an `attributes` key in its result dict; the key is absent otherwise. `get_document_results()` returns the same per-document dict
 
 ```python
 result = client.batch.get_results(batch_id="batch-20250123-123456", limit=20)
@@ -588,6 +716,8 @@ Get confidence scores and quality metrics for all documents in a batch, with pag
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list with per-document confidence attributes), and optional `next_token`
+
+Each entry in `documents` carries `document_id`, `attributes` and `status`. `status` is the document's progress bucket read from the tracking table, the same one `batch.get_status()` reports it under: `COMPLETED`, `HITL_IN_PROGRESS`, `RUNNING`, `QUEUED` or `FAILED`. That holds also when no assessment file exists for the document yet, in which case `attributes` is empty; a document whose tracking record has not been written yet reads `QUEUED` until `NOT_FOUND_GRACE_SECONDS` (60 seconds by default, set by `IDP_NOT_FOUND_GRACE_SECONDS`) have passed since the batch was submitted, and `FAILED` after that. The status lookup does not raise when the tracking query fails: it reports the document as `QUEUED`. A row reads `ERROR` when reading the document's assessment data fails for any reason other than the file being absent.
 
 ```python
 result = client.batch.get_confidence(batch_id="batch-20250123-123456", limit=20)
@@ -644,6 +774,37 @@ result = client.batch.download_results(
 print(f"Downloaded {result.files_downloaded} files")
 ```
 
+### batch.list_versions()
+
+List the processing-run versions recorded for a document, newest first.
+
+**Parameters:**
+- `document_id` (str, required): The document's S3 object key (its tracking id)
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `list[dict]` — one run record per version, with `RunId`, `CompletionTime`, `ConfigVersion`, `FileCount`, `ManifestUri` and more. Raises `IDPResourceNotFoundError` if the stack's tracking table cannot be resolved.
+
+### batch.download_version()
+
+Download the exact output bytes of one document version. Each output object is fetched by the S3 `VersionId` pinned in that run's manifest, so the download reflects that run even if later runs have overwritten the objects.
+
+**Parameters:**
+- `document_id` (str, required): The document's S3 object key
+- `run_id` (str, required): Run identifier, from `list_versions()`
+- `output_dir` (str, required): Local directory to save results
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `BatchDownloadResult` with `files_downloaded`, `documents_downloaded` and `output_dir`
+
+```python
+versions = client.batch.list_versions(document_id="invoices/inv-001.pdf")
+client.batch.download_version(
+    document_id="invoices/inv-001.pdf",
+    run_id=versions[0]["RunId"],
+    output_dir="./inv-001-latest",
+)
+```
+
 ### batch.download_sources()
 
 Download original source files from InputBucket for all documents in a batch.
@@ -674,7 +835,7 @@ Permanently delete documents and their associated data from InputBucket, OutputB
   `batch-1/a.pdf` and **not** `batch-10/b.pdf`. Use `pattern` for substring or
   wildcard selection.
 - `pattern` (str, optional): Wildcard pattern to match document keys (e.g., `"batch-123/*.pdf"`, `"*invoice*"`)
-- `status_filter` (str, optional): Filter by document status (e.g., "FAILED", "COMPLETED")
+- `status_filter` (str, optional): Only select documents whose current status is exactly this value (e.g., "FAILED", "COMPLETED"). It must be one of `idp_common.models.DOCUMENT_STATUS_VALUES`, the same set `idp-cli delete-documents --status-filter` offers. A document still being processed carries the name of its current step, such as `OCR` or `EXTRACTING`; there is no `PROCESSING` status, and any value outside the set, including `PROCESSING`, raises `IDPConfigurationError` before anything is read
 - `stack_name` (str, optional): Stack name override
 - `dry_run` (bool, optional): If True, simulate deletion without actually deleting (default: False)
 - `continue_on_error` (bool, optional): Continue deleting if one document fails (default: True)
@@ -690,6 +851,11 @@ selector matched no documents — an empty batch, or a status filter nothing sat
 and nothing else. A throttled or rejected table scan, or a table that does not exist,
 reaches you as an exception naming the cause, so a retry is your decision to make rather
 than something the result hides.
+
+Documents are selected by their tracking record's key, so a record whose `ObjectKey`
+attribute is a number, null or missing is selected with the rest of its batch, and a
+warning is logged naming it, instead of the call raising. A document with several
+processing runs appears once in `results` and is counted once in `total_count`.
 
 ```python
 # Delete entire batch
@@ -723,17 +889,26 @@ print(f"Deleted: {result.deleted_count}/{result.total_count}")
 
 ### batch.reprocess()
 
-Reprocess existing documents from a specific pipeline step.
+Process existing documents again, starting at a step. As for
+[`document.reprocess()`](#documentreprocess), the stack does the work for each
+document, and the same permissions are needed.
 
 **Parameters:**
-- `step` (str or RerunStep, required): Pipeline step to reprocess from (e.g., "classification", "extraction", RerunStep.EXTRACTION)
+- `step` (str or RerunStep, optional): The step the runs start at (default `"beginning"`); the values are those of `document.reprocess()`
 - `document_ids` (list[str], optional): Specific document IDs to reprocess
 - `batch_id` (str, optional): Batch ID to reprocess all documents in batch
+- `skip` (sequence of str or RerunStep, optional): Optional steps the runs leave out
+- `version`, `revision` (optional): Configuration profile and revision to run under
 - `stack_name` (str, optional): Stack name override
 
 **Note:** Must specify either `document_ids` or `batch_id`
 
-**Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, and `step`
+**Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, `step`, and `results`: one `DocumentReprocessResult` per document, with its `status`, `start_step`, `reason` and `message`. A document that cannot be reprocessed does not stop the others.
+
+Each entry of `failed_documents` has an `object_key`, an `error`, a `status`
+(`REFUSED` or `FAILED`) and a `reason`. `error` is the stack's message for that
+document and `reason` its reason code (`RUN_IN_PROGRESS`, `OUTPUT_MISSING`,
+`MALWARE_GATE`, …), so each document that was not queued carries its own failure.
 
 ```python
 from idp_sdk import RerunStep
@@ -1002,6 +1177,42 @@ print(f"Deleted: {result['success']}")
 
 ---
 
+## Fit Check Operations
+
+### fit_check.run()
+
+Run a folder of sample documents through the stack and write `fit-report.json` and
+`fit-report.md`. The operation behind `idp-cli fit-check`; see
+[Fit Check](./fit-check.md) for what it uploads, the report fields and cleanup.
+
+**Parameters:**
+- `samples_dir` (str): Folder of sample documents
+- `stack_name` (str, optional): Stack name override
+- `description` (str, optional): Description of the documents, for Quick Start
+- `config_profile` (str, optional): Existing profile to use instead of generating a new one
+- `ground_truth_dir` (str, optional): Baseline folders, one per sample file name
+- `output_dir` (str, optional): Report folder (default `./fit-check-<timestamp>/`)
+- `cleanup` (bool): Delete the run's documents, baselines and generated profile when done
+- `max_documents` (int): Refuse to run when more files than this can be processed (default 50)
+- `timeout_seconds` (int): How long to wait for processing (default 3600)
+- `from_record` (str, optional): Rebuild the report from a `fit-run-record.json`, offline
+- `progress` (callable, optional): Receives one progress line at a time
+
+**Returns:** `FitCheckResult` with `report` (the `fit-report.json` content), the file
+paths, `config_profile`, `batch_id`, `guard` (the active profile's name and the
+before and after SHA-256 hashes) and `cleanup`.
+
+**Raises:** `IDPValidationError` when no sample can be processed or more than
+`max_documents` can; `IDPProcessingError` when no configuration could be generated;
+`IDPError` when the active profile or `Config#default` changed during the run.
+
+```python
+result = client.fit_check.run("./samples-to-check/", cleanup=True)
+print(result.report["summary"])
+```
+
+---
+
 ## Assessment Operations
 
 Operations for quality metrics and confidence scoring.
@@ -1205,6 +1416,8 @@ Delete an IDP CloudFormation stack.
 
 **Returns:** `StackDeletionResult` with `success`, `status`, `stack_name`, `stack_id`, `error`, and `cleanup_result`
 
+With `force_delete_all`, `cleanup_result` lists what the cleanup deleted (`dynamodb_deleted`, `logs_deleted`, `buckets_deleted`), its `errors`, and `kms_keys_retained`: the ids of the retained KMS keys, which it does not delete (see [The retained KMS key](./idp-cli.md#the-retained-kms-key)).
+
 ```python
 result = client.stack.delete(
     empty_buckets=True,
@@ -1217,11 +1430,13 @@ print(f"Status: {result.status}")
 
 ### stack.deploy_terraform() / stack.delete_terraform()
 
-Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
+Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments-1) for the behaviour.
 
-- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name).
+- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False, tags=None, terraform_state="local", module_version=None)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`, and `module_version` (for example `"0.6.15"`) deploys that version from the `idp-terraform-versions.json` index beside the pointer instead of the latest, checking the zip's sha256 against the index entry before anything is written (see [Pinning a version](./terraform.md#pinning-a-version)); `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name). A parameter not in `parameters` keeps the value the deployment has, read from its label stack (`NoEcho` ones from the directory's `idp-cli-parameters.json`), and one new in the module takes its default; the kept values and the new parameters' defaults are logged at `INFO`, and a warning naming each changed default at `WARNING` when no label stack can be read, on the `idp_sdk.operations.stack` logger.
+- `tags` (`deploy_terraform`) is a dict of tags for every taggable resource, as CloudFormation stack tags are: `main.tf` passes it to the module's `tags` variable, which the module merges into each `awscc` resource, and to the `aws` provider's `default_tags`. It replaces the deployment's tags; `None` keeps the tags the directory's `terraform.tfvars` holds from the previous deploy. `{}` stops passing tags: the `aws` resources lose them, but an `awscc` resource whose template sets no tags is then given `null`, which the provider may treat as keeping the tags it has, so do not rely on `{}` to remove them there. More than 10 tags, or tags for a module whose `idp-terraform.json` has no `tagsVariable`, raise `IDPConfigurationError`.
+- `terraform_state` (`deploy_terraform`) is `"local"` (the default; the state is `terraform.tfstate` in `terraform_dir`, as before the option existed) or `"s3"`: before `init` the SDK creates, or reuses, the S3 bucket `idp-tf-<stack_name>-<account>-<region>` (public access block, versioning, SSE-S3 default encryption, a policy denying non-TLS requests) and the DynamoDB lock table `idp-tf-lock-<stack_name>`, and writes `backend.tf` naming both with `encrypt = true`. Neither is deleted by `delete_terraform`. `IDPConfigurationError` is raised for a bucket of that name owned by another account, for `"s3"` on a directory that already holds a local state (moving it is not supported yet), for `"local"` on a directory whose `backend.tf` the SDK wrote, and for `"s3"` on a directory with a `backend.tf` the SDK did not write. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3).
 - `assume_role_arn` (both) is an IAM role the `aws` and `awscc` providers assume: `deploy_terraform` writes it into `main.tf`, and `delete_terraform` rewrites the provider blocks of an idp-cli `main.tf` with it before `init`, keeping the region the deploy recorded there and refusing a client in another region.
-- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`.
+- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`; an entry whose identifier is not a readable name (the API Gateway account setting, the KMS key) carries a `display_name`. Its `service_log_groups` lists the log groups Lambda, CodeBuild and Glue created for the destroyed resources, which the destroy leaves: each with `physical_id` (the group name), `created_for` (the state addresses) and `shared`, and, for Glue's shared group, the `log_streams` that are the deployment's.
 
 Both raise `IDPConfigurationError` when the binary is missing or the inputs are invalid, and `IDPStackError` when a Terraform command fails.
 
@@ -1254,6 +1469,15 @@ if client.stack.exists():
 else:
     print("Stack not found")
 ```
+
+### stack.get_parameters()
+
+Get the parameter values a CloudFormation stack was deployed with.
+
+**Parameters:**
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `dict[str, str]` — `{parameter name: value}`; empty if the stack cannot be read
 
 ### stack.get_status()
 
@@ -1421,8 +1645,8 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `bucket` (str, optional): S3 bucket used (region-suffixed)
 - `prefix` (str, optional): S3 prefix used
 - `version` (str, optional): Version string from the project's `VERSION` file
-- `terraform_module_url`, `terraform_module_sha256`, `terraform_pointer_url` (str, optional): The Terraform module zip's HTTPS URL, its SHA-256, and the latest-pointer URL (only when `terraform=True`)
-- `terraform_variant_modules` (dict): Variant name (`headless`, `govcloud`) to `{"moduleUrl", "sha256", "pointerUrl", "version"}`, for the variant modules published with `terraform=True`
+- `terraform_module_url`, `terraform_module_sha256`, `terraform_pointer_url`, `terraform_versions_index_url` (str, optional): The Terraform module zip's HTTPS URL, its SHA-256, the latest-pointer URL and the [versions index](./terraform.md#the-versions-index) URL (only when `terraform=True`)
+- `terraform_variant_modules` (dict): Variant name (`headless`, `govcloud`) to `{"moduleUrl", "sha256", "pointerUrl", "versionsIndexUrl", "version"}`, for the variant modules published with `terraform=True`
 - `error` (str, optional): Error message if the build failed
 
 **Raises:**
@@ -1503,6 +1727,25 @@ else:
     print("Error:", result.error)
 ```
 
+### publish.transform_template_govcloud()
+
+Transform an existing CloudFormation template into the **GovCloud** variant. Unlike the headless transform it keeps the full Web UI; it removes the `AWS::CloudFront::*` resources, which do not exist in GovCloud regions, and forces `WebUIHosting=APIGateway` so the UI is served through the REST API. The output is then linted offline with a region-aware `cfn-lint`, so a remaining resource type GovCloud does not support (`E3006`) fails the transform rather than the deploy; the lint is skipped if `cfn-lint` is not installed. See [GovCloud Deployment](./govcloud-deployment.md).
+
+**Parameters:**
+- `source_template` (str, required): Path to the source CloudFormation YAML template
+- `output_path` (str, optional): Path to write the transformed template. If omitted, appends `-govcloud` to the source filename.
+- `verbose` (bool, optional, keyword-only): If `True`, enable verbose logging. Default: `False`.
+- `lint_region` (str, optional, keyword-only): GovCloud region to lint against (default: `us-gov-west-1`); `None` skips the lint.
+
+**Returns:** `TemplateTransformResult` (same fields as `transform_template_headless()`)
+
+```python
+result = client.publish.transform_template_govcloud(
+    source_template="./.aws-sam/idp-main.yaml",
+    output_path="./.aws-sam/idp-govcloud.yaml",
+)
+```
+
 ### publish.print_deployment_urls()
 
 Print deployment URLs (S3 template URL + 1-click CloudFormation launch link) to stdout. If a headless template URL is provided, also prints the headless variant. Uses the correct console domain for the partition (`aws.amazon.com` vs `amazonaws-us-gov.com`).
@@ -1558,12 +1801,23 @@ For GovCloud, use `region="us-gov-west-1"` with either `govcloud=True` (full Web
 
 Operations for managing IDP configurations.
 
+The operations that read a stack (`download`, `upload`, `list`, `activate`,
+`delete` and the others that take a stack name) set environment variables in
+your process and leave them set: `CONFIGURATION_TABLE_NAME` and
+`CONFIGURATION_BUCKET` name the stack's configuration table and bucket, and
+`AWS_REGION` and `AWS_DEFAULT_REGION` both name the Region the stack was found
+in. The Region is set because a model setting a configuration leaves out
+resolves to that Region's inference profile (see
+[EU Region Model Support](eu-region-model-support.md)), and that lookup reads
+`AWS_REGION` first. If your process works with stacks in more than one Region,
+each operation sets the variables again for its own stack.
+
 ### config.create()
 
 Generate an IDP configuration template.
 
 **Parameters:**
-- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none. `"all"` is every section except `hitl`, `chat` and `rule_validation`. Uploaded, the template is merged over the stack's preset or the profile's current configuration, so every setting it writes is reset to its default there (`summarization` and `evaluation` switch back on where a preset turned them off; prompts left out keep their own values); the three are left out so the reset does not also switch human review, the chat companion or rule validation on or off. Name them to include them
+- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none. `"all"` is every section except `hitl`, `chat`, `rule_validation` and `routing`. Uploaded, the template is merged over the stack's preset or the profile's current configuration, so every setting it writes is reset to its default there (`summarization` and `evaluation` switch back on where a preset turned them off; prompts left out keep their own values); those are left out so the reset does not also switch human review, the chat companion or rule validation on or off, or replace a profile's review routing rules with the built-in table. Name them to include them
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
 - `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
@@ -1668,13 +1922,29 @@ Upload configuration to a deployed stack.
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, `error`, and `warnings`
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
 `None` when the stack has no revision history. A save that changed nothing cuts
 no new revision, so `revision` is then the one already current, which is still
 the right value to pin.
+
+`warnings` holds two kinds of non-fatal finding, each once, in this order:
+
+- The findings validation produced for the file, the same list `config.validate()`
+  returns in `ConfigValidationResult.warnings`. They are filled when validation
+  refuses the upload as well as when the upload succeeds, and are absent with
+  `validate=False`.
+- What the saved configuration will not do although the upload succeeded: for
+  example a routing rule that tests a policy rule result in a profile where policy
+  rule validation is off or has no policies. Every upload that is saved is checked,
+  not only one that changes the routing table, and with `validate=False` too. See
+  [Warnings](review-routing.md#warnings).
+
+The list is empty when there is nothing to say, and for a refusal that comes before
+validation runs (a file that does not load, or one marked `managed: true`), because
+nothing was checked. A warning never makes `success` false.
 
 ```python
 # Upload to the default profile
@@ -1686,6 +1956,8 @@ result = client.config.upload(
 
 if result.success:
     print("Configuration uploaded")
+for warning in result.warnings:
+    print(f"Warning: {warning}")
 
 # Upload to a named profile, creating it if it does not exist
 result = client.config.upload(
@@ -1861,6 +2133,30 @@ for arn in result.bda_orphaned_blueprint_arns:
     print(f"  ⚠ orphaned, run the cleanup to remove: {arn}")
 ```
 
+### config.bootstrap()
+
+Author a document class from a plain-language description and save it to a
+configuration profile: the stack-connected path of `idp-cli bootstrap`. It never
+activates the profile.
+
+**Parameters:**
+- `prompt` (str, required): Description of the document type
+- `stack_name` (str, optional): Stack name override
+- `class_name`, `field_hints`, `source_profile`, `target_profile`, `doc_count`,
+  `quality_threshold`, `augment`, `model_id`: as the `bootstrap` command's options
+- `generate_test_set` (bool): `False` skips the synthetic test set (default `True`)
+- `status_callback` (callable, optional): Receives `(percent, message)`
+
+**Returns:** `ConfigBootstrapResult` with `success`, `config_profile`, `class_schema`,
+`resolution_tier`, `catalog_match`, `test_set_id`, `docs_generated` and `error` (a
+non-fatal note when `success` is true).
+
+```python
+result = client.config.bootstrap(
+    "Invoices with vendor, number, date and total", target_profile="invoices-v1"
+)
+```
+
 ### config.delete()
 
 Delete a configuration profile, together with its revision history.
@@ -1989,6 +2285,23 @@ for arn in result.orphaned_blueprint_arns:
 ```
 
 ---
+
+### config.routing_to_dmn() and config.routing_from_dmn()
+
+Convert a configuration's [review routing](review-routing.md) table to DMN XML and
+back. Both are local: they read no stack and call no AWS service.
+
+- `routing_to_dmn(config, dmn_version="1.5")` returns the DMN XML as text. `config` is
+  a configuration dict, the path of a YAML or JSON configuration file, or a `routing`
+  section itself. `dmn_version` is `"1.5"` or `"1.3"`.
+- `routing_from_dmn(xml)` returns `{"routing": {...}}`, ready to merge into a
+  configuration or to write to a file and upload with `config.upload()`. The queues the
+  rules name are checked when the configuration is uploaded, not here.
+
+```python
+xml = client.config.routing_to_dmn("config.yaml")
+section = client.config.routing_from_dmn(xml)
+```
 
 ## Discovery Operations
 
@@ -2139,9 +2452,11 @@ Discover document classes from a collection of documents using embedding-based c
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
 - `progress_callback` (callable, optional): Callback function for pipeline progress updates
-- `region` (str, optional): AWS region
+- `region` (str, optional): AWS region. Overrides the client's for this call, for both the Bedrock calls and the stack the schemas are saved into
 
-**Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `config_version`, and `error`
+**Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `noise_document_keys`, `failed_embeddings`, `failed_embedding_keys`, `config_version`, and `error`
+
+`noise_documents` counts the documents clustering left in no class: they were embedded, but their cluster was smaller than the minimum of two and was dropped as noise. `noise_document_keys` lists their paths. Documents whose embedding failed were never clustered and are counted in `failed_embeddings` and listed in `failed_embedding_keys` instead. `noise_documents` keeps its name and type, so code that reads it keeps working and now gets the noise count. Up to this release it carried the embedding-failure count, so code that used it to detect embedding failures should read `failed_embeddings`.
 
 **DiscoveredClassResult fields:** `cluster_id`, `classification`, `json_schema`, `document_count`, `sample_doc_ids`, `error`
 
@@ -2241,6 +2556,35 @@ The settings these use (gateway, token URL, stack key, isolation mode) are read 
 the stack's credential manager function, so a credential made here is configured
 exactly as one made on the page.
 
+## Review Queue Operations
+
+Administration of the production [review queues](review-queues.md): the operations
+behind `idp-cli review-queues`. The SDK invokes the stack's review queues resolver
+function with the caller's AWS credentials, so they need `lambda:InvokeFunction` on
+that function, and `cloudformation:DescribeStackResources` and
+`cloudformation:DescribeStacks` to find it. Working a queue (claiming and completing
+reviews) is done in the web UI.
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `review_queues.list(limit=25, next_token=None)` | `ReviewQueuePage` | One page of queue definitions: `queues`, `count`, and `next_token` (`None` on the last page). |
+| `review_queues.create(definition)` | `ReviewQueueDefinition` | Create a queue. `definition` is a `ReviewQueueDefinition` or a dict; only `id` is required. |
+| `review_queues.update(definition, expected_version=None)` | `ReviewQueueDefinition` | Replace a queue's definition. A field left out is reset to its default, except `enabled` and `skip_reasons`. With `expected_version`, the update is refused when the queue was changed since it was read (`QUEUE_CHANGED`). |
+| `review_queues.delete(queue_id)` | `int` | Delete a queue; returns how many documents moved to the Default queue. Routing rules that name it are not changed: documents they send there go to the Default queue. |
+
+```python
+queue = client.review_queues.create(
+    {"id": "approvals", "name": "Approvals", "eligible_annotators": ["ana@example.com"]}
+)
+
+page = client.review_queues.list()
+for q in page.queues:
+    print(q.id, q.name, q.enabled)
+```
+
+A queue receives documents once a routing rule of a configuration profile names it;
+see [Review Routing](review-routing.md).
+
 ## Tenancy Operations
 
 Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
@@ -2268,6 +2612,25 @@ client.tenancy.put("acme", ["clients/acme/"], "acme-*", description="ACME Corp")
 report = client.tenancy.audit()
 for finding in report.findings:
     print(finding.kind, finding.subject, finding.detail)
+```
+
+## Chat Operations
+
+### chat.send_message()
+
+Send one message to the [Agent Companion Chat](./agent-companion-chat.md) — the operation behind `idp-cli chat`.
+
+**Parameters:**
+- `prompt` (str, required): Natural-language message
+- `session_id` (str, optional): Session ID for a multi-turn conversation; reuse the `session_id` of a previous response
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `ChatResponse` with `response` (the reply text), `session_id` and `agent_names`. Raises `IDPProcessingError` if the request fails.
+
+```python
+reply = client.chat.send_message("How many documents failed today?")
+follow_up = client.chat.send_message("Which classes?", session_id=reply.session_id)
+print(follow_up.response)
 ```
 
 ## Manifest Operations
@@ -2422,6 +2785,21 @@ else:
             print(f"  {test_run_id}: {value}")
 ```
 
+### testing.abort_test_run()
+
+Abort one or more Test Studio runs: stops their running document workflows and sets the runs' status to `ABORTED`. Only runs whose status is `QUEUED` or `RUNNING` can be aborted. The operation behind `idp-cli abort-test-run`.
+
+**Parameters:**
+- `test_run_ids` (list[str], required): Test run identifiers to abort
+- `stack_name` (str, optional): Stack name override
+
+**Returns:** `dict` with `success` (whether any run was aborted), `message`, `aborted_count`, `failed_count` and `errors`. Raises `IDPProcessingError` if the operation fails.
+
+```python
+result = client.testing.abort_test_run(["Fake-W2-Tax-Forms-20260410-173735"])
+print(result["message"])
+```
+
 ---
 
 ## Response Models
@@ -2443,6 +2821,8 @@ from idp_sdk import (
     DocumentMetadata,
     DocumentInfo,
     DocumentListResult,
+    ReviewInfo,
+    ReviewPolicyFailure,
 
     # Batch models
     BatchResult,
@@ -2562,7 +2942,7 @@ except Exception as e:
 ## Complete Example
 
 ```python
-from idp_sdk import IDPClient, RerunStep
+from idp_sdk import DocumentBucket, IDPClient, RerunStep
 import time
 
 # Initialize client
@@ -2572,12 +2952,17 @@ client = IDPClient(stack_name="my-idp-stack", region="us-west-2")
 doc_result = client.document.process(file_path="./invoice.pdf")
 doc_id = doc_result.document_id
 
-# Monitor document processing
+# Monitor document processing. Stop on an outcome, or when the document is
+# held for human review (nothing more happens until a reviewer works it).
 while True:
     status = client.document.get_status(document_id=doc_id)
     print(f"Status: {status.status.value}")
 
-    if status.status.value in ["COMPLETED", "FAILED"]:
+    if status.bucket in (
+        DocumentBucket.COMPLETED,
+        DocumentBucket.FAILED,
+        DocumentBucket.AWAITING_REVIEW,
+    ):
         break
 
     time.sleep(5)

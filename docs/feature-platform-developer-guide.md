@@ -290,6 +290,50 @@ whenever a paid extension is served from `auto`, `advisory` or `simulated`. Note
 the customer's CloudWatch, not the seller's — so it helps an admin notice a
 misconfigured or unsubscribed stack. It is not revenue protection.
 
+### Optional: follow the web UI's language
+
+The host passes the web UI's language as `FeatureContext.locale`, a BCP 47 tag:
+`en`, `fr-CA` once French is enabled on the stack, or `en-XA` on test builds
+with the pseudo-locale. It is always one of the languages the stack offers,
+resolved by the host from the user's choice and the browser, never read from
+the URL. When the user switches language, the host re-renders your component
+with the new value; it does not remount it, so your component keeps its state.
+
+An extension that ignores `locale` keeps working and stays English. The
+built-in labels of Cloudscape components inside it (a table's pagination
+labels, a modal's close button) follow the host language anyway, because
+extensions share the host's Cloudscape. Your extension's `displayName` and
+`description` come from `feature.yaml` and stay English.
+
+To translate your own text:
+
+- Ship the translations inside `ui-bundle.js`: the template's ui-deployer
+  copies only that file, and `idp-feature-cli build` rejects a bundle over
+  500 KiB.
+- Treat a tag you have no translation for as English; the host can add
+  languages.
+- Default to `en` when `locale` is absent: hosts older than this field do not
+  pass it.
+- For dates and numbers, pass the tag to `Intl`. The host formats `en` and
+  `en-XA` with the browser's default locale; pass `undefined` for those two to
+  match it.
+
+```tsx
+const messages: Record<string, { title: string; refresh: string }> = {
+  en: { title: 'My Feature', refresh: 'Refresh' },
+  'fr-CA': { title: 'Ma fonctionnalité', refresh: 'Actualiser' },
+};
+
+const App: React.FC<FeatureContext> = ({ locale = 'en' }) => {
+  const text = messages[locale] ?? messages.en;
+  return <Header variant="h1">{text.title}</Header>;
+};
+```
+
+A library such as react-intl works too, if you bundle it; the host's message
+catalogs are not available to extensions. Treat `locale` like any other prop:
+never build HTML or a URL from it.
+
 ### Optional: pipeline hooks
 
 A feature can run a Lambda at **extension points** in the document-processing
@@ -461,9 +505,9 @@ processed as though it had succeeded, with no signal
 ([#919](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/919)).
 
 ⚠️ **Three of the seven hook points do not exist in BDA mode, so a `fail` policy
-there has nothing to gate.** Walking the ASL graph from `StartAt` down each side
-of the `RouteByProcessingMode` Choice: `PreprocessingHook` precedes the Choice, so
-it runs in both modes; the BDA branch (`BDA_CheckExistingData`) reaches only
+there has nothing to gate.** Walking the ASL graph from `PreprocessingHook` down each
+side of the `CheckProcessingMode` Choice: `PreprocessingHook` precedes the Choice, so
+it runs in both modes; the BDA branch (`CheckExistingBdaData`) reaches only
 `PostRuleValidationHook`, `PostSummarizationHook` and `PostprocessingHook`; the
 Pipeline branch (`OCRStep`) additionally reaches `PostOcrHook`,
 `PostClassificationHook` and — inside the `ProcessSections` Map —
@@ -515,10 +559,41 @@ succeeded. Two more things to know about this point:
 - It runs **inside** the execution, so a slow hook extends per-document latency
   and holds a concurrency slot. For fire-and-forget delivery use the
   [EventBridge post-processing hook](post-processing-lambda-hook.md) instead.
-- It fires **while HITL review is pending** (and again after review completes),
-  so branch on the document's `hitl_status` / `hitl_triggered` /
+- A document held in a **review queue** does not reach it while it waits: the
+  hook fires on the run after the review. A document reviewed outside a review
+  queue (the Default review queue is disabled) is not held, so the hook fires
+  **while that review is pending** and again after it completes; for those,
+  branch on the document's `hitl_status` / `hitl_triggered` /
   `hitl_sections_pending` fields — remembering they are omitted when falsy, so
-  absent means "no HITL" — and make the hook idempotent.
+  absent means "no HITL". Make the hook idempotent either way. See
+  [When hooks fire](feature-platform.md#when-hooks-fire).
+
+**A hook does not fire on every run.** A run starts at the step its run plan names
+(a reprocess from a later step, the run after a completed review) and fires the
+hooks of the steps it does. The payload's `runKind`, `startStep` and `reviewed`
+fields say which run the hook is in. In particular:
+
+- `postRuleValidation` fires before a document is held for review and again after
+  the review is completed. A hook that should act on the values a reviewer
+  confirmed checks `reviewed`, not `runKind`: the run after a completed review
+  carries `runKind` `review_completed` in both cases below, and `reviewed` tells
+  them apart. The
+  [Health Insurance Review sample](../feature-platform/sample-health-insurance-review/)
+  (0.2.3) stores both fields with each result for that reason.
+  - The run applies the reviewer's corrections to the existing values
+    (`startStep` `apply_review_changes`): `reviewed` is `true`.
+  - The run extracts sections again first, because the reviewer added a section or
+    changed a section's pages, or a section has no extracted values (`startStep`
+    `extraction`, Pipeline mode): `reviewed` is `false`. The newly extracted values
+    are not confirmed by a reviewer, although the corrections saved for those
+    sections are set on them before policy rule validation runs. The routing rules
+    can then hold the document again.
+- `preprocessing`, `postOcr` and `postClassification` do not fire on the run after
+  a completed review. `postExtraction` fires on it only for a section it extracts
+  again.
+- A document that is sent back is processed again from classification (from the
+  beginning in BDA mode), with `runKind` `sent_back` and `reviewed` `false`, and
+  fires the hooks of every step that run does.
 
 Because each of these points holds a *single* hook, only one feature can own it:
 registering over another feature's hook is refused rather than silently
@@ -867,4 +942,5 @@ the API can never answer this".
 - [`feature-platform/sample-feature/`](../feature-platform/sample-feature/) — minimal reference OSS feature (`docs-by-status`): UI + API + registration only
 - [`feature-platform/sample-health-insurance-review/`](../feature-platform/sample-health-insurance-review/) — advanced reference OSS feature (`sample-health-insurance-review`): adds a config preset, a `postRuleValidation` pipeline hook, and host-GraphQL calls from the UI ([docs](extensions/sample-health-insurance-review.md))
 - [`feature-platform/confbench-testset/`](../feature-platform/confbench-testset/) — reference for a **long-running background job** owned by an extension (`confbench-testset`): a Step Functions `Map` ingest that streams a 32.71 GB dataset into the host's Test Set bucket, a shared-catalog Lambda layer (with the SAM `BuildMethod` gotcha documented), and an Admin-gated feature API. Useful pattern when work is too big or too slow to sit inside a CloudFormation custom resource ([docs](extensions/confbench-testset.md))
+- [`feature-platform/decision-model-decider/`](../feature-platform/decision-model-decider/) — reference for an extension that **builds a Lambda container image in the installing account with CodeBuild** (`decision-model-decider`): an ECR repository, a CodeBuild project fetching pinned upstream commits, and an image-build custom resource that starts a build only when ECR lacks the tag; it also ships a config preset (`config-preset/`), installed inactive with the deployed function's alias ARN filled in ([docs](extensions/decision-model-decider.md))
 - Manifest schema: `lib/idp_feature_sdk/idp_feature_sdk/schemas/feature-manifest.schema.json` (or `idp-feature-cli show-schema`)

@@ -10,6 +10,7 @@ for conversational, multi-turn interactions.
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -35,6 +36,19 @@ class ResourceAccessDenied(PermissionError):
     """
 
 
+_PANEL_CONTEXT_PATTERN = re.compile(r"<panel-context>.*?</panel-context>", re.DOTALL)
+
+
+def _visible_chat_text(prompt):
+    """``prompt`` without the Quick Start panel's agent-only ``<panel-context>`` blocks.
+
+    The same rule as ``idp_common.agents.common.chat_text.visible_chat_text``, kept
+    here because this Lambda's package does not carry ``idp_common``; a test holds the
+    two patterns equal.
+    """
+    return _PANEL_CONTEXT_PATTERN.sub("", prompt or "").strip()
+
+
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -56,6 +70,16 @@ DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 # AWS::Cognito::UserPoolGroup resources in template.yaml), so the excluded set is
 # Reviewer AND Annotator.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+_QUICK_START_ROLES = ("Admin",)
+
+
+def _quick_start_enabled():
+    """Whether this deployment offers Quick Start: ``EnableQuickStartWidget``.
+
+    Same reading as ``_quick_start_enabled`` in the agent chat processor, which
+    applies it again where the turn runs. Unset reads as the parameter's default.
+    """
+    return os.environ.get("QUICK_START_ENABLED", "true").strip().lower() != "false"
 
 
 def _unscoped_is_denied():
@@ -194,6 +218,10 @@ def handler(event, context):
         f"Received agent chat event: {json.dumps(sanitize_event_for_logging(event))}"
     )
 
+    is_quick_start = (event.get("arguments") or {}).get("method") == "quick_start"
+    if is_quick_start and not _quick_start_enabled():
+        logger.warning("Rejecting Quick Start: it is turned off for this deployment")
+        raise PermissionError("Quick Start is turned off for this deployment")
     # Defense-in-depth RBAC: Reviewer and Annotator are both excluded from Agent
     # Chat. Raise so the dispatcher maps it to 403/Unauthorized (not an opaque 500
     # or a 200 error dict). Backend publish-path invocations have no identity and
@@ -220,6 +248,13 @@ def handler(event, context):
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )
+    if (
+        event.get("identity") is not None
+        and is_quick_start
+        and not _caller_in_groups(event, _QUICK_START_ROLES)
+    ):
+        logger.warning("Rejecting Quick Start: caller is not an Admin")
+        raise PermissionError("Unauthorized: Quick Start requires the Admin group")
 
     try:
         # Extract arguments from the event
@@ -522,12 +557,13 @@ def create_session_metadata(
     """Create a new session metadata record."""
     try:
         # Generate session title from the first message
-        title = prompt.strip()
+        visible = _visible_chat_text(prompt)
+        title = visible or "Quick Start"
         if len(title) > 50:
             title = title[:47] + "..."
 
         # Create last message preview
-        last_message = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        last_message = visible[:100] + "..." if len(visible) > 100 else visible
 
         session_record = {
             "userId": user_id,
@@ -551,17 +587,20 @@ def update_session_metadata(sessions_table, user_id, session_id, prompt, timesta
     """Update existing session metadata record."""
     try:
         # Create last message preview
-        last_message = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        visible = _visible_chat_text(prompt)
+        expression = "SET updatedAt = :timestamp, messageCount = messageCount + :inc"
+        values = {":timestamp": timestamp, ":inc": 1}
+        if visible:
+            expression += ", lastMessage = :last_message"
+            values[":last_message"] = (
+                visible[:100] + "..." if len(visible) > 100 else visible
+            )
 
         # Update the session record
         sessions_table.update_item(
             Key={"userId": user_id, "sessionId": session_id},
-            UpdateExpression="SET updatedAt = :timestamp, messageCount = messageCount + :inc, lastMessage = :last_message",
-            ExpressionAttributeValues={
-                ":timestamp": timestamp,
-                ":inc": 1,
-                ":last_message": last_message,
-            },
+            UpdateExpression=expression,
+            ExpressionAttributeValues=values,
         )
 
         logger.info(f"Updated session metadata for {session_id}")

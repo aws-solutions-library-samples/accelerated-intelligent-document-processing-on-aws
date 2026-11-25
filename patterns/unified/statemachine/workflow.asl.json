@@ -1,17 +1,170 @@
 {
-  "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag. TimeoutSeconds (WorkflowExecutionTimeoutSeconds) bounds a stalled execution, which otherwise runs for up to one year while holding a concurrency slot (#757).",
-  "StartAt": "PreprocessingHook",
+  "Comment": "Unified IDP Document Processing Workflow. CheckRunPlan starts the run at the step its run plan names (a run without a plan runs every step), and CheckProcessingMode routes between BDA and the step-by-step pipeline on the use_bda flag. Both modes share policy rule validation, review routing (RoutingStep), summarization and evaluation. TimeoutSeconds (WorkflowExecutionTimeoutSeconds) bounds a stalled execution, which otherwise runs for up to one year while holding a concurrency slot (#757).",
+  "StartAt": "CheckRunPlan",
   "TimeoutSeconds": ${WorkflowExecutionTimeoutSeconds},
   "States": {
+    "CheckRunPlan": {
+      "Type": "Choice",
+      "Comment": "Starts the run at the step its run plan names. The queue processor writes the plan into the execution input as runPlan (idp_common.run_plan), and startAt is one of its entry ids. A run without a plan, and a plan that starts at the beginning, take the Default and run every step. A run that follows a completed review starts at ApplyReviewChangesStep, or at extraction when some sections are extracted again first; that run applies the review after the assembly (CheckReviewToApply). Each rule tests that the path is present before reading it, because an execution input without runPlan is valid. No rule targets a hook state, and PreprocessingHook is reached only through the Default: a run that starts later works on a document that hook has already seen.",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "pipeline.classification"
+            }
+          ],
+          "Next": "StartAtClassification"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "pipeline.extraction"
+            }
+          ],
+          "Next": "StartAtExtraction"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "pipeline.extraction_sections"
+            }
+          ],
+          "Next": "StartAtExtractionForSections"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "pipeline.assessment"
+            }
+          ],
+          "Next": "StartAtAssessment"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "apply_review_changes"
+            }
+          ],
+          "Next": "ApplyReviewChangesStep"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "policy_rule_validation"
+            }
+          ],
+          "Next": "StartAtPolicyRuleValidation"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.startAt",
+              "StringEquals": "rejected"
+            }
+          ],
+          "Next": "SetRejectedStatus"
+        }
+      ],
+      "Default": "PreprocessingHook"
+    },
+    "StartAtClassification": {
+      "Type": "Pass",
+      "Comment": "Entry for a run that starts at classification (Pipeline mode). $ is the execution input here. The queued document keeps its pages; this puts it where ClassificationStep reads it.",
+      "Parameters": {
+        "document.$": "$.document"
+      },
+      "ResultPath": "$.OCRResult",
+      "Next": "ClassificationStep"
+    },
+    "StartAtExtraction": {
+      "Type": "Pass",
+      "Comment": "Entry for a run that starts at extraction for every section (Pipeline mode). Builds what ProcessSections and the assembly step read: the queued document as the classification result, and the section ids to process, which are the sections list of the document the queue processor stored.",
+      "Parameters": {
+        "document.$": "$.document",
+        "ClassificationResult": {
+          "document.$": "$.document"
+        },
+        "SectionItems": {
+          "ids.$": "$.document.sections",
+          "start": "extraction"
+        }
+      },
+      "Next": "ProcessSections"
+    },
+    "StartAtExtractionForSections": {
+      "Type": "Pass",
+      "Comment": "Entry for a run that extracts only the sections its plan names (Pipeline mode). As StartAtExtraction, with the section ids taken from the plan. Reached only through a CheckRunPlan rule, so the plan path exists. The other sections stay as they are: the assembly step merges the results over the document's sections by id.",
+      "Parameters": {
+        "document.$": "$.document",
+        "ClassificationResult": {
+          "document.$": "$.document"
+        },
+        "SectionItems": {
+          "ids.$": "$$.Execution.Input.runPlan.sections",
+          "start": "extraction"
+        }
+      },
+      "Next": "ProcessSections"
+    },
+    "StartAtAssessment": {
+      "Type": "Pass",
+      "Comment": "Entry for a run that starts at assessment (Pipeline mode). As StartAtExtraction, with every section starting at AssessmentStep (CheckSectionStart), which assesses its stored extraction result again.",
+      "Parameters": {
+        "document.$": "$.document",
+        "ClassificationResult": {
+          "document.$": "$.document"
+        },
+        "SectionItems": {
+          "ids.$": "$.document.sections",
+          "start": "assessment"
+        }
+      },
+      "Next": "ProcessSections"
+    },
     "PreprocessingHook": {
       "Type": "Task",
-      "Comment": "Standalone preprocessing extension point \u2014 runs FIRST, before the BDA/pipeline routing, so it fires in both processing modes and even when OCR is disabled. Dispatches to the single generic hook (arn + args) in the config's preprocessing section (e.g. PII anonymization). A hook may return halt=true to short-circuit this execution (e.g. when it has spawned a redacted copy that will be processed as a separate document). NOTE: a dispatcher/hook error is NOT caught to normal routing \u2014 a preprocessing hook that fails (e.g. onError:fail on a redaction hook) must STOP the execution, never fall through to processing the un-preprocessed original (which for PII redaction would leak the original). It fails the execution instead.",
+      "Comment": "Standalone preprocessing extension point \u2014 the first step of a run from the beginning, before the BDA/pipeline choice, so it fires in both processing modes and even when OCR is disabled. A run whose plan starts at a later step (CheckRunPlan) does not pass it. Dispatches to the single generic hook (arn + args) in the config's preprocessing section (e.g. PII anonymization). A hook may return halt=true to short-circuit this execution (e.g. when it has spawned a redacted copy that will be processed as a separate document). NOTE: a dispatcher/hook error is NOT caught to normal routing \u2014 a preprocessing hook that fails (e.g. onError:fail on a redaction hook) must STOP the execution, never fall through to processing the un-preprocessed original (which for PII redaction would leak the original). It fails the execution instead.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
         "Payload": {
           "hookPoint": "preprocessing",
           "executionArn.$": "$$.Execution.Id",
+          "executionInput.$": "$$.Execution.Input",
           "document.$": "$.document"
         }
       },
@@ -50,7 +203,7 @@
     },
     "ApplyPreprocessingHookDocument": {
       "Type": "Pass",
-      "Comment": "Copy the (possibly hook-modified) document the dispatcher returned into $.document, which the routing + OCR steps read. The dispatcher ALWAYS returns a document \u2014 the inbound one verbatim when no hook modified it \u2014 so this is a no-op copy in the common case. A dispatcher/hook error skips this state via the Catch above, leaving the pre-hook $.document intact.",
+      "Comment": "Copy the (possibly hook-modified) document the dispatcher returned into $.document, which CheckProcessingMode and the steps after it read. The dispatcher ALWAYS returns a document \u2014 the inbound one verbatim when no hook modified it \u2014 so this is a no-op copy in the common case. A dispatcher/hook error skips this state via the Catch above, leaving the pre-hook $.document intact.",
       "InputPath": "$.HookResults.preprocessing.Payload.document",
       "ResultPath": "$.document",
       "Next": "CheckPreprocessingHalt"
@@ -71,7 +224,7 @@
           "Next": "MarkSupersededByRedacted"
         }
       ],
-      "Default": "RouteByProcessingMode"
+      "Default": "CheckProcessingMode"
     },
     "MarkSupersededByRedacted": {
       "Type": "Pass",
@@ -88,19 +241,19 @@
       "ResultPath": "$.document.status",
       "Next": "WorkflowComplete"
     },
-    "RouteByProcessingMode": {
+    "CheckProcessingMode": {
       "Type": "Choice",
       "Comment": "Route to BDA or step-by-step pipeline based on use_bda flag in document config",
       "Choices": [
         {
           "Variable": "$.document.use_bda",
           "BooleanEquals": true,
-          "Next": "BDA_CheckExistingData"
+          "Next": "CheckExistingBdaData"
         }
       ],
       "Default": "OCRStep"
     },
-    "BDA_CheckExistingData": {
+    "CheckExistingBdaData": {
       "Type": "Choice",
       "Comment": "Check if document already has pages/sections data (reprocessing scenario)",
       "Choices": [
@@ -116,7 +269,7 @@
             }
           ],
           "Comment": "Document has existing data with string section IDs - skip BDA invocation",
-          "Next": "BDA_ProcessResultsSkip"
+          "Next": "AssembleExistingDocumentStep"
         },
         {
           "And": [
@@ -130,12 +283,12 @@
             }
           ],
           "Comment": "Document has existing data with section objects - skip BDA invocation",
-          "Next": "BDA_ProcessResultsSkip"
+          "Next": "AssembleExistingDocumentStep"
         }
       ],
-      "Default": "BDA_InvokeDataAutomation"
+      "Default": "InvokeDataAutomationStep"
     },
-    "BDA_InvokeDataAutomation": {
+    "InvokeDataAutomationStep": {
       "Type": "Task",
       "Resource": "arn:${Partition}:states:::lambda:invoke.waitForTaskToken",
       "TimeoutSeconds": ${BDACallbackTimeoutSeconds},
@@ -176,23 +329,24 @@
           "BackoffRate": 2.5
         }
       ],
-      "Next": "BDA_ProcessResultsStep",
+      "Next": "BDA_AssembleDocumentStep",
       "Catch": [
         {
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "FailState"
+          "Next": "WorkflowFailed"
         }
       ]
     },
-    "BDA_ProcessResultsStep": {
+    "BDA_AssembleDocumentStep": {
       "Type": "Task",
       "Resource": "${BDAProcessResultsLambdaArn}",
       "Parameters": {
         "execution_arn.$": "$$.Execution.Id",
         "output_bucket": "${OutputBucket}",
-        "BDAResponse.$": "$.BDAResponse"
+        "BDAResponse.$": "$.BDAResponse",
+        "routing_step": true
       },
       "ResultPath": "$.Result",
       "Retry": [
@@ -222,9 +376,9 @@
           "BackoffRate": 2.5
         }
       ],
-      "Next": "CheckHITLRequired"
+      "Next": "CheckPolicyRuleValidationEnabled"
     },
-    "BDA_ProcessResultsSkip": {
+    "AssembleExistingDocumentStep": {
       "Type": "Task",
       "Comment": "Process existing document data without BDA invocation (reprocessing scenario)",
       "Resource": "${BDAProcessResultsLambdaArn}",
@@ -232,7 +386,8 @@
         "execution_arn.$": "$$.Execution.Id",
         "output_bucket": "${OutputBucket}",
         "skip_bda": true,
-        "document.$": "$.document"
+        "document.$": "$.document",
+        "routing_step": true
       },
       "ResultPath": "$.Result",
       "Retry": [
@@ -262,7 +417,7 @@
           "BackoffRate": 2.5
         }
       ],
-      "Next": "CheckHITLRequired"
+      "Next": "CheckPolicyRuleValidationEnabled"
     },
     "OCRStep": {
       "Type": "Task",
@@ -294,6 +449,7 @@
         },
         {
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -319,6 +475,7 @@
         "Payload": {
           "hookPoint": "postOcr",
           "executionArn.$": "$$.Execution.Id",
+          "executionInput.$": "$$.Execution.Input",
           "document.$": "$.OCRResult.document"
         }
       },
@@ -398,6 +555,7 @@
         },
         {
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -423,6 +581,7 @@
         "Payload": {
           "hookPoint": "postClassification",
           "executionArn.$": "$$.Execution.Id",
+          "executionInput.$": "$$.Execution.Input",
           "document.$": "$.ClassificationResult.document"
         }
       },
@@ -460,30 +619,54 @@
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postClassification.error",
-          "Next": "ProcessSections"
+          "Next": "SelectAllSections"
         }
       ],
       "Next": "ApplyPostClassificationHookDocument"
     },
     "ApplyPostClassificationHookDocument": {
       "Type": "Pass",
-      "Comment": "Copy the (possibly hook-modified) document into $.ClassificationResult.document. This is the most powerful mutation point: ProcessSections iterates ITS sections list, and Pipeline_ProcessResultsStep rebuilds the final document from it \u2014 so section adds/removes/relabels made here propagate through the whole rest of the pipeline. No-op copy when no hook modified it; the Catch above bypasses this state on error.",
+      "Comment": "Copy the (possibly hook-modified) document into $.ClassificationResult.document. This is the most powerful mutation point: SelectAllSections takes the section ids ProcessSections iterates from ITS sections list, and Pipeline_AssembleDocumentStep rebuilds the final document from it \u2014 so section adds/removes/relabels made here propagate through the whole rest of the pipeline. No-op copy when no hook modified it; the Catch above bypasses this state on error.",
       "InputPath": "$.HookResults.postClassification.Payload.document",
       "ResultPath": "$.ClassificationResult.document",
+      "Next": "SelectAllSections"
+    },
+    "SelectAllSections": {
+      "Type": "Pass",
+      "Comment": "A run that reaches the sections from classification processes every one: the section ids ProcessSections iterates are the classified document's sections list, each starting at extraction. A run plan that starts at extraction or assessment builds this list in its StartAt state instead.",
+      "Parameters": {
+        "ids.$": "$.ClassificationResult.document.sections",
+        "start": "extraction"
+      },
+      "ResultPath": "$.SectionItems",
       "Next": "ProcessSections"
     },
     "ProcessSections": {
       "Type": "Map",
-      "ItemsPath": "$.ClassificationResult.document.sections",
+      "Comment": "One iteration per section id in $.SectionItems.ids, which is every section of the document or the ones a run plan names. $.SectionItems.start says where each section starts (extraction or assessment). The assembly step merges the results over the document's sections by id, so a section that is not iterated stays as it is.",
+      "ItemsPath": "$.SectionItems.ids",
       "ItemSelector": {
         "execution_arn.$": "$$.Execution.Id",
         "document.$": "$.ClassificationResult.document",
-        "section_id.$": "$$.Map.Item.Value"
+        "section_id.$": "$$.Map.Item.Value",
+        "section_start.$": "$.SectionItems.start"
       },
       "MaxConcurrency": 10,
       "Iterator": {
-        "StartAt": "ExtractionPlanStep",
+        "StartAt": "CheckSectionStart",
         "States": {
+          "CheckSectionStart": {
+            "Type": "Choice",
+            "Comment": "Where the section starts. A run that starts at assessment (run plan entry pipeline.assessment) goes straight to AssessmentStep, which assesses the section's stored extraction result again; every other run extracts first.",
+            "Choices": [
+              {
+                "Variable": "$.section_start",
+                "StringEquals": "assessment",
+                "Next": "AssessmentStep"
+              }
+            ],
+            "Default": "ExtractionPlanStep"
+          },
           "ExtractionPlanStep": {
             "Type": "Task",
             "Resource": "${ShardRuntimeFunctionArn}",
@@ -531,9 +714,9 @@
                 "BackoffRate": 2.0
               }
             ],
-            "Next": "ShardModeChoice"
+            "Next": "CheckShardMode"
           },
-          "ShardModeChoice": {
+          "CheckShardMode": {
             "Type": "Choice",
             "Choices": [
               {
@@ -753,6 +936,7 @@
               "Payload": {
                 "hookPoint": "postExtraction",
                 "executionArn.$": "$$.Execution.Id",
+                "executionInput.$": "$$.Execution.Input",
                 "document.$": "$.document",
                 "section.$": "$"
               }
@@ -791,17 +975,37 @@
                   "States.ALL"
                 ],
                 "ResultPath": "$.HookResults.error",
-                "Next": "AssessmentStep"
+                "Next": "CheckAssessmentSkipped"
               }
             ],
             "Next": "ApplyPostExtractionHookDocument"
           },
           "ApplyPostExtractionHookDocument": {
             "Type": "Pass",
-            "Comment": "Copy the (possibly hook-modified) document into $.document, which AssessmentStep reads. NOTE this runs INSIDE the ProcessSections Map, so the document here is a SECTION document: Pipeline_ProcessResultsStep rebuilds the final document from the ClassificationResult base and takes only sections[0] + metering from each Map result, so section-scoped mutations propagate but top-level/page-level ones made here do not (use postClassification or postRuleValidation for those). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
+            "Comment": "Copy the (possibly hook-modified) document into $.document, which AssessmentStep reads (unless the run plan skips assessment, see CheckAssessmentSkipped). NOTE this runs INSIDE the ProcessSections Map, so the document here is a SECTION document: Pipeline_AssembleDocumentStep rebuilds the final document from the ClassificationResult base and takes only the section each Map result is about, and its metering, so section-scoped mutations propagate but top-level/page-level ones made here do not (use postClassification or postRuleValidation for those). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
             "InputPath": "$.HookResults.Payload.document",
             "ResultPath": "$.document",
-            "Next": "AssessmentStep"
+            "Next": "CheckAssessmentSkipped"
+          },
+          "CheckAssessmentSkipped": {
+            "Type": "Choice",
+            "Comment": "A run plan can skip assessment: the section then completes with its extraction result and no confidence pass. $$.Execution.Input is the run's input inside this Map too. The rule tests that the path is present before reading it, because a run without a plan is valid.",
+            "Choices": [
+              {
+                "And": [
+                  {
+                    "Variable": "$$.Execution.Input.runPlan.skipAssessment",
+                    "IsPresent": true
+                  },
+                  {
+                    "Variable": "$$.Execution.Input.runPlan.skipAssessment",
+                    "BooleanEquals": true
+                  }
+                ],
+                "Next": "SectionComplete"
+              }
+            ],
+            "Default": "AssessmentStep"
           },
           "AssessmentStep": {
             "Type": "Task",
@@ -809,7 +1013,8 @@
             "Parameters": {
               "execution_arn.$": "$$.Execution.Id",
               "document.$": "$.document",
-              "section_id.$": "$.section_id"
+              "section_id.$": "$.section_id",
+              "execution_input.$": "$$.Execution.Input"
             },
             "ResultPath": "$",
             "Retry": [
@@ -866,15 +1071,16 @@
         }
       },
       "ResultPath": "$.ExtractionResults",
-      "Next": "Pipeline_ProcessResultsStep"
+      "Next": "Pipeline_AssembleDocumentStep"
     },
-    "Pipeline_ProcessResultsStep": {
+    "Pipeline_AssembleDocumentStep": {
       "Type": "Task",
       "Resource": "${PipelineProcessResultsLambdaArn}",
       "Parameters": {
         "execution_arn.$": "$$.Execution.Id",
         "ClassificationResult.$": "$.ClassificationResult",
-        "ExtractionResults.$": "$.ExtractionResults"
+        "ExtractionResults.$": "$.ExtractionResults",
+        "routing_step": true
       },
       "ResultPath": "$.Result",
       "Retry": [
@@ -914,18 +1120,129 @@
           "BackoffRate": 2.5
         }
       ],
-      "Next": "CheckHITLRequired"
+      "Next": "CheckReviewToApply"
     },
-    "CheckRuleValidationEnabled": {
+    "CheckReviewToApply": {
       "Type": "Choice",
+      "Comment": "A run that follows a completed review and extracted some sections again (run plan kind review_completed, started at extraction) applies the review next: ApplyReviewChangesStep sets the reviewer's corrections on the new results and records the review. Every other run goes on to policy rule validation. The rule tests that the path is present before reading it, because an execution input without runPlan is valid.",
       "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.kind",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.kind",
+              "StringEquals": "review_completed"
+            }
+          ],
+          "Next": "SelectAssembledDocument"
+        }
+      ],
+      "Default": "CheckPolicyRuleValidationEnabled"
+    },
+    "SelectAssembledDocument": {
+      "Type": "Pass",
+      "Comment": "Puts the assembled document where ApplyReviewChangesStep reads it ($.document), as the run plan entry does for a run that starts at that step; the rest of the state is kept.",
+      "InputPath": "$.Result.document",
+      "ResultPath": "$.document",
+      "Next": "ApplyReviewChangesStep"
+    },
+    "ApplyReviewChangesStep": {
+      "Type": "Task",
+      "Comment": "Applies a completed review. It is the first step of the run that follows the review (run plan entry apply_review_changes), and it is reached after the extraction and the assembly of a run that extracts some sections again first (CheckReviewToApply). Writes the reviewer's corrections and the review record onto the section results (idp_common.review_queues.apply_review), so policy rule validation and the routing rules read the reviewed values. A section that was extracted again has its corrections set on its new result and is recorded as not confirmed, so the routing rules count it again. Returns { document, rule_validation_enabled }, the shape the assembly steps return, so CheckPolicyRuleValidationEnabled reads either the same way. The step writes the same objects when it runs again, so a retry is safe.",
+      "Resource": "${ApplyReviewChangesLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$.document",
+        "execution_input.$": "$$.Execution.Input"
+      },
+      "ResultPath": "$.Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "A Lambda timeout is deterministic, not transient: every retry would burn another full timeout and fail the same way while holding a concurrency slot (#917). One attempt, then fail.",
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "Comment": "TransientError is the name the handler re-raises a transient cause under (idp_common.utils.transient_errors).",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException",
+            "TransientError"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "CheckPolicyRuleValidationEnabled"
+    },
+    "StartAtPolicyRuleValidation": {
+      "Type": "Pass",
+      "Comment": "Entry for a run that starts at policy rule validation, and for one that starts at summarization or evaluation (those skip the steps before them through the plan's skip flags, and still pass RoutingStep). Builds what the assembly steps return: the queued document and whether the configuration has policy rule validation on, which the queue processor resolved into the plan. Reached only through a CheckRunPlan rule, so the plan path exists.",
+      "Parameters": {
+        "document.$": "$.document",
+        "rule_validation_enabled.$": "$$.Execution.Input.runPlan.policyRuleValidationEnabled"
+      },
+      "ResultPath": "$.Result",
+      "Next": "CheckPolicyRuleValidationEnabled"
+    },
+    "CheckPolicyRuleValidationEnabled": {
+      "Type": "Choice",
+      "Comment": "Three ways on. A run plan that skips policy rule validation goes to SkipPolicyRuleValidation, and the hook after the step does not fire. A configuration with policy rule validation on runs it. A configuration with it off goes on with an empty result, and the hook still fires.",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.skipPolicyRuleValidation",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.skipPolicyRuleValidation",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "SkipPolicyRuleValidation"
+        },
         {
           "Variable": "$.Result.rule_validation_enabled",
           "BooleanEquals": true,
           "Next": "PolicyClassificationStep"
         }
       ],
-      "Default": "SetEmptyRuleValidationResult"
+      "Default": "SetEmptyPolicyRuleValidationResult"
+    },
+    "SkipPolicyRuleValidation": {
+      "Type": "Pass",
+      "Comment": "The run plan skips policy rule validation: the document goes to RoutingStep as it is. A step the plan skips fires no hook, so PostRuleValidationHook is not on this path; a step the configuration turns off still fires it (SetEmptyPolicyRuleValidationResult).",
+      "Parameters": {
+        "document.$": "$.Result.document"
+      },
+      "ResultPath": "$.RuleValidationOrchestrationResult",
+      "Next": "RoutingStep"
     },
     "PolicyClassificationStep": {
       "Type": "Task",
@@ -977,12 +1294,12 @@
         {
           "Variable": "$.PolicyClassificationResult.skip_rule_validation",
           "BooleanEquals": true,
-          "Next": "SetSkippedRuleValidationResult"
+          "Next": "SetSkippedPolicyRuleValidationResult"
         }
       ],
-      "Default": "ProcessRuleValidationSections"
+      "Default": "ValidatePolicyRulesBySection"
     },
-    "SetSkippedRuleValidationResult": {
+    "SetSkippedPolicyRuleValidationResult": {
       "Type": "Pass",
       "Parameters": {
         "document.$": "$.PolicyClassificationResult.document"
@@ -990,7 +1307,7 @@
       "ResultPath": "$.RuleValidationOrchestrationResult",
       "Next": "PostRuleValidationHook"
     },
-    "SetEmptyRuleValidationResult": {
+    "SetEmptyPolicyRuleValidationResult": {
       "Type": "Pass",
       "Parameters": {
         "document.$": "$.Result.document"
@@ -998,7 +1315,7 @@
       "ResultPath": "$.RuleValidationOrchestrationResult",
       "Next": "PostRuleValidationHook"
     },
-    "ProcessRuleValidationSections": {
+    "ValidatePolicyRulesBySection": {
       "Type": "Map",
       "ItemsPath": "$.PolicyClassificationResult.document.sections",
       "ItemSelector": {
@@ -1008,9 +1325,9 @@
       },
       "MaxConcurrency": 10,
       "Iterator": {
-        "StartAt": "RuleValidationStep",
+        "StartAt": "PolicyRuleValidationStep",
         "States": {
-          "RuleValidationStep": {
+          "PolicyRuleValidationStep": {
             "Type": "Task",
             "Resource": "${RuleValidationLambdaArn}",
             "Retry": [
@@ -1051,18 +1368,18 @@
                 "BackoffRate": 2.5
               }
             ],
-            "Next": "RuleValidationSectionComplete"
+            "Next": "PolicyRuleValidationSectionComplete"
           },
-          "RuleValidationSectionComplete": {
+          "PolicyRuleValidationSectionComplete": {
             "Type": "Pass",
             "End": true
           }
         }
       },
       "ResultPath": "$.RuleValidationResults",
-      "Next": "RuleValidationOrchestration"
+      "Next": "PolicyRuleConsolidationStep"
     },
-    "RuleValidationOrchestration": {
+    "PolicyRuleConsolidationStep": {
       "Type": "Task",
       "Resource": "${RuleValidationOrchestrationLambdaArn}",
       "Retry": [
@@ -1104,6 +1421,7 @@
         "Payload": {
           "hookPoint": "postRuleValidation",
           "executionArn.$": "$$.Execution.Id",
+          "executionInput.$": "$$.Execution.Input",
           "document.$": "$.RuleValidationOrchestrationResult.document"
         }
       },
@@ -1141,73 +1459,91 @@
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postRuleValidation.error",
-          "Next": "SummarizationStep"
+          "Next": "RoutingStep"
         }
       ],
       "Next": "ApplyPostRuleValidationHookDocument"
     },
     "ApplyPostRuleValidationHookDocument": {
       "Type": "Pass",
-      "Comment": "Copy the (possibly hook-modified) document into $.RuleValidationOrchestrationResult.document, which SummarizationStep reads. This is the last whole-document mutation point (the Map fan-out is done, so mutations here reach summarization, evaluation, and the final workflow output). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
+      "Comment": "Copy the (possibly hook-modified) document into $.RuleValidationOrchestrationResult.document, which RoutingStep reads. This is the last whole-document mutation point (the Map fan-out is done, so mutations here reach review routing, summarization, evaluation, and the final workflow output). No-op copy when no hook modified it; the Catch above bypasses this state on error.",
       "InputPath": "$.HookResults.postRuleValidation.Payload.document",
       "ResultPath": "$.RuleValidationOrchestrationResult.document",
-      "Next": "SummarizationStep"
+      "Next": "RoutingStep"
     },
-    "CheckHITLRequired": {
+    "RoutingStep": {
+      "Type": "Task",
+      "Comment": "Review routing (idp_common.review_queues.routing_step). It runs after policy rule validation and its hook, so a routing rule can read the policy outcome. It answers hold (the document was placed in a review queue), continue, or rejected. No Catch: a document whose routing cannot be decided must not go on to final output unreviewed, so a failure here fails the run, which can be started again. A legacy-HITL or Test Studio document always continues.",
+      "Resource": "${RoutingLambdaArn}",
+      "Parameters": {
+        "execution_arn.$": "$$.Execution.Id",
+        "document.$": "$.RuleValidationOrchestrationResult.document",
+        "execution_input.$": "$$.Execution.Input"
+      },
+      "ResultPath": "$.RoutingResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "A Lambda timeout is deterministic, not transient: every retry would burn another full timeout and fail the same way while holding a concurrency slot (#917). One attempt, then fail.",
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "Comment": "TransientError is the name the handler re-raises a transient cause under (idp_common.utils.transient_errors).",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "ServiceQuotaExceededException",
+            "ThrottlingException",
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ServiceUnavailableException",
+            "TransientError"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 8,
+          "BackoffRate": 2.5
+        }
+      ],
+      "Next": "CheckRoutingDecision"
+    },
+    "CheckRoutingDecision": {
       "Type": "Choice",
+      "Comment": "Reads RoutingStep's decision. hold ends the run as HITL_IN_PROGRESS and rejected ends it as REJECTED; anything else continues to summarization.",
       "Choices": [
         {
-          "And": [
-            {
-              "Variable": "$.Result.review_hold",
-              "IsPresent": true
-            },
-            {
-              "Variable": "$.Result.review_hold",
-              "IsBoolean": true
-            },
-            {
-              "Variable": "$.Result.review_hold",
-              "BooleanEquals": true
-            }
-          ],
+          "Variable": "$.RoutingResult.decision",
+          "StringEquals": "hold",
           "Next": "MarkReviewHold"
         },
         {
-          "And": [
-            {
-              "Variable": "$.Result.review_outcome",
-              "IsPresent": true
-            },
-            {
-              "Variable": "$.Result.review_outcome",
-              "IsString": true
-            },
-            {
-              "Variable": "$.Result.review_outcome",
-              "StringEquals": "rejected"
-            }
-          ],
+          "Variable": "$.RoutingResult.decision",
+          "StringEquals": "rejected",
           "Next": "MarkReviewRejected"
-        },
-        {
-          "Variable": "$.Result.hitl_triggered",
-          "BooleanEquals": true,
-          "Next": "MarkHITLPending"
         }
       ],
-      "Default": "CheckRuleValidationEnabled"
-    },
-    "MarkHITLPending": {
-      "Type": "Pass",
-      "Comment": "Document marked for async HITL review, workflow continues without waiting",
-      "Next": "CheckRuleValidationEnabled"
+      "Default": "CheckSummarizationSkipped"
     },
     "MarkReviewHold": {
       "Type": "Pass",
-      "Comment": "Review queues (idp_common.review_queues): phase 1 ends here for a document ProcessResults put in a review queue. Nothing that produces final output runs on unreviewed data (rule validation, summarization, evaluation, the postprocessing hook, the post-processing Lambda); the execution ends and frees its concurrency slot. Sets status HITL_IN_PROGRESS, which the workflow tracker preserves rather than forcing COMPLETED. A Complete or Reject later starts a separate finalize execution that continues the document. The IsPresent and type guards on the CheckHITLRequired rule keep the feature-off path identical: ProcessResults adds review_hold only in queue mode.",
+      "Comment": "Review queues (idp_common.review_queues): the run ends here for a document RoutingStep placed in a review queue. Nothing that produces final output runs on unreviewed data (summarization, evaluation, the postprocessing hook, the post-processing Lambda); the execution ends and frees its concurrency slot. Policy rule validation has run, which is what lets a routing rule read its outcome. Sets status HITL_IN_PROGRESS, which the workflow tracker preserves rather than forcing COMPLETED. A Complete or Reject later starts a separate execution that continues the document from the step its run plan names.",
       "Parameters": {
-        "document.$": "$.Result.document"
+        "document.$": "$.RoutingResult.document"
       },
       "ResultPath": "$",
       "Next": "SetReviewHoldStatus"
@@ -1220,9 +1556,9 @@
     },
     "MarkReviewRejected": {
       "Type": "Pass",
-      "Comment": "Review queues: terminal state of the finalize execution of a document a reviewer rejected. Rejected output is not a usable result, so nothing after the review point runs. Sets status REJECTED, which the workflow tracker preserves rather than forcing COMPLETED; the tracker then writes review/status.json = rejected last. The IsPresent and type guards on the CheckHITLRequired rule keep the feature-off path identical: ProcessResults adds review_outcome only in queue mode.",
+      "Comment": "Review queues: reached when RoutingStep answers rejected, which it does only for the run of a rejected review whose message carried no run plan (one queued by a release before run plans). A run plan for a rejected review starts at SetRejectedStatus (CheckRunPlan) and calls no Lambda. Rejected output is not a usable result, so nothing after the review point runs. Sets status REJECTED, which the workflow tracker preserves rather than forcing COMPLETED; the tracker then writes review/status.json = rejected last.",
       "Parameters": {
-        "document.$": "$.Result.document"
+        "document.$": "$.RoutingResult.document"
       },
       "ResultPath": "$",
       "Next": "SetRejectedStatus"
@@ -1233,12 +1569,38 @@
       "ResultPath": "$.document.status",
       "Next": "WorkflowComplete"
     },
+    "CheckSummarizationSkipped": {
+      "Type": "Choice",
+      "Comment": "A run plan can skip summarization. The rule tests that the path is present before reading it, because a run without a plan is valid.",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.skipSummarization",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.skipSummarization",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "SkipSummarization"
+        }
+      ],
+      "Default": "SummarizationStep"
+    },
+    "SkipSummarization": {
+      "Type": "Pass",
+      "Comment": "The run plan skips summarization: $ becomes the document, the shape SummarizationStep's OutputPath leaves, and PostSummarizationHook does not fire (a step the plan skips fires no hook).",
+      "InputPath": "$.RoutingResult.document",
+      "Next": "CheckEvaluationSkipped"
+    },
     "SummarizationStep": {
       "Type": "Task",
       "Resource": "${SummarizationLambdaArn}",
       "Parameters": {
         "execution_arn.$": "$$.Execution.Id",
-        "document.$": "$.RuleValidationOrchestrationResult.document"
+        "document.$": "$.RoutingResult.document"
       },
       "ResultPath": "$.Result",
       "OutputPath": "$.Result.document",
@@ -1264,6 +1626,7 @@
         },
         {
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -1290,6 +1653,7 @@
         "Payload": {
           "hookPoint": "postSummarization",
           "executionArn.$": "$$.Execution.Id",
+          "executionInput.$": "$$.Execution.Input",
           "document.$": "$"
         }
       },
@@ -1327,7 +1691,7 @@
             "States.ALL"
           ],
           "ResultPath": null,
-          "Next": "EvaluationStep"
+          "Next": "CheckEvaluationSkipped"
         }
       ],
       "Next": "ApplyPostSummarizationHookDocument"
@@ -1337,7 +1701,35 @@
       "Comment": "Replace $ with the (possibly hook-modified) document, which EvaluationStep reads and which becomes the workflow's final output. This also drops the temporary PostSummarizationHookOut key, so the final output shape is byte-identical to before this feature. On a dispatcher/hook error the Catch above keeps ResultPath null and routes past this state, so $ remains the unmodified document.",
       "InputPath": "$.PostSummarizationHookOut.Payload.document",
       "ResultPath": "$",
-      "Next": "EvaluationStep"
+      "Next": "CheckEvaluationSkipped"
+    },
+    "CheckEvaluationSkipped": {
+      "Type": "Choice",
+      "Comment": "A run plan can skip evaluation. $ is the document here. The rule tests that the path is present before reading it, because a run without a plan is valid.",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$$.Execution.Input.runPlan.skipEvaluation",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$$.Execution.Input.runPlan.skipEvaluation",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "SkipEvaluation"
+        }
+      ],
+      "Default": "EvaluationStep"
+    },
+    "SkipEvaluation": {
+      "Type": "Pass",
+      "Comment": "The run plan skips evaluation: $ becomes { document: ... }, the envelope EvaluationStep returns and PostprocessingHook reads. The postprocessing hook is not part of the skipped step, so it still fires.",
+      "Parameters": {
+        "document.$": "$"
+      },
+      "Next": "PostprocessingHook"
     },
     "EvaluationStep": {
       "Type": "Task",
@@ -1368,8 +1760,9 @@
           "BackoffRate": 1.0
         },
         {
-          "Comment": "Genuinely transient faults - these DO succeed on retry.",
+          "Comment": "Genuinely transient faults - these DO succeed on retry. TransientError is what the handler raises for an LLM-judge call that failed transiently (a throttle past the Bedrock client's retries, a bare HTTP 5xx, a read timeout), instead of scoring the field 0.0 (#2049).",
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -1386,18 +1779,18 @@
         }
       ],
       "Next": "PostprocessingHook",
-      "Comment": "Scores the document against its baseline. This is a MEASUREMENT step: by the time it runs, every expensive production step has succeeded and its output objects are written, so an evaluation failure must not discard a good document (the same reasoning PostprocessingHook documents). Errors are therefore caught to RecordEvaluationFailure, which stamps an honest EvaluationStatus and continues to the normal tail, rather than failing the execution.",
+      "Comment": "Scores the document against its baseline. This is a MEASUREMENT step: by the time it runs, every expensive production step has succeeded and its output objects are written, so an evaluation failure must not discard a good document (the same reasoning PostprocessingHook documents). Errors are therefore caught to RecordEvaluationFailureStep, which stamps an honest EvaluationStatus and continues to the normal tail, rather than failing the execution.",
       "Catch": [
         {
           "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": "$.EvaluationError",
-          "Next": "RecordEvaluationFailure"
+          "Next": "RecordEvaluationFailureStep"
         }
       ]
     },
-    "RecordEvaluationFailure": {
+    "RecordEvaluationFailureStep": {
       "Comment": "Records that evaluation did not complete, so EvaluationStatus reflects reality instead of being stuck at RUNNING, then continues to the normal tail so the document keeps its extraction output. Its own failure is caught to the tail as well - the document surviving matters more than the status being written. document.$ is $ (not $.document) because ApplyPostSummarizationHookDocument set $ to the document dict itself, so there is no $.document key at this point; the Catch above adds $.EvaluationError as a sibling of the doc fields. The Lambda handler's raw-fallback path filters event['document'] against a five-name list (EvaluationError, record_failure_only, failure_reason, error, execution_arn), of which only EvaluationError can actually appear there: the other four are siblings of document in the Payload below, not members of it, so those four entries in the list are dead. Its own Catch captures the error under $.RecordFailureError instead of discarding it with ResultPath null (#918): with ResultPath null this state's output was its input unchanged - the bare document dict, which has no 'document' member - so PostprocessingHook's document.$ = $.document could not resolve and raised States.Runtime, which is not retriable and is NOT caught by a Catch on States.ALL, failing the execution and discarding a fully processed document at the last step. NormalizeEvaluationFailureOutput restores the { document: ... } envelope before the tail.",
       "Type": "Task",
       "Resource": "${EvaluationLambdaArn}",
@@ -1455,7 +1848,7 @@
     },
     "NormalizeEvaluationFailureOutput": {
       "Type": "Pass",
-      "Comment": "Restores the { document: ... } envelope that PostprocessingHook and every state after it read (#918). Reached only when RecordEvaluationFailure itself failed, where $ is the bare document dict (see that state's Comment) with the state-level keys EvaluationError and RecordFailureError merged in alongside the document's own fields. Parameters + ResultPath $ rebuild $ as exactly { \"document\": <that dict> }, which is the shape RecordEvaluationFailure returns on its success path - so the tail behaves identically either way and $.document always resolves. The two diagnostic keys ride along inside the document dict and are harmless for one reason only: Document.from_dict ignores keys it does not know. Do NOT assume the evaluation handler removes them. Its raw-fallback strip list (src/evaluation_function/index.py:289-301) names EvaluationError, record_failure_only, failure_reason, error and execution_arn - RecordFailureError is NOT among them - and that stripping is largely vestigial in any case: it filters event['document'], while four of those five names are only ever siblings of document in RecordEvaluationFailure's Payload, never members of it, and event['document'] on this path is the nine-key compressed wrapper Document.compress returns (serialize_document defaults size_threshold_kb=0, so every step compresses), which carries none of them either. EvaluationError is the only name that list can actually match.",
+      "Comment": "Restores the { document: ... } envelope that PostprocessingHook and every state after it read (#918). Reached only when RecordEvaluationFailureStep itself failed, where $ is the bare document dict (see that state's Comment) with the state-level keys EvaluationError and RecordFailureError merged in alongside the document's own fields. Parameters + ResultPath $ rebuild $ as exactly { \"document\": <that dict> }, which is the shape RecordEvaluationFailureStep returns on its success path - so the tail behaves identically either way and $.document always resolves. The two diagnostic keys ride along inside the document dict and are harmless for one reason only: Document.from_dict ignores keys it does not know. Do NOT assume the evaluation handler removes them. Its raw-fallback strip list (src/evaluation_function/index.py:289-301) names EvaluationError, record_failure_only, failure_reason, error and execution_arn - RecordFailureError is NOT among them - and that stripping is largely vestigial in any case: it filters event['document'], while four of those five names are only ever siblings of document in RecordEvaluationFailureStep's Payload, never members of it, and event['document'] on this path is the nine-key compressed wrapper Document.compress returns (serialize_document defaults size_threshold_kb=0, so every step compresses), which carries none of them either. EvaluationError is the only name that list can actually match.",
       "Parameters": {
         "document.$": "$"
       },
@@ -1464,13 +1857,14 @@
     },
     "PostprocessingHook": {
       "Type": "Task",
-      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which the dispatcher raises as HookFatalError - caught by the FIRST Catch entry below, ahead of States.ALL, and routed to PostStepHookFailed. Until #919 that entry did not exist, so States.ALL swallowed the fail policy and this comment's claim was false.",
+      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the processing-mode choice). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which the dispatcher raises as HookFatalError - caught by the FIRST Catch entry below, ahead of States.ALL, and routed to PostStepHookFailed. Until #919 that entry did not exist, so States.ALL swallowed the fail policy and this comment's claim was false.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
         "Payload": {
           "hookPoint": "postprocessing",
           "executionArn.$": "$$.Execution.Id",
+          "executionInput.$": "$$.Execution.Input",
           "document.$": "$.document"
         }
       },
@@ -1532,7 +1926,7 @@
       "Error": "HookFatalError",
       "CausePath": "States.Format('{} || onError:fail aborted the document rather than continuing as though the hook had succeeded. Every hook state lists HookFatalError BEFORE its States.ALL catcher: ASL takes the FIRST matching catcher, and States.ALL - which deliberately routes FORWARD so that a non-gating hook fault cannot discard an otherwise-good document - matches this error too. Reordering those two entries silently restores the fail-open behaviour of issue #919.', $.Cause)"
     },
-    "FailState": {
+    "WorkflowFailed": {
       "Type": "Fail",
       "Cause": "Workflow Failed",
       "Error": "WorkflowFailedException"

@@ -24,7 +24,7 @@ from idp_sdk.models.base import (
 logger = logging.getLogger(__name__)
 
 # A document in one of these will never change again, so the monitor can stop
-# polling it. Taken from `idp_sdk.models.base`, where the four progress buckets
+# polling it. Taken from `idp_sdk.models.base`, where the progress buckets
 # are defined as a partition of `DocumentState` that an import-time check and an
 # offline test both hold to -- so a state added to the enum cannot reach this
 # module unclassified. REDACTED_SUPERSEDED is terminal by design: a preprocessing
@@ -112,6 +112,9 @@ class ProgressMonitor:
             "running": [],
             "queued": [],
             "failed": [],
+            # Processing has stopped and a person has to act (HITL_IN_PROGRESS).
+            # Settled for `all_complete`, never cached: it changes once reviewed.
+            "awaiting_review": [],
             "all_complete": False,
             "total": len(document_ids),
         }
@@ -136,8 +139,9 @@ class ProgressMonitor:
         # If all docs are finished, return cached results
         if not docs_to_query:
             logger.debug("All documents finished (using cache)")
-            finished = len(status_summary["completed"]) + len(status_summary["failed"])
-            status_summary["all_complete"] = finished == len(document_ids)
+            status_summary["all_complete"] = self._all_settled(
+                status_summary, len(document_ids)
+            )
             return status_summary
 
         logger.debug(
@@ -176,11 +180,30 @@ class ProgressMonitor:
                         {"document_id": doc_id, "status": "UNKNOWN", "error": str(e)}
                     )
 
-        # Check if all complete
-        finished = len(status_summary["completed"]) + len(status_summary["failed"])
-        status_summary["all_complete"] = finished == len(document_ids)
+        status_summary["all_complete"] = self._all_settled(
+            status_summary, len(document_ids)
+        )
 
         return status_summary
+
+    @staticmethod
+    def _all_settled(status_summary: Dict, total: int) -> bool:
+        """Return whether no document in the batch is queued or running.
+
+        A document awaiting human review counts as settled: its workflow has
+        ended and only a reviewer moves it on, so a monitor that waited for it
+        would wait for a person with no bound -- which is how
+        `run-inference --monitor` came to poll for hours on a batch whose
+        processing had finished in minutes (#2022). Callers that need to know
+        whether every document reached a final outcome read the
+        `awaiting_review` bucket alongside this.
+        """
+        settled = (
+            len(status_summary["completed"])
+            + len(status_summary["failed"])
+            + len(status_summary["awaiting_review"])
+        )
+        return settled == total
 
     def _batch_query_documents(self, document_ids: List[str]) -> List[Dict]:
         """
@@ -236,6 +259,9 @@ class ProgressMonitor:
                 # Review-queue status (None when the document was never routed).
                 "review": doc_result.get("review"),
             }
+            # Caller-supplied attributes (#1851), only when the document has any.
+            if doc_result.get("attributes"):
+                status["attributes"] = doc_result["attributes"]
 
             # Add error info for failed/aborted documents
             if status_value == "ABORTED":
@@ -319,7 +345,9 @@ class ProgressMonitor:
             status["error"] = "Document not found in tracking table"
             status["failed_step"] = "QueueSender"
 
-        status_summary[bucket.value].append(status)
+        # `setdefault` so a summary built before a bucket existed still accepts
+        # documents in it, rather than raising KeyError mid-poll.
+        status_summary.setdefault(bucket.value, []).append(status)
 
     def get_document_status(self, doc_id: str) -> Dict:
         """
@@ -366,6 +394,8 @@ class ProgressMonitor:
                 "duration": result.get("Duration", 0),
                 "review": result.get("review"),
             }
+            if result.get("attributes"):
+                doc_status["attributes"] = result["attributes"]
 
             # Add status-specific fields
             if status == "RUNNING":
@@ -428,6 +458,9 @@ class ProgressMonitor:
         failed = len(status_data["failed"])
         running = len(status_data["running"])
         queued = len(status_data["queued"])
+        # `.get`: this is a public method over a caller-supplied dict, and
+        # summaries built before the bucket existed do not carry the key.
+        awaiting_review = len(status_data.get("awaiting_review", []))
 
         # Calculate average duration for completed documents
         durations = [
@@ -438,9 +471,13 @@ class ProgressMonitor:
 
         avg_duration = sum(durations) / len(durations) if durations else 0
 
-        # Calculate completion percentage
+        # Completion is the share whose processing has stopped, including those
+        # now waiting on a reviewer, so a batch that `all_complete` ends reads
+        # 100% rather than stalling below it. Success rate stays over documents
+        # with a final outcome only.
         finished = completed + failed
-        completion_pct = (finished / total * 100) if total > 0 else 0
+        settled = finished + awaiting_review
+        completion_pct = (settled / total * 100) if total > 0 else 0
 
         # Calculate success rate
         success_rate = (completed / finished * 100) if finished > 0 else 0
@@ -451,6 +488,7 @@ class ProgressMonitor:
             "failed": failed,
             "running": running,
             "queued": queued,
+            "awaiting_review": awaiting_review,
             "completion_percentage": completion_pct,
             "success_rate": success_rate,
             "avg_duration_seconds": avg_duration,

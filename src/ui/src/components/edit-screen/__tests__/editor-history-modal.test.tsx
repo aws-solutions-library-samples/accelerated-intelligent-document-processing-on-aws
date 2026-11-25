@@ -8,11 +8,18 @@
  */
 
 import React from 'react';
-import { render } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import EditorHistoryModal from '../EditorHistoryModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const tabs = () =>
   createWrapper(document.body)
@@ -22,7 +29,7 @@ const tabs = () =>
 
 describe('EditorHistoryModal', () => {
   it('always offers Field Edits, Review Activity and Processing Report, with an empty state when there is no activity', () => {
-    render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={{ inference_result: {} }} />);
+    render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={{ inference_result: {} }} />, { wrapper: English });
     expect(createWrapper(document.body).findModal()!.findHeader().getElement().textContent).toBe('History');
     expect(tabs()).toEqual(['Field Edits', 'Review Activity']);
     createWrapper(document.body).findTabs()!.findTabLinkByIndex(2)!.click();
@@ -39,6 +46,7 @@ describe('EditorHistoryModal', () => {
         sectionData={{ inference_result: {} }}
         reviewHistory={[{ at: '2026-10-22T10:00:00Z', event: 'claimed', actor: 'ann@example.com', details: null }]}
       />,
+      { wrapper: English },
     );
     const tabGroup = createWrapper(document.body).findTabs()!;
     const height = () => (tabGroup.findTabContent()!.getElement().firstElementChild as HTMLElement).style.height;
@@ -56,6 +64,7 @@ describe('EditorHistoryModal', () => {
         sectionData={{ inference_result: {} }}
         reviewHistory={[{ at: '2026-10-22T10:00:00Z', event: 'claimed', actor: 'ann@example.com', details: null }]}
       />,
+      { wrapper: English },
     );
     expect(tabs()).toEqual(['Field Edits', 'Review Activity']);
     const modal = createWrapper(document.body).findModal()!;

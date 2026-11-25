@@ -53,6 +53,7 @@ import { isReplaceOnActive, REPLACE_ON_ACTIVE_MESSAGE } from './replaceGuard';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -157,6 +158,7 @@ const MultiDocDiscoveryPanel = () => {
   // Settings & configuration profiles
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
+  const { formatDateTime, formatFixed } = useFormatters();
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
   // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
@@ -669,7 +671,7 @@ const MultiDocDiscoveryPanel = () => {
       cell: (item: MultiDocJob) => {
         const d = parseUtcTimestamp(item.createdAt);
         if (!d) return '—';
-        return d.toLocaleString(undefined, {
+        return formatDateTime(d, {
           month: 'short',
           day: 'numeric',
           hour: '2-digit',
@@ -847,7 +849,7 @@ const MultiDocDiscoveryPanel = () => {
                 <input type="file" accept=".zip" onChange={(e) => setZipFile(e.target.files?.[0] || null)} style={{ fontSize: '14px' }} />
                 {zipFile && (
                   <Badge color="green">
-                    {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(1)} MB)
+                    {zipFile.name} ({formatFixed(zipFile.size / 1024 / 1024, 1)} MB)
                   </Badge>
                 )}
               </SpaceBetween>

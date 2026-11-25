@@ -14,6 +14,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const PAGE_DATA = {
   provider: 'textract',
@@ -57,6 +58,12 @@ const PAGES = [
   },
 ];
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 /** Serve result.json / pageData.json from the given pageData fixture. */
 const serve = (pageData: Record<string, unknown>, text: string) => {
   graphqlMock.mockImplementation(({ variables }: { variables: { s3Uri: string } }) => {
@@ -68,7 +75,7 @@ const serve = (pageData: Record<string, unknown>, text: string) => {
 describe('PageTextEditorModal signature detections', () => {
   it('lists each detected signature region with its confidence', async () => {
     serve(PAGE_DATA, 'Signature of taxpayer\n[SIGNATURE]');
-    render(<PageTextEditorModal visible pages={PAGES} initialPageId="2" />);
+    render(<PageTextEditorModal visible pages={PAGES} initialPageId="2" />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText(/Signature detections \(1\)/)).toBeInTheDocument());
     expect(screen.getByText(/\[SIGNATURE\] region 1/)).toBeInTheDocument();
@@ -80,7 +87,7 @@ describe('PageTextEditorModal signature detections', () => {
 
   it('omits the section when the page has no detections', async () => {
     serve({ ...PAGE_DATA, signaturesAvailable: false, signatures: [] }, 'Signature of taxpayer');
-    render(<PageTextEditorModal visible pages={PAGES} initialPageId="2" />);
+    render(<PageTextEditorModal visible pages={PAGES} initialPageId="2" />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Signature of taxpayer')).toBeInTheDocument());
     expect(screen.queryByText(/Signature detections/)).not.toBeInTheDocument();

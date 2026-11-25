@@ -18,6 +18,7 @@ anything:
 """
 
 import json
+from types import SimpleNamespace
 
 import codebuild_deployment as cbd
 import pytest
@@ -46,6 +47,7 @@ def wired(monkeypatch):
         "status": "CREATE_COMPLETE",
         "inference_ok": True,
         "deploy_raises": None,
+        "switch_off_fails": False,
     }
 
     def fake_run_command(cmd, **kwargs):
@@ -54,6 +56,10 @@ def wired(monkeypatch):
             if calls["deploy_raises"]:
                 raise RuntimeError(calls["deploy_raises"])
             return _Out("deployed")
+        if "config-upload" in cmd and calls["switch_off_fails"]:
+            return SimpleNamespace(
+                stdout="", stderr="✗ Error: AccessDenied\n", returncode=1
+            )
         if "describe-stacks" in cmd and "StackStatus" in cmd:
             return _Out(calls["status"])
         if "list-stack-resources" in cmd:
@@ -218,6 +224,82 @@ def test_real_govcloud_run_keeps_the_govcloud_preset(wired):
     assert "ConfigurationPreset" not in deploy
 
 
+# --- Review Routing ---------------------------------------------------------
+#
+# A new stack with a review table has Review Routing on, and a document that
+# needs review then waits for a reviewer. --govcloud keeps the table, so its
+# default profile is switched off before the sample document runs. --headless
+# has no review table: it is created off and nothing is uploaded.
+
+
+def _switch_off_commands(wired):
+    return [c for c in wired["commands"] if "config-upload" in c]
+
+
+def test_govcloud_switches_review_routing_off_before_the_document_test(
+    wired, monkeypatch
+):
+    _structurally_sound("govcloud", wired)
+    seen_by_the_document_test = []
+
+    def fake_inference(stack_name, sample, batch_id, *a, **k):
+        seen_by_the_document_test.extend(wired["commands"])
+        return True
+
+    monkeypatch.setattr(tdt.cbd, "run_inference_test", fake_inference)
+
+    result = _run("govcloud", wired, region="us-gov-west-1")
+
+    assert result["success"], result.get("error")
+    command = (
+        f"idp-cli config-upload --stack-name {result['stack_name']} "
+        f"--config-file {cbd.REVIEW_ROUTING_OFF_CONFIG} "
+        "--config-version default --region us-gov-west-1"
+    )
+    assert _switch_off_commands(wired) == [command]
+    assert command in seen_by_the_document_test, "the document test ran first"
+    # After the deploy reached COMPLETE, and ahead of the structural checks.
+    commands = wired["commands"]
+    switched = commands.index(command)
+    assert any("StackStatus" in c for c in commands[:switched])
+    assert not any("list-stack-resources" in c for c in commands[:switched])
+
+
+def test_headless_does_not_switch_review_routing_off(wired):
+    _structurally_sound("headless", wired)
+    result = _run("headless", wired)
+    assert result["success"], result.get("error")
+    assert wired["inference"], "the sample document test did not run"
+    assert _switch_off_commands(wired) == []
+
+
+def test_a_failed_switch_off_fails_the_govcloud_variant_before_validation(wired):
+    _structurally_sound("govcloud", wired)
+    wired["switch_off_fails"] = True
+
+    result = _run("govcloud", wired)
+
+    assert not result["success"]
+    # The stack deployed, so this is not a deploy failure.
+    assert result["failure_type"] == "test"
+    assert result["error"] == (
+        "Could not switch Review Routing off in the default profile: "
+        "the configuration upload exited 1: ✗ Error: AccessDenied"
+    )
+    assert len(_switch_off_commands(wired)) == 1
+    assert not any("list-stack-resources" in c for c in wired["commands"])
+    assert wired["inference"] == [], "the document test ran with Review Routing on"
+    assert wired["cleanups"] == [result["stack_name"]]
+
+
+def test_an_existing_stack_keeps_its_review_routing_setting(wired):
+    """Validate-only mode: the caller owns the stack and its configuration."""
+    _structurally_sound("govcloud", wired)
+    result = _run("govcloud", wired, existing_stack="idp-someone-elses")
+    assert result["success"], result.get("error")
+    assert _switch_off_commands(wired) == []
+
+
 # --- lifecycle --------------------------------------------------------------
 
 
@@ -366,5 +448,6 @@ def test_variants_reuse_the_shared_ci_machinery():
         "cleanup_stack",
         "run_command",
         "run_inference_test",
+        "switch_off_review_routing",
     ):
         assert hasattr(cbd, attr), f"codebuild_deployment.{attr} went away"

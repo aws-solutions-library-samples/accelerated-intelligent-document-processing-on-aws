@@ -667,7 +667,9 @@ def test_an_absent_toolchain_skips_off_ci_and_says_so(tmp_path, monkeypatch, cap
     calls = _fake_run(monkeypatch, layout, {})
     assert MODULE.main([]) == 0
     out = capsys.readouterr().out
-    assert "⏭️  check-ui-string-debt SKIPPED (not a pass: run make ui-lint first)" in out
+    assert (
+        "⏭️  check-ui-string-debt SKIPPED (not a pass: run make setup-node first)" in out
+    )
     assert "✅" not in out
     assert calls == []
 
@@ -794,3 +796,46 @@ def test_the_real_repository_satisfies_the_gate(capsys):
     out = capsys.readouterr().out
     assert status == 0, out
     assert "✅ check-ui-string-debt" in out
+
+
+def _stale_install(ui_root: Path) -> None:
+    """A lockfile that names a package the hidden lockfile of the install lacks."""
+    wanted = {
+        "packages": {"": {}, "node_modules/eslint-plugin-i18next": {"version": "6.1.5"}}
+    }
+    (ui_root / "package-lock.json").write_text(json.dumps(wanted), encoding="utf-8")
+    (ui_root / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": {}}), encoding="utf-8"
+    )
+
+
+def test_a_stale_install_skips_off_ci_and_names_the_remedy(
+    tmp_path, monkeypatch, capsys
+):
+    layout = _tree(tmp_path)
+    _baseline(layout, {})
+    _stale_install(layout.ui_root)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    calls = _fake_run(monkeypatch, layout, {})
+    assert MODULE.main([]) == 0
+    out = capsys.readouterr().out
+    assert "SKIPPED (not a pass: UI dependencies are out of date)" in out
+    assert "eslint-plugin-i18next" in out
+    assert "make setup-node" in out
+    assert "✅" not in out
+    assert calls == [], "a stale install must not reach eslint"
+
+
+def test_a_stale_install_fails_in_ci(tmp_path, monkeypatch, capsys):
+    layout = _tree(tmp_path)
+    _baseline(layout, {})
+    _stale_install(layout.ui_root)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    monkeypatch.setenv("CI", "true")
+    _fake_run(monkeypatch, layout, {})
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "❌ check-ui-string-debt" in out
+    assert "SKIPPED" not in out

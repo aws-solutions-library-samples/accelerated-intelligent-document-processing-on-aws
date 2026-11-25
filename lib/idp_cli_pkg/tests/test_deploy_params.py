@@ -396,7 +396,11 @@ class TestEnableHitlIsNoLongerAStackParameter:
         )
         assert result.exit_code == 1, result.output
         assert "no longer a stack parameter" in result.output
-        assert "Human-in-the-Loop (HITL) Review" in result.output
+        # The tab and the section as the configuration page labels them.
+        assert "Configuration → Processing Settings → Review Routing" in " ".join(
+            result.output.split()
+        )
+        assert "HITL" not in result.output.replace("--enable-hitl", "")
 
     def test_build_parameters_does_not_accept_it_at_all(self):
         import inspect

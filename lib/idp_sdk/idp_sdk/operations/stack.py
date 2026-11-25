@@ -3,7 +3,6 @@
 
 """Stack operations for IDP SDK."""
 
-import json
 import logging
 from typing import Dict, List, Optional
 
@@ -94,8 +93,8 @@ class StackOperation:
             raise ValueError(
                 "enable_hitl is no longer a CloudFormation parameter. HITL became "
                 "a configuration setting in v0.4.11: enable it in the Web UI under "
-                "Configuration → Assessment & HITL Configuration, or in the config "
-                "YAML passed as custom_config. Passing it here deployed nothing — "
+                "Configuration → Processing Settings → Review Routing, or in the "
+                "config YAML passed as custom_config. Passing it here deployed nothing — "
                 "CloudFormation rejects a parameter the template does not declare."
             )
 
@@ -128,7 +127,18 @@ class StackOperation:
                 if not os.path.isfile(publish_script):
                     raise IDPConfigurationError(f"publish.py not found in {from_code}")
 
-                sts = boto3.client("sts", region_name=self._client._region)
+                # Publish into the Region the stack is deployed in: artifacts in
+                # another Region's bucket cannot be read by this one's Lambdas.
+                from idp_sdk._core.region import resolve_region
+
+                publish_region = resolve_region(self._client._region)
+                if not publish_region:
+                    raise IDPConfigurationError(
+                        "Region could not be determined. Pass a region, or set "
+                        "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS "
+                        "profile."
+                    )
+                sts = boto3.client("sts", region_name=publish_region)
                 account_id = sts.get_caller_identity()["Account"]
                 cfn_bucket_basename = f"idp-accelerator-artifacts-{account_id}"
                 cfn_prefix = "idp-sdk"
@@ -138,7 +148,7 @@ class StackOperation:
                     publish_script,
                     cfn_bucket_basename,
                     cfn_prefix,
-                    self._client._region or "us-west-2",
+                    publish_region,
                     # A direct publish.py run also publishes the Terraform
                     # module, which a CloudFormation deployment never reads.
                     "--no-terraform",
@@ -264,6 +274,9 @@ class StackOperation:
         assume_role_arn: Optional[str] = None,
         allow_replace_stateful: bool = False,
         allow_replace_retained: bool = False,
+        tags: Optional[Dict[str, str]] = None,
+        terraform_state: str = "local",
+        module_version: Optional[str] = None,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
 
@@ -278,8 +291,16 @@ class StackOperation:
         retains or one that holds data (the module's ``retainedAddresses`` and
         ``statefulAddresses``, old and new module both) unless
         ``allow_replace_stateful`` is set. State is local in that
-        directory unless a backend is configured in another file there.
-        Always waits.
+        directory unless a backend is configured in another file there, or
+        ``terraform_state`` is ``"s3"``. Always waits.
+
+        A parameter not in ``parameters`` keeps the value the deployment has,
+        as on a CloudFormation update: the label stack records every
+        parameter's value in effect, so a second operator deploying from
+        another directory gets the same settings. A parameter new in the module
+        takes its default. The values kept and the new parameters' defaults are
+        logged before the plan, and after the apply ``idp-cli-parameters.json``
+        records every value in effect (see ``write_root_config``).
 
         Args:
             stack_name: Deployment name (the label stack's name, at most 25
@@ -290,6 +311,11 @@ class StackOperation:
                 Unknown names are refused.
             module_url: Module zip URL. Without it, ``pointer_url`` is read.
             pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
+            module_version: A published module version (``X.Y.Z``) to deploy
+                instead of the newest. It is looked up in the
+                ``idp-terraform-versions.json`` index beside ``pointer_url``,
+                and the zip's sha256 is checked against the index entry before
+                anything is written. Cannot be combined with ``module_url``.
             terraform_dir: Root configuration directory.
             terraform_bin: ``terraform``, ``tofu`` or a path to either.
             assume_role_arn: An IAM role both providers assume (written into
@@ -301,6 +327,27 @@ class StackOperation:
                 replaces a retained or stateful resource (its data is lost).
             allow_replace_retained: The earlier name of
                 ``allow_replace_stateful``; either one allows it.
+            tags: Tags for every taggable resource, as CloudFormation stack
+                tags are: the module merges them into each ``awscc`` resource
+                (that provider has no ``default_tags``), and ``main.tf`` gives
+                them to the ``aws`` provider's ``default_tags``. A tag a
+                template sets on a resource keeps its value. They replace the
+                deployment's tags; ``None`` keeps the tags of the previous
+                deploy from this directory. ``{}`` stops passing tags, which
+                removes them from the ``aws`` resources but may leave them on
+                ``awscc`` resources (see ``write_root_config``). At most 10, and
+                refused for a module published before the module accepted tags.
+            terraform_state: ``"local"`` (the default) keeps the state in
+                ``terraform.tfstate`` in ``terraform_dir``, as before this option
+                existed. ``"s3"`` keeps it in an S3 bucket named
+                ``idp-tf-<stack name>-<account>-<region>`` (created if missing,
+                with a public access block, versioning, SSE-S3 default
+                encryption and a policy denying non-TLS requests; reused if
+                present, never recreated or emptied), locked with the DynamoDB
+                table ``idp-tf-lock-<stack name>``, and writes ``backend.tf``
+                naming both. Neither is deleted with the deployment. A directory
+                that already holds a local state is refused: moving it into S3
+                is not supported yet.
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's
@@ -324,7 +371,9 @@ class StackOperation:
         if not region:
             raise IDPConfigurationError("a region is required for a Terraform deploy")
         directory = Path(terraform_dir or Path("idp-terraform") / name).resolve()
+        state_choice = tf.check_terraform_state(terraform_state)
         runner = tf.TerraformRunner(terraform_bin, directory)
+        tf.check_backend_switch(directory, state_choice)
 
         deployer = StackDeployer(region=region)
         stack = self._describe_stack(deployer, name)
@@ -335,22 +384,32 @@ class StackOperation:
                 "deploy it with `idp-cli deploy` (without --terraform) instead."
             )
 
-        sha = None
-        if not module_url:
-            if not pointer_url:
-                raise IDPConfigurationError(
-                    "no Terraform module URL: pass module_url or pointer_url"
-                )
-            pointer = json.loads(tf.fetch_url(pointer_url))
-            module_url, sha = tf.resolve_pointer(pointer)
-        manifest = tf.load_module_manifest(module_url, sha)
+        module_url, sha = tf.resolve_module_source(
+            module_url, pointer_url, module_version
+        )
+        manifest = tf.load_module_manifest(
+            module_url,
+            sha,
+            checksum_source="the versions index" if module_version else "its pointer",
+        )
         # The module installed before this deploy: a resource it retains that
         # the new module drops is deleted by the plan too.
         try:
             previous_manifest = tf.read_manifest_from_dir(directory)
         except IDPConfigurationError:
             previous_manifest = {}
-        tf.write_root_config(
+        previous_defaults = tf.read_module_defaults_from_dir(directory)
+        # Before anything is written, so a refused bucket leaves the directory
+        # as it was.
+        backend = (
+            tf.ensure_state_backend(region, name)
+            if state_choice == tf.STATE_S3
+            else None
+        )
+        # The label stack records every parameter's value in effect, so a
+        # parameter not passed keeps it, as on a CloudFormation update, and a
+        # second operator deploying from another directory reads the same values.
+        values = tf.write_root_config(
             directory,
             region=region,
             module_url=module_url,
@@ -359,10 +418,23 @@ class StackOperation:
             parameters=parameters or {},
             manifest=manifest,
             assume_role_arn=assume_role_arn,
+            recorded=tf.label_parameter_values(stack),
+            tags=tags,
         )
-        operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
+        if backend is not None:
+            tf.write_backend_tf(directory, backend)
+            operation = "UPDATE" if backend["state_exists"] else "CREATE"
+        else:
+            operation = (
+                "UPDATE" if (directory / tf.LOCAL_STATE_FILE).exists() else "CREATE"
+            )
         runner.init(upgrade=tf.needs_upgrade(directory, module_url))
         tf.record_module_source(directory, module_url)
+        defaults = tf.read_module_defaults_from_dir(directory)
+        for level, line in tf.parameter_report(
+            values, manifest, defaults, previous_defaults
+        ):
+            logger.log(level, "%s", line)
         protected = tf.protected_addresses(manifest, previous_manifest)
         allow = allow_replace_stateful or allow_replace_retained
         plan_path = directory / tf.PLAN_FILE
@@ -378,6 +450,7 @@ class StackOperation:
             runner.apply_plan(tf.PLAN_FILE)
         finally:
             plan_path.unlink(missing_ok=True)
+        tf.record_effective_parameters(directory, manifest, values, defaults)
 
         outputs: Dict[str, str] = {}
         stack = self._describe_stack(deployer, name)
@@ -404,7 +477,9 @@ class StackOperation:
 
         In ``terraform_dir`` (default ``./idp-terraform/<stack_name>``): runs
         ``init``; empties the deployment's S3 buckets that will be destroyed,
-        with the helper the CloudFormation delete uses; removes every address in
+        with the helper the CloudFormation delete uses, except those with
+        ``force_destroy`` (the custom-resource bridge buckets), which destroy
+        empties only after the custom resources that read them; removes every address in
         the module's ``retainedAddresses`` (as ``module.idp.<address>``) from
         the state, skipping any not in it; then runs ``destroy -auto-approve``.
 
@@ -513,6 +588,26 @@ class StackOperation:
         name = self._client._require_stack(stack_name)
         deployer = StackDeployer(region=self._client._region)
         return deployer._stack_exists(name)
+
+    def get_parameters(
+        self,
+        stack_name: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, str]:
+        """
+        Get the parameter values a CloudFormation stack was deployed with.
+
+        Args:
+            stack_name: Stack name (uses default if not provided)
+
+        Returns:
+            ``{parameter name: value}``; empty if the stack cannot be read
+        """
+        from idp_sdk._core.stack import StackDeployer
+
+        name = self._client._require_stack(stack_name)
+        deployer = StackDeployer(region=self._client._region)
+        return deployer._get_stack_parameters(name)
 
     def get_status(
         self,

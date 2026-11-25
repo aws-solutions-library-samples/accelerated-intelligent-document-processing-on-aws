@@ -12,7 +12,6 @@ the flows file the skill depends on stays parseable and internally consistent.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -371,7 +370,11 @@ def test_the_skill_documents_teardown_and_the_no_false_pass_rule():
     whole layer exists to prevent, reintroduced at the reporting step.
     """
     skill = (
-        Path(__file__).resolve().parents[4] / ".claude" / "skills" / "ux-test.md"
+        Path(__file__).resolve().parents[4]
+        / ".claude"
+        / "skills"
+        / "ux-test"
+        / "SKILL.md"
     ).read_text(encoding="utf-8")
 
     lowered = skill.lower()
@@ -392,15 +395,7 @@ def test_the_skill_is_registered_in_claude_md():
     claude_md = (Path(__file__).resolve().parents[4] / "CLAUDE.md").read_text(
         encoding="utf-8"
     )
-    assert ".claude/skills/ux-test.md" in claude_md
-
-
-@pytest.mark.unit
-def test_the_cline_skill_is_a_symlink_not_a_copy():
-    """`.claude/skills/` is canonical; a real file here would silently diverge."""
-    cline = Path(__file__).resolve().parents[4] / ".cline" / "skills" / "ux-test.md"
-    assert cline.is_symlink(), f"{cline} must be a symlink to the .claude skill"
-    assert os.path.realpath(cline).endswith(".claude/skills/ux-test.md")
+    assert ".claude/skills/ux-test/SKILL.md" in claude_md
 
 
 @pytest.mark.unit
@@ -411,7 +406,7 @@ class TestTheSkillDocumentsTheRecorder:
     commands, where the output goes, and that the tab must stay visible.
     """
 
-    SKILL = _SCRIPTS.parent / ".claude" / "skills" / "ux-test.md"
+    SKILL = _SCRIPTS.parent / ".claude" / "skills" / "ux-test" / "SKILL.md"
     README = _SCRIPTS / "README.md"
 
     def test_skill_gives_the_recording_cadence(self):

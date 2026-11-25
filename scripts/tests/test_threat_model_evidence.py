@@ -47,7 +47,9 @@ import test_agent_capabilities as capabilities  # noqa: E402
 
 #: Rows whose Evidence cell is marked UNVERIFIED. Lower it when a row's mitigations
 #: are all cited; it must never be raised to admit a new unverified row silently.
-PINNED_UNVERIFIED_MITIGATIONS = 109
+# The eleven entries added in the 0.6.16 review, and the three added after it
+# (HITL.T06, PM.T10, FEAT.T06), carry UNVERIFIED markers.
+PINNED_UNVERIFIED_MITIGATIONS = 123
 
 _CITATION = re.compile(r"`([^`]+)`")
 _UNVERIFIED = "UNVERIFIED:"

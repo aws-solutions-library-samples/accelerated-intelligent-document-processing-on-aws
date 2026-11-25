@@ -64,6 +64,7 @@ tier of the Terraform documentation; the user guide is
    | Key | Read by | What it is |
    |---|---|---|
    | `parameters` | `idp-cli deploy --terraform --parameters` | `{<CfnName>: {variable, type, required, sensitive}}` |
+   | `tagsVariable` | `idp-cli deploy --terraform --tags` | the module's tags variable (`tags`); absent from a module published before it had one, which `idp-cli` then refuses tags for |
    | `retainedAddresses` | `idp-cli delete --terraform`, and the deploy's plan guard | addresses of resources with a `DeletionPolicy` other than `Delete`, removed from state before destroying |
    | `statefulAddresses` | the deploy's plan guard | addresses of every resource of a stateful type |
    | `customOutputEdges` | reviewers | every create-only property fed by a custom resource's output, and whether it is handled |
@@ -116,6 +117,17 @@ explicitly:
   while `count` must be known. The parent therefore also passes a `<variable>__cond`
   stand-in that is known at plan and never empty, which is exactly what
   CloudFormation's condition sees.
+- **Stack tags.** CloudFormation propagates stack tags to every taggable resource;
+  `awscc` has no `default_tags`. Every module declares a `tags` variable, passes it to
+  its nested modules, and merges it into the tag attribute of each `awscc` resource
+  whose type has one. `awscc_schema.tag_attribute` reads that attribute and its shape
+  (a list of `{key, value}`, a `map(string)`, or a JSON string) from the vendored
+  schema, and fails the translation on a tag attribute in any other shape. The
+  template's own keys win, and with `tags` empty each expression evaluates to the
+  attribute's value without the merge. A type whose registry schema lists its tags as
+  create-only (`schemas/create_only.json`) gets `ignore_changes` on them.
+  `tests/test_module_tags.py` checks every generated tree and cross-checks the schema
+  derivation against the registry's `tagging` metadata.
 - **Dependencies.** A reference to a nested stack waits for the whole module.
 - **Pseudo-parameters** are read once at the root and passed down, because a data
   source inside a module with `depends_on` is deferred to apply.
@@ -140,6 +152,20 @@ S3 URL as `ResponseURL`, invokes it asynchronously, waits for the response objec
 returns it; a `FAILED` response fails the apply with the handler's reason. Because
 Terraform passes the previous input but not the previous result on update and delete,
 the bridge keeps each resource's physical ID in its bucket between calls.
+
+A delete with no recorded physical ID fails, naming the resource and the missing
+record, and does not call the handler. CloudFormation always sends a delete its
+physical ID, and several of this solution's handlers delete by it, among them the S3
+Vectors knowledge base's, the OpenSearch index's and the MCP gateway interceptor
+attachment's. Given an invented ID, such a handler either fails or finds nothing under
+that ID and reports success, and either way the real resource stays in the account.
+A successful Delete keeps the record, so a Delete that Terraform sends again (because
+it never saved the first one's result) still finds it. The record is lost only if the
+bridge bucket is emptied before `terraform destroy`, which is why `idp-cli delete
+--terraform` leaves the `force_destroy` bridge buckets for destroy to empty.
+The bridge that runs during a destroy is the one the deployment last applied, so a
+deployment applied from an earlier module keeps the earlier behaviour (an invented ID,
+a failure ignored) until it is applied with a module that has this one.
 
 Three behaviours of the bridge exist because a live run needed them. It is granted
 `s3:ListBucket` on its bucket, since without it a missing response object reads as
@@ -411,6 +437,18 @@ reason. `STABLE_CUSTOM_OUTPUTS` and `PASS_THROUGH_ATTRS` are described under
   resource rewrites at deploy time. An entry naming a resource the standard template
   no longer has is reported, and `tests/test_upgrade_safety.py` fails on it, so an
   override cannot outlive what it described.
+- **`UPDATED_BY_REPLACEMENT`**, keyed by type. Cloud Control applies an update's
+  patch to the model its read handler returns and validates the result against the
+  registry schema, so a type whose read model carries an object without that object's
+  required keys can never be updated in place, whatever the module sends. For such a
+  type, every property the template sets other than the create-only ones is emitted
+  with `ignore_changes` and copied into a `terraform_data` `<name>_settings_key` the
+  resource is `replace_triggered_by`, so a change to any of them deletes and recreates
+  the resource. The one entry today is `AWS::Lambda::EventInvokeConfig`, which Lambda
+  reads back with an empty `OnSuccess` or `OnFailure` destination when the template
+  sets only one or neither (#2183). `tests/test_upgrade_safety.py` fails if an entry's
+  type no longer reaches the standard module, or if the ignored attributes go beyond
+  the type's settable ones.
 - **A hand mapper's `ignore_changes`** (`SpecMapper.ignore_changes` in
   `aws_mappers.py`, which the pool user's mapper in `aws_mappers_storage.py` also
   subclasses), for a property the service cannot change after creation.
@@ -473,7 +511,7 @@ the validation below is:
    `tools/parity_baseline.json` explains it, one entry per type and property path
    with its reason; so does a resource on one side only and an entry that explained
    nothing. It is a release-validation tier
-   (`.claude/skills/release-validation.md`).
+   (`.claude/skills/release-validation/SKILL.md`).
 7. `terraform destroy`, and check for leftovers: CodeBuild creates
    `/aws/codebuild/<project>` log groups itself, on both the Terraform and the
    CloudFormation side.
@@ -568,7 +606,7 @@ things, and none subsumes another:
 |---|---|---|---|
 | Translator checks and `terraform validate` (`make test`, `make terraform-check`) | every pull request | unmapped types and properties, values that do not reach the HCL, stateful custom-output edges, malformed HCL | anything AWS decides at apply time |
 | Static scan diff (`make terraform-scan-diff`) | every pull request, inside `make terraform-check` | a Terraform resource softer than its CloudFormation source under a rule both scanners share | what no `checkov` rule looks at (an empty guardrail id) |
-| Property parity (`make terraform-parity`) | release validation, by hand | any property the two deployments store differently | resources Cloud Control cannot read, and behaviour |
+| Property parity (`make terraform-parity`) | release validation, by hand; and a Terraform schedule carrying `IDP_TERRAFORM_PARITY=true`, against a CloudFormation twin it deploys | any property the two deployments store differently | resources Cloud Control cannot read, and behaviour |
 
 ### The static scan diff
 
@@ -605,6 +643,25 @@ hold what the gate accepts:
   and so does a count above its pin. A count below its pin fails as stale, and the
   message gives the number to lower it to.
 
+The module carries some of the templates' suppressions itself. When a resource's
+`# checkov:skip` names a CloudFormation check that `SUPPRESSION_EQUIVALENTS` in
+`terraform/translator/idp_tf/suppressions.py` maps to a Terraform check, the
+translator writes `#checkov:skip=<Terraform check>:<the template's reason>` into
+every block of the mapped Terraform types generated for that resource, so the
+module's consumers see the review too. An entry is there only when the two checks'
+implementations in the pinned `checkov` inspect the same setting and fail in the
+same cases; each entry cites both. A rule whose Terraform check also fails where the
+CloudFormation one passes goes in `DIFFERING_CHECKS` and is not carried, and
+`terraform/translator/tests/test_suppressions.py` fails on a suppressed rule that is
+in neither table. Everything not carried, cfn_nag's suppressions included, is
+listed per resource in a table in `docs/terraform.md` generated by
+`python -m idp_tf.suppressions`, which the same test file holds current. A carried
+skip turns a finding this gate would class as equal (the CloudFormation side skips
+it) into a skipped one, so it cannot hide a softer finding; it does lower
+`notEvaluatedCount` when it lands on a conditional resource. The comments are kept
+out of the HCL the completeness check reads, so a reason's text cannot stand in for
+a dropped property value.
+
 To update either baseline, run `make terraform-scan-diff`, read each `FAIL` line,
 and edit the file by hand; the gate writes neither. A stale entry or count is
 lowered or removed. A new compared finding gets an entry with its reason, and a new
@@ -620,16 +677,17 @@ on a fresh checkout with no build stage before it, so neither exists there (a lo
 `make srt-scan` can read a `.aws-sam` tree left by a build, and warns when one is
 present). `checkov` covers the module, through this gate.
 
-Measured on 2026-11-11 with `checkov` 3.4.0 on the standard template:
+Measured on 2026-11-19 with `checkov` 3.4.0 on the standard template, with the
+carried suppressions in the module:
 
 | Class of failed Terraform check | Findings |
 |---|---|
-| the CloudFormation side fails or skips the same check, or its counterpart, on the same resource | 453 |
+| the CloudFormation side fails or skips the same check, or its counterpart, on the same resource | 148 |
 | softer than CloudFormation (an explained entry, below) | 1 |
 | on the custom-resource bridge the translator adds | 20 (5 checks, on each of 4 bridges) |
 | no counterpart | 0 |
-| on a conditional resource the CloudFormation scan skipped | 26 |
-| on a check with no CloudFormation counterpart (ratcheted, 14 checks) | 358 |
+| on a conditional resource the CloudFormation scan skipped | 20 |
+| on a check with no CloudFormation counterpart (ratcheted, 14 checks) | 374 |
 
 The custom-resource bridge's log group and its bucket are encrypted with the key the
 template's own log groups use (the bucket SSE-KMS with an S3 bucket key; without a
@@ -711,9 +769,10 @@ translation that passes offline is not a deployment that passes.
 
 ### Not yet covered
 
-- Neither CI runs a live Terraform tier, and `make terraform-parity` has not yet
-  been run against the full stack; the parity numbers above are from the
-  prototype run on one nested stack.
+- No merge gate runs a live Terraform tier. The scheduled Terraform run can run
+  `make terraform-parity`'s comparison against a CloudFormation twin
+  (`IDP_TERRAFORM_PARITY=true`), but the tool has not yet been run against the full
+  stack; the parity numbers above are from the prototype run on one nested stack.
 - An apply of the `--headless` and `--govcloud` modules; they are validated offline
   only. The feature-platform extensions install as their own CloudFormation stacks.
 - An apply with a deploying role scoped to a role-name prefix and a required

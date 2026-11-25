@@ -80,13 +80,20 @@ UI does. The transform removes:
 - The `HITLTableName` parameter, which the pattern stack then receives empty
 
 Confidence scoring itself is retained: extraction and assessment still produce
-per-field confidence, and the configured thresholds are still applied. With
-`HITLTableName` empty, review routing falls back to its legacy mode, which still
-**marks** a document that needs review — the `HITLTriggered` and `HITLStatus`
-attributes are written to the tracking table, which headless keeps. What is absent
-is the queue to hold it and the interface to work it in. So in headless mode those
-flags are a signal to read and act on in your own system, not a handoff the
-deployment can complete.
+per-field confidence, and the configured thresholds are still applied.
+
+**Review Routing stays off on a headless stack.** A stack with review queues turns
+the Review Routing switch (`hitl.enabled`) on in the profiles it creates; a headless
+stack has no review queues, so its profiles are left with the switch off and every
+document runs to completion. The Review Routing step holds nothing there whatever
+the switch says: with `HITLTableName` empty it lets the document continue and logs
+`reason=no_review_store`.
+
+A configuration that sets `hitl.enabled: true` itself still **marks** a document
+that needs review — the `HITLTriggered` and `HITLStatus` attributes are written to
+the tracking table, which headless keeps. What is absent is the queue to hold it
+and the interface to work it in. So in headless mode those flags are a signal to
+read and act on in your own system, not a handoff the deployment can complete.
 
 ### Discovery (Web-UI-dependent)
 
@@ -173,7 +180,7 @@ Headless deployment is available through [`idp-cli`](./idp-cli.md) and the [`idp
 
 - AWS CLI with credentials for the target account/region
 - Python 3.12+ with the IDP CLI installed (`make setup-venv && source .venv/bin/activate`)
-- For `--from-code` builds only: AWS SAM CLI, Docker, Node.js >= 22.12, npm >= 10
+- For `--from-code` builds only: AWS SAM CLI, Docker, Node.js >= 26, npm >= 10
 
 ### Deploy in a Commercial Region (no local build)
 

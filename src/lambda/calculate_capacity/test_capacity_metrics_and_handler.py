@@ -65,13 +65,16 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import index
 import pytest
 import validation
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 TRACKING_TABLE = "capacity-tracking"
@@ -1059,6 +1062,8 @@ def hours(**by_hour):
             "extractionTokensPerHour": 0,
             "assessmentTokensPerHour": 0,
             "summarizationTokensPerHour": 0,
+            "evaluationTokensPerHour": 0,
+            "evaluationComparisonsPerHour": 0,
             "documentType": "No processing scheduled",
         }
         entry.update(by_hour.get(str(hour), {}))
@@ -1082,9 +1087,11 @@ def model_config(**overrides):
 
 
 def quota_set(tpm=100000, rpm=200, model=MODEL):
+    """The shape `get_simple_quotas` returns, with nothing unreadable."""
     return {
         "bedrock_models": {model: tpm},
         "bedrock_models_rpm": {model: rpm},
+        "unreadable_models": {},
     }
 
 
@@ -1163,18 +1170,20 @@ STEP_TOKEN_KEYS = breakdown_step_token_keys()
 
 
 @pytest.mark.unit
-def test_the_derived_step_token_key_set_is_the_five_pipeline_stages():
+def test_the_derived_step_token_key_set_is_the_five_pipeline_stages_and_evaluation():
     """Closes the universe the parametrised test below runs over.
 
     Written out as literals rather than derived a second way, because an empty or
     short derivation makes that test collect fewer cases — and a parametrisation
     with no cases is reported as nothing at all, which reads like a pass. This
-    fails instead, and it also catches a sixth stage being added to the
-    initialiser without being required.
+    fails instead, and it also catches another stage being added to the
+    initialiser without being required. Evaluation's judge tokens are the sixth
+    key; escalation has none, because its tokens are a share of extraction's.
     """
     assert STEP_TOKEN_KEYS == [
         "assessmentTokensPerHour",
         "classificationTokensPerHour",
+        "evaluationTokensPerHour",
         "extractionTokensPerHour",
         "ocrTokensPerHour",
         "summarizationTokensPerHour",
@@ -1373,6 +1382,37 @@ def test_a_one_million_context_variant_is_costed_against_its_base_models_quota(
 
 
 @pytest.mark.unit
+def test_a_step_on_a_model_whose_quota_could_not_be_read_is_skipped(tracking):
+    """Not refused: the model *is* mapped, so "Add model to ..." would be wrong.
+
+    `get_simple_quotas` has already recorded why the quota is missing, and the
+    handler reports that message; the other step is still costed.
+    """
+    put_metered(
+        tracking, "doc-1", {**bedrock("Extraction", 4), **bedrock("Assessment", 4)}
+    )
+    hourly = hours(
+        **{
+            "9": {
+                "docsPerHour": 60,
+                "extractionTokensPerHour": 60000,
+                "assessmentTokensPerHour": 60000,
+            }
+        }
+    )
+    quotas = quota_set()
+    quotas["unreadable_models"] = {"unreadable-model": "⚠️ Quota not read: ..."}
+    requirements = build(
+        hourly,
+        config=model_config(
+            extraction_model=MODEL, assessment_model="unreadable-model"
+        ),
+        quotas=quotas,
+    )
+    assert {r["usedFor"] for r in requirements} == {"Extraction"}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("missing", ["bedrock_models", "bedrock_models_rpm"])
 def test_a_model_with_no_configured_quota_code_stops_the_report(tracking, missing):
     """Better a named failure than a row costed against a guessed limit."""
@@ -1416,12 +1456,11 @@ def test_every_matching_metering_key_in_a_document_is_counted(tracking):
 
     The key format is `{context}/bedrock/{model_id}`, and `merge_metering_data` sums
     repeats of one key rather than adding another, so several matching keys on one
-    document means the step invoked Bedrock under more than one context or model. Two
-    shapes in this repository produce exactly that for extraction: a per-class model
-    override, and an escalation, which records under `ExtractionEscalation` (and
-    under `Extraction-Escalation` in Simple-mode rows from earlier releases) — a key
-    distinct from `Extraction` that also satisfies the planner's
-    `"extraction" in key` filter. Here 3 and 5 calls are 8 requests for the document.
+    document means the step invoked Bedrock under more than one context or model. A
+    per-class model override produces exactly that for extraction. (An escalation,
+    recorded under `ExtractionEscalation`, also contains "extraction" but is its own
+    demand line and is excluded from this one; see the escalation tests in
+    `test_capacity_arithmetic.py`.) Here 3 and 5 calls are 8 requests for the document.
     Stopping at the first match would count 3, understating the RPM requirement — the
     direction that reports a quota as sufficient when it is not.
 
@@ -2161,7 +2200,7 @@ def latency_windows():
 @pytest.fixture
 def wired(tracking, monkeypatch, latency_windows):
     """A handler whose Service Quotas and timing lookups are supplied, not live."""
-    monkeypatch.setattr(index, "get_simple_quotas", lambda: quota_set())
+    monkeypatch.setattr(index, "get_simple_quotas", lambda *_a: quota_set())
 
     def timings(_pattern, latency_metrics_hours=None):
         latency_windows.append(latency_metrics_hours)
@@ -2232,12 +2271,258 @@ def test_the_handler_costs_throughput_against_the_models_its_own_config_names(
     quotas = quota_set()
     quotas["bedrock_models"]["us.amazon.nova-micro-v1:0"] = 1000
     quotas["bedrock_models_rpm"]["us.amazon.nova-micro-v1:0"] = 200
-    monkeypatch.setattr(index, "get_simple_quotas", lambda: quotas)
+    monkeypatch.setattr(index, "get_simple_quotas", lambda *_a: quotas)
 
     result = index.lambda_handler(dict(HAPPY_INPUT), None)
 
     assert result["success"] is True
     assert result["latencyDistribution"]["processingRate"] == "17 docs/min"
+
+
+# Kept before any fixture replaces it, so a test can run the real lookup.
+ORIGINAL_GET_SIMPLE_QUOTAS = index.get_simple_quotas
+
+DEAD_MODEL = "us.anthropic.claude-opus-4-1-20250805-v1:0"
+DEAD_CODE = "L-BD85BFCD"
+SONNET = "us.anthropic.claude-sonnet-5"
+# Sonnet 5's tokens-per-minute code, which the shipped RPM map also uses for it
+# because AWS publishes no requests-per-minute quota for that model.
+SONNET_CODE = "L-D4FBCF4E"
+
+
+def no_such_quota():
+    """What Service Quotas answers for a code that does not exist in the Region."""
+    return ClientError(
+        {
+            "Error": {
+                "Code": "NoSuchResourceException",
+                "Message": "The request failed because the specified quota and "
+                "service do not exist.",
+            }
+        },
+        "GetServiceQuota",
+    )
+
+
+@pytest.fixture
+def live_quotas(wired, monkeypatch):
+    """The real `get_simple_quotas` over a stub Service Quotas client.
+
+    The code map holds the plan's model and one model whose TPM code Service
+    Quotas does not recognise, the shape #2024 was reproduced on. Returns the list
+    of quota codes the handler asked for.
+    """
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES", json.dumps({MODEL: "L-TPM", DEAD_MODEL: DEAD_CODE})
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES",
+        json.dumps({MODEL: "L-RPM", DEAD_MODEL: "L-DEAD-RPM"}),
+    )
+    monkeypatch.setattr(index, "get_simple_quotas", ORIGINAL_GET_SIMPLE_QUOTAS)
+    monkeypatch.setattr(index.time, "sleep", lambda _s: None)
+    asked = []
+    client = MagicMock()
+    client.list_service_quotas.return_value = {"Quotas": []}
+
+    def get_service_quota(ServiceCode, QuotaCode):  # noqa: N803 - boto3 casing
+        asked.append(QuotaCode)
+        if QuotaCode in (DEAD_CODE, "L-DEAD-RPM"):
+            raise no_such_quota()
+        values = {"L-TPM": 100000, "L-RPM": 200, SONNET_CODE: 6_000_000}
+        return {"Quota": {"Value": values[QuotaCode]}}
+
+    client.get_service_quota.side_effect = get_service_quota
+    real_client = index.boto3.client
+    monkeypatch.setattr(
+        index.boto3,
+        "client",
+        lambda name, *a, **k: (
+            client if name == "service-quotas" else real_client(name, *a, **k)
+        ),
+    )
+    return asked
+
+
+@pytest.mark.unit
+def test_a_dead_quota_code_for_a_model_the_plan_does_not_call_is_never_read(
+    live_quotas,
+):
+    """#2024: one code missing from the Region failed every profile's calculation.
+
+    The plan calls only `MODEL`, so the dead entry is not looked up at all and the
+    report is complete, with no warning.
+    """
+    result = index.lambda_handler(dict(HAPPY_INPUT), None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert DEAD_CODE not in live_quotas
+    assert set(live_quotas) == {"L-TPM", "L-RPM"}
+    assert {r["usedFor"] for r in result["quotaRequirements"]} == {
+        "Classification",
+        "Extraction",
+        "Assessment",
+    }
+    assert not any(
+        r.startswith(index.QUOTA_NOT_READ_PREFIX) for r in result["recommendations"]
+    )
+
+
+@pytest.mark.unit
+def test_a_planned_model_whose_quota_cannot_be_read_is_skipped_with_a_warning(
+    live_quotas,
+):
+    """The rest of the analysis survives, and the warning names model and code.
+
+    Assessment runs on the model whose quota Service Quotas does not recognise, so
+    its rows are left out, the other two steps are still reported, and the first
+    recommendation — the line the page's warning banner shows — says why.
+    """
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps(
+        {
+            "classification_model": MODEL,
+            "extraction_model": MODEL,
+            "assessment_model": DEAD_MODEL,
+        }
+    )
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert DEAD_CODE in live_quotas
+    assert {r["usedFor"] for r in result["quotaRequirements"]} == {
+        "Classification",
+        "Extraction",
+    }
+    warning = result["recommendations"][0]
+    assert warning.startswith(index.QUOTA_NOT_READ_PREFIX)
+    assert DEAD_MODEL in warning
+    assert DEAD_CODE in warning
+    assert "NoSuchResourceException" in warning
+    assert result["calculationDetails"]["quotasUsed"]["bedrock_models"] == {
+        MODEL: 100000
+    }
+
+
+@pytest.mark.unit
+def test_an_unreadable_model_the_plan_does_not_call_is_not_reported(live_quotas):
+    """With no step model configured the whole map is read, dead code included.
+
+    The dead model's failure is tolerated there, but this plan does not call it,
+    so the page must not warn about it.
+    """
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps({})
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert DEAD_CODE in live_quotas  # the whole map was read
+    assert not any(
+        r.startswith(index.QUOTA_NOT_READ_PREFIX) for r in result["recommendations"]
+    )
+
+
+@pytest.mark.unit
+def test_a_sonnet_5_only_plan_is_bound_by_its_token_limit_not_another_models_rpm(
+    live_quotas, monkeypatch
+):
+    """The request limit is reduced over the plan's models, as the token limit is.
+
+    The account also maps Nova Lite with a real 200 RPM quota, but the plan calls
+    only Sonnet 5, whose "RPM" entry is its 6,000,000 TPM code. (Sonnet 4.5, by
+    contrast, has a real RPM code of its own, so this is about Sonnet 5 and 5.5.) Reading every code
+    in the map made Nova's 200 bind the request limit for a plan that never calls
+    Nova: 200 docs/min. Reading only the plan's models leaves the exact token
+    limit to decide it: 6,000,000 TPM over 6,000 tokens a document is 1,000
+    docs/min. The figure is asserted, not merely "not 200", so a different wrong
+    reduction cannot pass.
+    """
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES", json.dumps({MODEL: "L-TPM", SONNET: SONNET_CODE})
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES",
+        json.dumps({MODEL: "L-RPM", SONNET: SONNET_CODE}),
+    )
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps(
+        {
+            "classification_model": SONNET,
+            "extraction_model": SONNET,
+            "assessment_model": SONNET,
+        }
+    )
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert "L-RPM" not in live_quotas
+    assert result["latencyDistribution"]["processingRate"] == "1000 docs/min"
+
+
+@pytest.mark.unit
+def test_a_sustained_throttle_is_reported_as_a_failure_not_a_missing_quota(
+    wired, monkeypatch
+):
+    """Throttling is transient, so it must not drop a model from the analysis.
+
+    Dropping it would return `success: true` with that model's steps missing and
+    a message about the quota code, which is not what is wrong. Only one of the
+    plan's two models is throttled: were both, "every lookup failed" would refuse
+    the run either way, and this test could not tell the two behaviours apart.
+    """
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES", json.dumps({MODEL: "L-TPM", SONNET: "L-SLOW"})
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES", json.dumps({MODEL: "L-RPM", SONNET: "L-SLOW"})
+    )
+    monkeypatch.setattr(index, "get_simple_quotas", ORIGINAL_GET_SIMPLE_QUOTAS)
+    monkeypatch.setattr(index.time, "sleep", lambda _s: None)
+    client = MagicMock()
+    client.list_service_quotas.return_value = {"Quotas": []}
+    slow_calls = []
+
+    def get_service_quota(ServiceCode, QuotaCode):  # noqa: N803 - boto3 casing
+        if QuotaCode == "L-SLOW":
+            slow_calls.append(QuotaCode)
+            raise ClientError(
+                {"Error": {"Code": "TooManyRequestsException", "Message": "slow down"}},
+                "GetServiceQuota",
+            )
+        return {"Quota": {"Value": {"L-TPM": 100000, "L-RPM": 200}[QuotaCode]}}
+
+    client.get_service_quota.side_effect = get_service_quota
+    real_client = index.boto3.client
+    monkeypatch.setattr(
+        index.boto3,
+        "client",
+        lambda name, *a, **k: (
+            client if name == "service-quotas" else real_client(name, *a, **k)
+        ),
+    )
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps(
+        {"classification_model": MODEL, "extraction_model": SONNET}
+    )
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is False
+    assert "TooManyRequestsException" in result["errorMessage"]
+    assert index.QUOTA_NOT_READ_PREFIX not in result["errorMessage"]
+    # retry_with_backoff's three attempts, then the error propagates.
+    assert slow_calls == ["L-SLOW"] * 3
+
+
+@pytest.mark.unit
+def test_the_ui_selects_quota_warnings_by_the_same_prefix():
+    """The page finds these warnings by prefix, so the two copies must agree."""
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "ui/src/components/capacity-planning/quota-warnings.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"export const QUOTA_NOT_READ_PREFIX = '([^']+)';", ts)
+    assert match, "QUOTA_NOT_READ_PREFIX not found in quota-warnings.ts"
+    assert match.group(1) == index.QUOTA_NOT_READ_PREFIX
 
 
 @pytest.mark.unit
@@ -2750,7 +3035,7 @@ def test_an_unreadable_service_quotas_api_is_reported_as_a_failed_calculation(
 ):
     """The most common real failure: the execution role lacks the quota permission."""
 
-    def denied():
+    def denied(*_a):
         raise ValueError("Cannot access Service Quotas API: AccessDeniedException")
 
     monkeypatch.setattr(index, "get_simple_quotas", denied)
@@ -2765,7 +3050,7 @@ def test_an_unreadable_service_quotas_api_is_reported_as_a_failed_calculation(
 def test_the_error_detail_metric_is_truncated_for_display(wired, monkeypatch):
     """A 4 KB traceback in a metric tile breaks the layout; 100 characters fit."""
 
-    def long_failure():
+    def long_failure(*_a):
         raise ValueError("x" * 500)
 
     monkeypatch.setattr(index, "get_simple_quotas", long_failure)
@@ -2780,7 +3065,7 @@ def test_the_error_detail_metric_is_truncated_for_display(wired, monkeypatch):
 def test_a_failed_calculation_over_api_gateway_is_a_500(wired, monkeypatch):
     """A server-side failure must not be reported to the client as a bad request."""
 
-    def denied():
+    def denied(*_a):
         raise ValueError("quota lookup exploded")
 
     monkeypatch.setattr(index, "get_simple_quotas", denied)

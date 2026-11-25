@@ -6,13 +6,23 @@
 import React, { useState } from 'react';
 import { AppLayout, BreadcrumbGroup, Flashbar } from '@cloudscape-design/components';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import useNotifications from '../../hooks/use-notifications';
 import { mapNotificationsToFlashbar } from '../common/notification-flashbar';
-import { appLayoutLabels } from '../common/labels';
+import { useAppLayoutLabels } from '../common/labels';
 import Navigation from '../genaiidp-layout/navigation';
 import { reviewManagementTrail } from './breadcrumbs';
+
+const messages = defineMessages<{ ariaLabel: NoMessageValues }>({
+  ariaLabel: {
+    id: 'breadcrumbs.reviewQueuesLayout.ariaLabel',
+    defaultMessage: 'Breadcrumbs',
+    description:
+      'Screen-reader name of the breadcrumb navigation landmark on the Review Studio pages, Home › Tasks, Home › Queues, Home › Jobs and the edit page.',
+  },
+});
 
 interface ReviewQueuesLayoutProps {
   /** The whole trail; Review Studio › Review Management by default. */
@@ -32,11 +42,13 @@ const ReviewQueuesLayout = ({
   tools,
   navActiveHref,
 }: ReviewQueuesLayoutProps): React.JSX.Element => {
+  const intl = useIntl();
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
   const flashItems = mapNotificationsToFlashbar(useNotifications());
   // Closed until asked for, as on the document pages.
   const [toolsOpen, setToolsOpen] = useState(false);
-  const items = trail ?? reviewManagementTrail();
+  const items = trail ?? reviewManagementTrail(undefined, intl);
 
   return (
     <AppLayout
@@ -46,7 +58,7 @@ const ReviewQueuesLayout = ({
       navigationOpen={navigationOpen}
       onNavigationChange={({ detail }) => setNavigationOpen(detail.open)}
       notifications={<Flashbar items={flashItems} />}
-      breadcrumbs={<BreadcrumbGroup ariaLabel="Breadcrumbs" items={items} />}
+      breadcrumbs={<BreadcrumbGroup ariaLabel={intl.formatMessage(messages.ariaLabel)} items={items} />}
       contentType={contentType}
       tools={tools}
       toolsHide={!tools}

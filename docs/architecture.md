@@ -112,16 +112,41 @@ The solution uses a **Unified Pattern** that combines both BDA and pipeline proc
 
 ![Unified Architecture](../images/IDP.UnifiedPatterns.drawio.png)
 
-- **Pipeline mode** (`use_bda: false`, default) — OCR → Classification → Extraction → Assessment → Rule Validation → Summarization → Evaluation
-- **BDA mode** (`use_bda: true`) — BDA Invoke → BDA Process Results → Rule Validation → Summarization → Evaluation
+- **Pipeline mode** (`use_bda: false`, default) — OCR → Classification → Extraction → Assessment → Policy Rule Validation → Review Routing → Summarization → Evaluation
+- **BDA mode** (`use_bda: true`) — BDA Invoke → Assemble Document → Policy Rule Validation → Review Routing → Summarization → Evaluation
 
 ### Shared Processing Steps
 
 Both modes share a common tail in the workflow:
-- **HITL Check** — Routes documents to human review if confidence is below threshold
-- **Rule Validation** — Applies configurable business rules (when enabled)
+- **Policy Rule Validation** — Checks the extracted data against the profile's policy rules (when enabled)
+- **Review Routing** — Evaluates the profile's routing rules and holds the document in a review queue when one says so (see [Review Routing](./review-routing.md))
 - **Summarization** — Generates document summaries using Bedrock LLM
 - **Evaluation** — Compares results against ground truth baselines (when available)
+
+### Run plans
+
+Every run carries a **run plan** that says at which step it starts and which optional
+steps it skips. The workflow's first state, `CheckRunPlan`, sends the run to its start
+step; a step the run does not do is not entered and fires no hook.
+
+| Run | Starts at | Who decides |
+|---|---|---|
+| A new upload | The beginning | — |
+| A reprocess | The step that was chosen | The person who starts it |
+| After a completed review | **Apply Review Changes**, which writes the reviewer's corrections into the document; then policy rule validation, Review Routing, summarization and evaluation | The system |
+| After a completed review in which the page grouping was changed (Pipeline mode) | **Extraction**, for the sections that were added, whose pages changed or that have no extracted values; then Apply Review Changes and the steps after it | The system |
+| After a review that is sent back | **Classification** in Pipeline mode, the beginning in BDA mode | The system |
+| After a review that is removed or skipped | Policy rule validation | The system |
+| After a rejected review | Nowhere: the document ends `REJECTED` without invoking a Lambda function | The system |
+| Process Changes after saved edits | The first step the edits affect: classification, extraction or policy rule validation | The system |
+
+A reviewer is not asked for a step. The dialog that finishes a review, and the
+confirmation of Process Changes, list the steps the run will do before it starts. A
+run that extracts sections again after a completed review passes two states after
+the Pipeline assembly, `CheckReviewToApply` and `SelectAssembledDocument`, which send
+it to `ApplyReviewChangesStep` before policy rule validation. See
+[Reprocessing](./document-versions.md#reprocessing) and
+[How a review ends](./review-queues.md#how-a-review-ends).
 
 ## Deployment
 
@@ -274,8 +299,9 @@ The solution supports optional Amazon Bedrock Guardrails integration:
     next step reads directly. A guardrail intervention would put the guardrail's
     blocked-output message in its place. They have never sent the guardrail, and
     enabling it is a behaviour change that has not been measured.
-  - **Embeddings** for multi-document discovery, which return vectors rather than
-    text.
+  - **Embeddings** for multi-document discovery and for section classification
+    with `section_classification.method: embeddings`, which return vectors rather
+    than text.
   - **Rule authoring** in the configuration editor, which translates rule text an
     administrator types rather than document text.
 - OpenAI GPT-5.x models are served through the Responses API on the
@@ -363,10 +389,12 @@ passes through. Seven hook points exist:
 | `postprocessing` | After evaluation, as the workflow's last step |
 
 Four of the seven fire in both BDA and pipeline modes, for two different reasons.
-`preprocessing` is the state machine's `StartAt` state, so it runs before the
-`use_bda` routing choice is made and even when OCR is disabled. The two branches
-rejoin at the HITL check, so `postRuleValidation`, `postSummarization` and
-`postprocessing` all sit on the shared tail. Only `postOcr`,
+`preprocessing` is the first state of a run that starts at the beginning, so it runs
+before the `use_bda` choice is made and even when OCR is disabled. The two branches
+rejoin at policy rule validation, so `postRuleValidation`, `postSummarization` and
+`postprocessing` all sit on the shared tail. A hook fires only on a run that does its
+step: a run that starts later (a reprocess from a later step, the run after a
+completed review) does not fire the hooks of the steps before its start. Only `postOcr`,
 `postClassification` and `postExtraction` are on the pipeline branch alone; a
 BDA-mode document never reaches them. All seven are dispatched by a
 single `PipelineHooksDispatcherFunction` in the pattern stack, which invokes your

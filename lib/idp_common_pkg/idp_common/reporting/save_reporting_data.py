@@ -10,26 +10,30 @@ import io
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from idp_common.config.models import IDPConfig, read_price
-from idp_common.metering_units import (
-    CACHE_UNITS,
-    NOT_CHARGEABLE,
-    classify_absent_unit,
-    pricing_key_service,
-)
+from idp_common.config.models import IDPConfig
 from idp_common.metrics import emit_document_cost_metrics
 from idp_common.models import Document
+from idp_common.reporting.pricing import (
+    build_pricing_map,
+    iter_metering_rows,
+    unit_cost,
+)
 from idp_common.s3 import get_json_content
 from idp_common.utils import parse_s3_uri
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# The members of a Glue ``Column`` in a ``TableInput``. An existing column read
+# back from ``GetTable`` is copied with these members only, so the update sends
+# exactly what the ``Column`` shape defines.
+_GLUE_COLUMN_KEYS = ("Name", "Type", "Comment", "Parameters")
 
 
 class SaveReportingData:
@@ -426,6 +430,67 @@ class SaveReportingData:
 
         return columns
 
+    @staticmethod
+    def _merge_glue_columns(
+        existing_columns: List[Dict[str, Any]], new_columns: List[Dict[str, str]]
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Merge a document's columns into a Glue table's existing columns.
+
+        Glue stores column names lowercased, while the columns built from a
+        document keep the casing of the extraction schema's field names, so
+        names are compared lowercased on both sides. Comparing them as written
+        made every field with an upper-case letter look new, which ran
+        ``UpdateTable`` (and archived a table version) on every save.
+
+        The result is the existing columns in their stored order, with any
+        column the document adds appended. No existing column is removed or
+        renamed: a column an earlier document contributed stays queryable
+        when the current document lacks that field. A column whose type the
+        document maps differently is updated to the document's type, which is
+        the type this code writes to the parquet files; an existing column
+        that carries no type is left as it is.
+
+        Args:
+            existing_columns: ``StorageDescriptor.Columns`` from ``GetTable``.
+            new_columns: Columns derived from the current document's schema.
+
+        Returns:
+            The merged column list and whether it differs from the existing one.
+        """
+        stored: List[Dict[str, Any]] = [
+            {key: col[key] for key in _GLUE_COLUMN_KEYS if key in col}
+            for col in existing_columns
+        ]
+        merged = [dict(col) for col in stored]
+        position = {col["Name"].lower(): i for i, col in enumerate(merged)}
+        for col in new_columns:
+            key = col["Name"].lower()
+            if key not in position:
+                position[key] = len(merged)
+                merged.append(dict(col))
+                continue
+            current = merged[position[key]]
+            current_type = current.get("Type")
+            if current_type and current_type.lower() != col["Type"].lower():
+                current["Type"] = col["Type"]
+        # Decided on the result, not on the steps: two of the document's own
+        # names that differ only in case can rewrite a type and then restore
+        # it, which leaves the table as it was.
+        return merged, merged != stored
+
+    @staticmethod
+    def _merge_glue_table_parameters(
+        existing_table: Dict[str, Any], parameters: Dict[str, str]
+    ) -> Dict[str, str]:
+        """Keep the table's existing ``Parameters`` under the code's own keys.
+
+        ``UpdateTable`` replaces the table-level parameters with the ones it is
+        sent, so sending only the keys this code manages would discard any a
+        crawler or an operator recorded on the table. The code's keys still win.
+        """
+        existing = existing_table.get("Table", {}).get("Parameters") or {}
+        return {**existing, **parameters}
+
     def _create_or_update_glue_table(
         self, section_type: str, schema: pa.Schema, new_section_created: bool = False
     ) -> bool:
@@ -496,8 +561,13 @@ class SaveReportingData:
                 .get("StorageDescriptor", {})
                 .get("Columns", [])
             )
-            existing_column_names = {col["Name"] for col in existing_columns}
-            new_column_names = {col["Name"] for col in columns}
+            merged_columns, columns_changed = self._merge_glue_columns(
+                existing_columns, columns
+            )
+            table_input["StorageDescriptor"]["Columns"] = merged_columns
+            table_input["Parameters"] = self._merge_glue_table_parameters(
+                existing_table, table_input["Parameters"]
+            )
 
             # Check if location has changed
             existing_location = (
@@ -507,8 +577,7 @@ class SaveReportingData:
             )
             new_location = table_input["StorageDescriptor"]["Location"]
 
-            # Check if columns or location have changed
-            columns_changed = bool(new_column_names - existing_column_names)
+            # Check if location has changed
             location_changed = existing_location != new_location
 
             # If there are new columns or location has changed, update the table
@@ -541,6 +610,11 @@ class SaveReportingData:
                 logger.info(
                     f"Creating new Glue table {table_name} for section type: {section_type}"
                 )
+                # Glue stores names lowercased, so collapse the document's own
+                # names that differ only in case, as an update would.
+                table_input["StorageDescriptor"]["Columns"] = self._merge_glue_columns(
+                    [], columns
+                )[0]
                 try:
                     self.glue_client.create_table(
                         DatabaseName=self.database_name, TableInput=table_input
@@ -571,6 +645,7 @@ class SaveReportingData:
         data_to_save: List[str],
         *,
         review: Any = None,
+        execution_status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Save document data based on the data_to_save list.
@@ -581,6 +656,10 @@ class SaveReportingData:
             review: Optional ``idp_common.review_queues.models.ReviewReportingInfo``
                 for a document routed to a review queue. Only then do section
                 rows carry review columns and ``document_reviews`` get a row.
+            execution_status: The terminal status of the workflow execution the
+                metering belongs to (``SUCCEEDED``, ``FAILED``, ``TIMED_OUT``,
+                ``ABORTED``), written to every metering row. See
+                :meth:`save_metering_data`.
 
         Returns:
             List of results from each save operation
@@ -597,7 +676,9 @@ class SaveReportingData:
 
         if "metering" in data_to_save:
             logger.info("Processing metering data")
-            result = self.save_metering_data(document)
+            result = self.save_metering_data(
+                document, execution_status=execution_status
+            )
             if result:
                 results.append(result)
 
@@ -683,6 +764,9 @@ class SaveReportingData:
             "machine_run_id": review.machine_run_id,
             "final_run_id": review.final_run_id,
             "timestamp": now,
+            # The routing rule's reason as written (placeholders unfilled). Last,
+            # so the column is an addition for a table that already has rows.
+            "routing_reason": review.routing_reason,
         }
         schema = pa.schema(
             [
@@ -702,6 +786,7 @@ class SaveReportingData:
                 ("machine_run_id", pa.string()),
                 ("final_run_id", pa.string()),
                 ("timestamp", pa.timestamp("ms")),
+                ("routing_reason", pa.string()),
             ]
         )
         s3_key = f"document_reviews/date={date_partition}/{escaped_doc_id}.parquet"
@@ -1024,67 +1109,17 @@ class SaveReportingData:
         """
         Get pricing information from the configuration dictionary.
 
-        This method loads pricing from the configuration dictionary passed to the constructor,
-        with caching to avoid repeated processing.
+        Builds the lookup with ``idp_common.reporting.pricing.build_pricing_map``
+        from the configuration passed to the constructor, cached so it is built
+        once.
 
         Returns:
             Dictionary mapping service/unit combinations to prices
         """
-        # Return cached pricing if available
         if self._pricing_cache is not None:
             return self._pricing_cache
-
-        # Initialize empty pricing map
-        pricing_map = {}
-
-        # Load pricing from configuration
-        try:
-            if self.config.pricing:
-                logger.info(
-                    f"Found {len(self.config.pricing)} pricing entries in configuration"
-                )
-
-                config_loaded_count = 0
-                # Convert configuration pricing to lookup dictionary (convert strings to floats)
-                for service in self.config.pricing:
-                    service_name = service.name
-                    # The entry is recorded even when none of its prices is valid,
-                    # so ``_get_unit_cost`` matches it and reports the unit
-                    # unpriced. Leaving it out let the suffix walk go on to a
-                    # shorter key and price the unit from a different entry, while
-                    # the web UI's cost panel (``toPricingLookup``) keeps the entry
-                    # and shows the unit unpriced.
-                    pricing_map.setdefault(service_name, {})
-                    for unit_info in service.units:
-                        unit_name = unit_info.name
-                        # The same rule the save path enforces (PricingConfig), so
-                        # a price is priced here exactly when the Pricing page
-                        # accepts it; ``float()`` alone also took nan, inf and
-                        # ``1_000``, which the page reads differently.
-                        price = read_price(unit_info.price)
-                        if price is None:
-                            logger.warning(
-                                f"Invalid price value for {service_name}/{unit_name}: {unit_info.price!r}. Skipping entry."
-                            )
-                            continue
-                        pricing_map[service_name][unit_name] = price
-                        config_loaded_count += 1
-
-                if config_loaded_count > 0:
-                    logger.info(
-                        f"Successfully loaded {config_loaded_count} pricing entries from configuration"
-                    )
-                else:
-                    logger.warning("No valid pricing data found in configuration")
-            else:
-                logger.warning("No pricing section found in configuration")
-
-        except Exception as e:
-            logger.error(f"Error processing pricing from configuration: {str(e)}")
-
-        # Cache the pricing from configuration
-        self._pricing_cache = pricing_map
-        return pricing_map
+        self._pricing_cache = build_pricing_map(self.config.pricing)
+        return self._pricing_cache
 
     def _get_unit_cost(
         self, service_api: str, unit: str, value: Any = 1
@@ -1093,47 +1128,10 @@ class SaveReportingData:
         Get the unit cost for a specific service API and unit using the
         configuration dictionary (same source as the UI).
 
-        Resolution is by EXACT pricing key. ``service_api`` is tried first, then
-        progressively shorter ``/``-delimited suffixes of it, and the longest
-        match wins — the same rule the benchmark harness uses
-        (``benchmarks/harness/lib.py::price_metering``), so the two cost figures
-        the project publishes cannot diverge. Every shipped pricing key is fully
-        qualified (``bedrock/<model-id>``, ``textract/<api>``,
-        ``lambda_hook/<function-name>``), so the suffix walk only ever strips
-        leading context components; it cannot bind one model to another.
-
-        The suffix walk is also what keeps a pricing key that is *less* qualified
-        than the metering key working, which is why a user config that keys a
-        Lambda hook on the bare ``GENAIIDP-<name>`` still resolves even though the
-        shipped default is now ``lambda_hook/GENAIIDP-<name>``. Note the
-        corollary: a Lambda hook's metering key must carry the bare function
-        name, not the configured ARN — an ARN delimits the name with ``:``, which
-        this walk cannot split, so an ARN-keyed metering row is unpriceable. See
-        ``bedrock.client.lambda_hook_metering_name``.
-
-        There is deliberately NO substring/fuzzy fallback. The previous
-        implementation accepted a pricing key that was merely a substring of the
-        requested ``service_api`` (or vice versa), and — worse — a unit name that
-        was merely a substring of the requested ``unit``. Because ``inputTokens``
-        is the first unit in every pricing row, ``cacheReadInputTokens`` bound to
-        it and cache reads were billed at the FRESH INPUT rate: up to 10x their
-        real price, always in the expensive direction. See GitHub issue #926.
-
-        A unit the matched entry does not list is only $0.00 when
-        ``metering_units.classify_absent_unit`` says so — the metered count is
-        zero, or the unit is declared non-chargeable for that service on the
-        authority of AWS's own price list. Anything else is ``None``: Bedrock's
-        ``usage`` block grows numeric members and ``bedrock.client.numeric_usage``
-        forwards every one of them into metering, so an undeclared unit used to be
-        a new billable dimension priced at exactly $0.00 with nothing to query for
-        (GitHub issue #1212).
-
-        ``value`` defaults to ``1`` rather than to ``0``, and the direction is the
-        point: ``0`` would mean a caller that forgot to pass it got "free" for
-        every absent unit — the check silently off, which is the state #1212 is
-        about. ``1`` means such a caller gets the strict answer instead, so the
-        omission shows up as a NULL to investigate rather than as a zero nobody
-        sees.
+        Delegates to ``idp_common.reporting.pricing.unit_cost``, which documents
+        the resolution rules: exact pricing key with a longest-suffix walk, no
+        substring fallback (#926), and ``None`` rather than $0.00 for a unit
+        nothing declares non-chargeable (#1212).
 
         Args:
             service_api: The AWS service API (e.g., 'bedrock/model-id',
@@ -1143,62 +1141,10 @@ class SaveReportingData:
                 case — a count of zero cannot cost anything at any rate.
 
         Returns:
-            The unit cost in USD; ``0.0`` when a pricing entry exists and either
-            lists this unit or legitimately omits it; or ``None`` when no pricing
-            entry exists for ``service_api`` at all, or when one exists and omits
-            a unit that is neither zero nor declared free. ``None`` is an explicit
-            "unpriced" result, not a price — the caller records it as NULL so a
-            pricing gap stays distinguishable from something that is genuinely
-            free. Never silently substitutes a related model's price.
+            The unit cost in USD, ``0.0`` for a legitimately free unit, or
+            ``None`` when the row is unpriced.
         """
-        pricing_map = self._get_pricing_from_config()
-
-        parts = service_api.split("/")
-        for start in range(len(parts)):
-            candidate = "/".join(parts[start:])
-            service_costs = pricing_map.get(candidate)
-            if service_costs is None:
-                continue
-            if unit in service_costs:
-                return service_costs[unit]
-            # The entry exists but does not list this unit. Whether that means
-            # "not chargeable" or "nobody has priced this yet" is the one
-            # question classify_absent_unit answers, from a declaration sourced
-            # to AWS's published price list rather than from the shape of
-            # pricing.yaml. Reading the absence itself as "free" is what priced a
-            # newly added Bedrock usage field at $0.00 (#1212).
-            if classify_absent_unit(candidate, unit, value) == NOT_CHARGEABLE:
-                logger.debug(
-                    f"Pricing entry '{candidate}' lists no unit '{unit}'; "
-                    f"not chargeable ($0.0)"
-                )
-                return 0.0
-            declaration = (
-                "idp_common.metering_units.EXPECTED_CACHE_UNIT_OMISSIONS, per "
-                "pricing key and per unit"
-                if unit in CACHE_UNITS
-                else "idp_common.metering_units.NON_CHARGEABLE_METERING_UNITS, "
-                f"for the '{pricing_key_service(candidate)}' service"
-            )
-            logger.warning(
-                f"UNPRICED UNIT: pricing entry '{candidate}' lists no unit "
-                f"'{unit}' and nothing declares it non-chargeable in "
-                f"{declaration}. "
-                f"Recording this metering row (value={value}) with a NULL cost "
-                f"rather than $0.00, which would understate spend silently. "
-                f"Either add a '{unit}' rate to the '{candidate}' pricing entry, "
-                f"or declare the unit non-chargeable there with the AWS "
-                f"price-list reading that shows it is."
-            )
-            return None
-
-        logger.warning(
-            f"UNPRICED: no pricing entry for service_api='{service_api}' "
-            f"(unit='{unit}'). Recording this metering row with a NULL cost "
-            f"rather than $0.00, which would understate spend silently. Add a "
-            f"'{service_api}' entry to the pricing configuration."
-        )
-        return None
+        return unit_cost(self._get_pricing_from_config(), service_api, unit, value)
 
     def clear_pricing_cache(self):
         """
@@ -1208,12 +1154,27 @@ class SaveReportingData:
         self._pricing_cache = None
         logger.info("Pricing cache cleared")
 
-    def save_metering_data(self, document: Document) -> Optional[Dict[str, Any]]:
+    def save_metering_data(
+        self, document: Document, execution_status: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Save metering data for a document to the reporting bucket.
 
+        One workflow execution writes one metering file. When the document carries
+        its ``workflow_execution_arn`` the file name is derived from the execution
+        rather than from the write time, so writing the same execution's usage
+        again in the same hour replaces the file instead of adding a second copy
+        (the workflow tracker also records that an execution's usage was written,
+        so a redelivery in a later hour is not written at all). Every row carries
+        ``execution_arn`` and ``execution_status``, so a failed attempt's usage is
+        counted in totals and can be broken out with
+        ``WHERE execution_status <> 'SUCCEEDED'``.
+
         Args:
             document: Document object containing metering data
+            execution_status: Terminal status of the execution the usage belongs
+                to, or None when the caller does not know it (the column is then
+                NULL, as it is on rows written before the column existed).
 
         Returns:
             Dict with status and message, or None if no metering data
@@ -1259,6 +1220,13 @@ class SaveReportingData:
                 # falls back to a ``document_sections_*`` JOIN when this
                 # is NULL. See docs/reporting-sql-layer.md §10.
                 ("document_class", pa.string()),
+                # The workflow execution the row's usage was incurred in, and how
+                # that execution ended. A failed, timed-out or aborted execution
+                # writes its partial usage too, so totals are actual spend; these
+                # two columns are what separate a failed attempt from the run
+                # that later succeeded. NULL on rows written before they existed.
+                ("execution_arn", pa.string()),
+                ("execution_status", pa.string()),
             ]
         )
 
@@ -1367,73 +1335,57 @@ class SaveReportingData:
         priced_cost_total: Optional[float] = None
         unpriced_row_count = 0
 
-        for key, metrics in document.metering.items():
-            # Split the key into context and service_api
-            parts = key.split("/", 1)
-            if len(parts) == 2:
-                context, service_api = parts
+        for context, service_api, unit, float_value in iter_metering_rows(
+            document.metering
+        ):
+            # Get the number of pages from the document
+            num_pages = document.num_pages if document.num_pages is not None else 0
+
+            # Calculate unit cost and estimated cost using pricing from
+            # configuration. ``None`` means the pricing configuration has no
+            # entry for this service at all, so both cost columns are written
+            # as NULL instead of $0.00: a zero is indistinguishable from
+            # something that is genuinely free, and it silently understates
+            # spend. SUM() in Athena ignores NULLs the same way it would a
+            # zero, so totals are unaffected, but the gap is now queryable
+            # (``WHERE unit_cost IS NULL``). See _get_unit_cost.
+            # ``float_value``, not the raw ``value``: the row records
+            # float_value, so classifying on anything else would judge one
+            # number and store another. It matters in both directions — a
+            # count of "0" as a string is a measured zero once converted, and
+            # an unconvertible count became 1.0 with a warning above, which
+            # is a non-zero the strict branch should see rather than a string
+            # the classifier reads as unreadable.
+            unit_cost = self._get_unit_cost(service_api, unit, float_value)
+            if unit_cost is None:
+                unpriced_rows.add(f"{service_api} [{unit}]")
+                estimated_cost = None
+                unpriced_row_count += 1
             else:
-                context = ""
-                service_api = key
+                estimated_cost = float_value * unit_cost
+                priced_cost_total = (
+                    estimated_cost
+                    if priced_cost_total is None
+                    else priced_cost_total + estimated_cost
+                )
 
-            # Process each unit and value
-            for unit, value in metrics.items():
-                # Convert value to float if possible
-                try:
-                    float_value = float(value)
-                except (ValueError, TypeError):
-                    # If conversion fails, use 1.0 as default
-                    float_value = 1.0
-                    logger.warning(
-                        f"Could not convert metering value to float: {value}, using 1.0 instead"
-                    )
-
-                # Get the number of pages from the document
-                num_pages = document.num_pages if document.num_pages is not None else 0
-
-                # Calculate unit cost and estimated cost using pricing from
-                # configuration. ``None`` means the pricing configuration has no
-                # entry for this service at all, so both cost columns are written
-                # as NULL instead of $0.00: a zero is indistinguishable from
-                # something that is genuinely free, and it silently understates
-                # spend. SUM() in Athena ignores NULLs the same way it would a
-                # zero, so totals are unaffected, but the gap is now queryable
-                # (``WHERE unit_cost IS NULL``). See _get_unit_cost.
-                # ``float_value``, not the raw ``value``: the row records
-                # float_value, so classifying on anything else would judge one
-                # number and store another. It matters in both directions — a
-                # count of "0" as a string is a measured zero once converted, and
-                # an unconvertible count became 1.0 with a warning above, which
-                # is a non-zero the strict branch should see rather than a string
-                # the classifier reads as unreadable.
-                unit_cost = self._get_unit_cost(service_api, unit, float_value)
-                if unit_cost is None:
-                    unpriced_rows.add(f"{service_api} [{unit}]")
-                    estimated_cost = None
-                    unpriced_row_count += 1
-                else:
-                    estimated_cost = float_value * unit_cost
-                    priced_cost_total = (
-                        estimated_cost
-                        if priced_cost_total is None
-                        else priced_cost_total + estimated_cost
-                    )
-
-                metering_record = {
-                    "document_id": document_id,
-                    "context": context,
-                    "service_api": service_api,
-                    "unit": unit,
-                    "value": float_value,
-                    "number_of_pages": num_pages,
-                    "unit_cost": unit_cost,
-                    "estimated_cost": estimated_cost,
-                    "timestamp": timestamp,
-                    "initial_event_time": initial_event_time,
-                    "config_version": document.config_version or "default",
-                    "document_class": document_class,
-                }
-                metering_records.append(metering_record)
+            metering_record = {
+                "document_id": document_id,
+                "context": context,
+                "service_api": service_api,
+                "unit": unit,
+                "value": float_value,
+                "number_of_pages": num_pages,
+                "unit_cost": unit_cost,
+                "estimated_cost": estimated_cost,
+                "timestamp": timestamp,
+                "initial_event_time": initial_event_time,
+                "config_version": document.config_version or "default",
+                "document_class": document_class,
+                "execution_arn": document.workflow_execution_arn or None,
+                "execution_status": execution_status,
+            }
+            metering_records.append(metering_record)
 
         if unpriced_rows:
             logger.warning(
@@ -1461,9 +1413,16 @@ class SaveReportingData:
         # so the tier picker's <2h tail query can prune to the current hour
         # instead of scanning the whole day (see docs/reporting-sql-layer.md §2).
         if metering_records:
+            # Keyed by execution when it is known, so the same execution's usage
+            # written twice in one hour lands on one object, not two. Without an
+            # execution, the write time keeps names unique as before.
+            run_suffix = timestamp_str
+            if document.workflow_execution_arn:
+                execution_name = document.workflow_execution_arn.rsplit(":", 1)[-1]
+                run_suffix = "exec_" + re.sub(r"[^A-Za-z0-9._-]", "_", execution_name)
             metering_key = (
                 f"metering/date={date_partition}/hour={hour_partition}/"
-                f"{escaped_doc_id}_{timestamp_str}_results.parquet"
+                f"{escaped_doc_id}_{run_suffix}_results.parquet"
             )
             self._save_records_as_parquet(
                 metering_records, metering_key, metering_schema
@@ -1818,19 +1777,27 @@ class SaveReportingData:
             existing_columns = existing_table_response["Table"]["StorageDescriptor"][
                 "Columns"
             ]
-            existing_column_names = {col["Name"] for col in existing_columns}
-            new_column_names = {col["Name"] for col in columns}
+            merged_columns, columns_changed = self._merge_glue_columns(
+                existing_columns, columns
+            )
 
-            if not new_column_names.issubset(existing_column_names):
+            if columns_changed:
+                table_input["StorageDescriptor"]["Columns"] = merged_columns
+                table_input["Parameters"] = self._merge_glue_table_parameters(
+                    existing_table_response, table_input["Parameters"]
+                )
                 self.glue_client.update_table(
                     DatabaseName=self.database_name, TableInput=table_input
                 )
                 logger.info(f"Updated Glue table {table_name}")
                 return True
-            return True
+            return False
 
         except Exception as e:
             if "EntityNotFoundException" in str(e):
+                table_input["StorageDescriptor"]["Columns"] = self._merge_glue_columns(
+                    [], columns
+                )[0]
                 try:
                     self.glue_client.create_table(
                         DatabaseName=self.database_name, TableInput=table_input
@@ -1934,6 +1901,11 @@ class SaveReportingData:
                 ("reasoning", pa.string()),
                 ("supporting_pages", pa.string()),
                 ("validation_date", pa.timestamp("ms")),
+                # Added last, so a query written against the earlier columns reads
+                # the same positions. Null for a summary written before rule ids
+                # and normalised verdicts existed.
+                ("rule_id", pa.string()),
+                ("verdict", pa.string()),
             ]
         )
 
@@ -1981,6 +1953,18 @@ class SaveReportingData:
         # Prepare document summary
         overall_stats = rule_validation_data.get("overall_statistics", {})
         recommendation_counts = overall_stats.get("recommendation_counts", {})
+        # The normalised counts when the summary has them: they count "pass" and
+        # "Pass" alike. A summary written before verdicts existed has only the
+        # label counts, which are exact-match.
+        verdict_counts = overall_stats.get("verdict_counts")
+        if isinstance(verdict_counts, dict):
+            pass_count = verdict_counts.get("pass", 0)
+            fail_count = verdict_counts.get("fail", 0)
+            not_found_count = verdict_counts.get("not_found", 0)
+        else:
+            pass_count = recommendation_counts.get("Pass", 0)
+            fail_count = recommendation_counts.get("Fail", 0)
+            not_found_count = recommendation_counts.get("Information Not Found", 0)
 
         document_record = {
             "document_id": document_id,
@@ -1989,11 +1973,9 @@ class SaveReportingData:
             "overall_status": rule_validation_data.get("overall_status", "UNKNOWN"),
             "total_policy_types": rule_validation_data.get("total_policy_types", 0),
             "total_rules": overall_stats.get("total_rules", 0),
-            "pass_count": recommendation_counts.get("Pass", 0),
-            "fail_count": recommendation_counts.get("Fail", 0),
-            "information_not_found_count": recommendation_counts.get(
-                "Information Not Found", 0
-            ),
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "information_not_found_count": not_found_count,
         }
 
         # Save document summary
@@ -2026,6 +2008,8 @@ class SaveReportingData:
                             rule_detail.get("supporting_pages", [])
                         ),
                         "validation_date": validation_date,
+                        "rule_id": rule_detail.get("rule_id"),
+                        "verdict": rule_detail.get("verdict"),
                     }
                 )
 

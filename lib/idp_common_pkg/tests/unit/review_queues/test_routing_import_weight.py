@@ -104,6 +104,122 @@ section = SimpleNamespace(
 config = SimpleNamespace(classes=[{"x-aws-idp-document-type": "W2", "properties": {}}])
 reasons = build_reasons(SimpleNamespace(sections=[section]), config, mode="pipeline")
 import idp_common.review_queues.routing  # noqa: F401
+
+# Evaluating a routing table needs no XML parser: the DMN reader and writer are
+# imported only by export and import.
+from idp_common.config.routing_models import BUILTIN_CONFIDENCE_REASON, RoutingTable
+from idp_common.decision_tables import evaluate
+from idp_common.review_queues.routing_dmn import to_decision_table
+
+decision = evaluate(
+    to_decision_table(RoutingTable()),
+    {"reviewed": False, "confidence_alert_count": len(reasons)},
+)
+assert decision.outputs == {
+    "outcome": "queue",
+    "queue": "default",
+    "reason": BUILTIN_CONFIDENCE_REASON,
+}, decision
+
+# The routing step's inputs: built from the document and the section results,
+# with no assessment or rule validation code.
+from idp_common.review_queues.routing_inputs import build_inputs
+
+
+class Results:
+    def get_json_content(self, uri):
+        return {"inference_result": {}, "explainability_info": [{}]}
+
+
+section.extraction_result_uri = "s3://out/doc/sections/1/result.json"
+section.excluded = False
+inputs = build_inputs(
+    SimpleNamespace(sections=[section], num_pages=1, rule_validation_result=None),
+    config,
+    RoutingTable(),
+    mode="pipeline",
+    s3=Results(),
+)
+assert inputs.values["confidence_alert_count"] == 1, inputs
+assert inputs.values["reviewed"] is False, inputs
+assert evaluate(to_decision_table(RoutingTable()), inputs.values).outputs == {
+    "outcome": "queue",
+    "queue": "default",
+    "reason": BUILTIN_CONFIDENCE_REASON,
+}
+# What a reviewer reads: the reason of a routing rule, and the policy rules the
+# document failed, read from the summary with no rule validation code.
+import idp_common.config.routing_reason  # noqa: F401
+from idp_common.review_queues.routing_inputs import InputReader
+
+
+class Summary:
+    def get_json_content(self, uri):
+        return {
+            "rule_details": {
+                "lending": {
+                    "rules": [
+                        {
+                            "rule_id": "lending.max_ltv",
+                            "verdict": "fail",
+                            "reasoning": "LTV is over the limit.",
+                            "supporting_pages": ["2"],
+                        }
+                    ]
+                }
+            }
+        }
+
+
+failures, failure_count = InputReader(
+    SimpleNamespace(
+        sections=[section],
+        num_pages=1,
+        rule_validation_result=SimpleNamespace(
+            output_uri="s3://out/doc/rule_validation/consolidated/summary.md"
+        ),
+    ),
+    config,
+    "pipeline",
+    Summary(),
+).failed_policy_rules(limit=10, reason_bytes=500, max_pages=10)
+assert failure_count == 1, failure_count
+assert [(f.policy, f.name, f.pages) for f in failures] == [
+    ("lending", "max_ltv", (2,))
+], failures
+# The routing step itself: the decision, and what it needs to place a document.
+from idp_common.review_queues.routing_step import decide, evaluate_table
+
+assert evaluate_table(RoutingTable(), inputs.values).matched_rule_id == (
+    "builtin-confidence-alerts"
+)
+assert decide(
+    SimpleNamespace(sections=[section], submission_source="test-studio"),
+    config,
+    mode="pipeline",
+    execution_arn="arn:aws:states:us-east-1:111122223333:execution:sm:run",
+    run_plan=None,
+    store=None,
+).reason == "test_studio"
+# Applying a completed review runs in the same image.
+from idp_common.review_queues.apply_review import review_record
+
+assert review_record(SimpleNamespace(cycle_id="c", disposed_by="r", disposed_at="t"))[
+    "confirmed"
+]
+# So does applying it to a section the run extracted again, which reads where
+# the review-queue service kept the result the reviewer started from.
+from idp_common.review_queues.apply_review import _base_uri
+
+assert _base_uri("out", "doc.pdf", "c", "1") == "s3://out/doc.pdf/review/base/c/1.json"
+assert "idp_common.review_queues.service" in sys.modules
+assert not [
+    name
+    for name in sys.modules
+    if name.startswith(("idp_common.assessment", "idp_common.rule_validation"))
+], "routing loaded assessment or rule validation code"
+assert "defusedxml" not in sys.modules
+assert "idp_common.decision_tables.dmn" not in sys.modules
 print(json.dumps([r.field for r in reasons]))
 """
 

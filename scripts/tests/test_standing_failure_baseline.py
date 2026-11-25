@@ -6,9 +6,9 @@
 Three documents tell a reader what a green tree looks like:
 
 * ``docs/testing.md`` — the published test map;
-* ``.claude/skills/full-test-battery.md`` — the procedure, and the one place the
+* ``.claude/skills/full-test-battery/SKILL.md`` — the procedure, and the one place the
   accepted-failure list lives;
-* ``.claude/skills/release-validation.md`` — the release checklist row for
+* ``.claude/skills/release-validation/SKILL.md`` — the release checklist row for
   ``make test``.
 
 All three asserted "there is no standing failure set" while
@@ -54,9 +54,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BATTERY = REPO_ROOT / ".claude" / "skills" / "full-test-battery.md"
+BATTERY = REPO_ROOT / ".claude" / "skills" / "full-test-battery" / "SKILL.md"
 TESTING_DOC = REPO_ROOT / "docs" / "testing.md"
-RELEASE_VALIDATION = REPO_ROOT / ".claude" / "skills" / "release-validation.md"
+RELEASE_VALIDATION = (
+    REPO_ROOT / ".claude" / "skills" / "release-validation" / "SKILL.md"
+)
 
 # Every document that states the baseline. `full-test-battery.md` also carries the
 # list, so it is authoritative; the other two must state the same number.

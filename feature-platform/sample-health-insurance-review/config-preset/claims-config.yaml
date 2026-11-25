@@ -5,10 +5,10 @@ use_bda: false
 
 # Sample: Health Insurance Review config preset.
 #
-# This is a SNAPSHOT of config_library/unified/rule-validation/config.yaml,
-# bundled with the feature so installation is self-contained. The canonical,
-# maintained copy lives in config_library/ — if you update the rule-validation
-# preset there, refresh this snapshot too (and bump the feature version).
+# The feature's own configuration, bundled with it so installation is
+# self-contained: the prior authorization document classes and the policy rules
+# the claims are validated against. It is maintained here; when you change it,
+# bump the feature version.
 #
 # At install time the feature stack's ui-deployer custom resource calls the
 # host's `applyFeatureConfigPreset` mutation with this file's contents, which

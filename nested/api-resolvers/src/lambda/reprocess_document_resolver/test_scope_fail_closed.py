@@ -21,11 +21,16 @@ be distinguished:
 The denial is a raised `PermissionError`, which `http_api_dispatcher` turns into
 HTTP 403; the handler's catch-all re-raises rather than swallowing it.
 
-This file deliberately drives the module with the REAL `idp_common.config_scope`,
-because what is under test is that a `ScopeLookupError` from the shared lookup
-becomes a refusal here. `test_delete_output_data.py` in this directory stubs the
-`idp_common` package in `sys.modules` at import time to test a different thing, so
-the loader below undoes that for its own import.
+This file drives the module with the REAL `idp_common.config_scope`, because what
+is under test is that a `ScopeLookupError` from the shared lookup becomes a
+refusal here.
+
+The reprocess itself is `idp_common.run_plan.reprocess.ReprocessService`, covered
+in `lib/idp_common_pkg/tests/unit/run_plan/test_reprocess_service.py`: the pin to
+a scoped caller's own profile, the prefix mappings, the malware refusal, the
+review withdrawal and the output purge. Here the service is replaced by a
+recorder, so only what the resolver decides is exercised: who may call, and the
+scope it hands on.
 """
 
 import importlib
@@ -38,6 +43,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.run_plan.reprocess import ReprocessOutcome
+
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("INPUT_BUCKET", "test-in")
 os.environ.setdefault("OUTPUT_BUCKET", "test-out")
@@ -47,16 +54,8 @@ os.environ.setdefault("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/1/test-q
 os.environ.setdefault("TRACKING_TABLE", "test-tracking")
 
 
-def _drop_stubbed_idp_common():
-    """Remove any MagicMock `idp_common` entries a sibling test module installed."""
-    for name in list(sys.modules):
-        if name == "idp_common" or name.startswith("idp_common."):
-            if isinstance(sys.modules[name], MagicMock):
-                del sys.modules[name]
-
-
 def _load_index():
-    _drop_stubbed_idp_common()
+    """Load the handler under its own module name, not as ``index``."""
     spec = importlib.util.spec_from_file_location(
         "reprocess_resolver_index", Path(__file__).with_name("index.py")
     )
@@ -123,14 +122,35 @@ def users_table(monkeypatch):
     return _configure
 
 
+class _Service:
+    """Stands in for ``ReprocessService``: records each call and queues it all."""
+
+    def __init__(self):
+        self.calls = []
+
+    def reprocess(self, object_keys, **kwargs):
+        self.calls.append((list(object_keys), kwargs))
+        return [
+            ReprocessOutcome(object_key=key, status="QUEUED", start_step="beginning")
+            for key in object_keys
+        ]
+
+
+@pytest.fixture
+def service(monkeypatch):
+    """The recorder the handler calls in place of the reprocess service."""
+    recorder = _Service()
+    monkeypatch.setattr(index, "_service", lambda: recorder)
+    return recorder
+
+
 @pytest.fixture(autouse=True)
-def no_side_effects(monkeypatch):
+def no_side_effects(monkeypatch, service):
     """Stub the work reprocessing would do, so only authorization is exercised.
 
     The tracking-table read defaults to a document stamped `tenant-a`, so tests
     about the `version` argument are not also tripped by the document check.
     """
-    monkeypatch.setattr(index, "reprocess_document", lambda *a, **k: None)
     monkeypatch.setattr(
         index, "sanitize_event_for_logging", lambda event: {"redacted": True}
     )
@@ -198,12 +218,12 @@ class TestScopeFailsClosed:
     def test_an_empty_page_is_still_unrestricted(self, users_table):
         users_table(items=[])
 
-        assert index.handler(_event(_author_claims()), None) is True
+        assert index.handler(_event(_author_claims()), None)["queued"] == 1
 
     def test_an_in_scope_version_is_accepted(self, users_table):
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
 
-        assert index.handler(_event(_author_claims()), None) is True
+        assert index.handler(_event(_author_claims()), None)["queued"] == 1
 
     def test_an_out_of_scope_version_is_refused(self, users_table):
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
@@ -237,7 +257,8 @@ class TestTheDocumentsOwnScopeIsChecked:
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
         document_version("tenant-a")
 
-        assert index.handler(_event(_author_claims(), version=None), None) is True
+        result = index.handler(_event(_author_claims(), version=None), None)
+        assert result["queued"] == 1
 
     def test_an_unstamped_document_is_refused(self, users_table, document_version):
         """Fails closed: no profile name means it cannot be proven in scope."""
@@ -248,23 +269,19 @@ class TestTheDocumentsOwnScopeIsChecked:
             index.handler(_event(_author_claims(), version=None), None)
 
     def test_nothing_is_queued_when_one_document_of_a_batch_is_refused(
-        self, users_table, monkeypatch
+        self, users_table, monkeypatch, service
     ):
         """A batch is refused whole, not part-processed."""
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
         versions = {"ok.pdf": "tenant-a", "nope.pdf": "tenant-b"}
         monkeypatch.setattr(index, "_document_config_version", versions.get)
-        queued = []
-        monkeypatch.setattr(
-            index, "reprocess_document", lambda key, *a, **k: queued.append(key)
-        )
         event = _event(_author_claims(), version=None)
         event["arguments"]["objectKeys"] = ["ok.pdf", "nope.pdf"]
 
         with pytest.raises(PermissionError):
             index.handler(event, None)
 
-        assert queued == []
+        assert service.calls == []
 
     def test_an_unreadable_tracking_row_refuses(
         self, users_table, monkeypatch, real_document_lookup
@@ -289,14 +306,15 @@ class TestTheDocumentsOwnScopeIsChecked:
         users_table(items=[])
         document_version("tenant-b")
 
-        assert index.handler(_event(_author_claims(), version=None), None) is True
+        result = index.handler(_event(_author_claims(), version=None), None)
+        assert result["queued"] == 1
 
     def test_an_admin_is_not_document_scoped(self, users_table, document_version):
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
         document_version("tenant-b")
         claims = {"cognito:groups": ["Admin"], "email": "admin@example.com"}
 
-        assert index.handler(_event(claims, version=None), None) is True
+        assert index.handler(_event(claims, version=None), None)["queued"] == 1
 
     def test_the_document_version_comes_from_the_tracking_row(
         self, monkeypatch, real_document_lookup
@@ -319,67 +337,67 @@ class TestTheDocumentsOwnScopeIsChecked:
 
 
 @pytest.mark.unit
-class TestTheForwardDirectionStaysInScope:
+class TestTheScopeIsHandedToTheService:
     """Omitting `version` must not move a document OUT of the caller's scope.
 
     An unpinned reprocess reaches `queue_processor` with no `config_version`, which
-    resolves the **globally active** profile — a value nothing scope-checks. So a
-    caller scoped to `tenant-b`, reprocessing their own in-scope document with no
-    `version`, would have it re-run under whatever is active and the tracking row
-    stamped accordingly. A scoped caller's reprocess is therefore pinned to the
-    document's own profile, which the backward check has just verified.
+    resolves the **globally active** profile — a value nothing scope-checks. The
+    reprocess service pins a scoped caller's reprocess to the document's own
+    profile, and it can only do that when it is told the caller's scope. So the
+    scope this resolver resolved is what it passes on: the list for a scoped
+    caller, and nothing for an unscoped caller or an Admin.
     """
 
-    def _queued(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            index,
-            "reprocess_document",
-            lambda key, version=None, revision=None, **_kwargs: calls.append(
-                (key, version)
-            ),
-        )
-        return calls
-
-    def test_a_scoped_caller_is_pinned_to_the_documents_own_profile(
-        self, users_table, document_version, monkeypatch
+    def test_a_scoped_callers_scope_is_passed_on(
+        self, users_table, document_version, service
     ):
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
         document_version("tenant-a")
-        calls = self._queued(monkeypatch)
 
         index.handler(_event(_author_claims(), version=None), None)
 
-        assert calls == [("acme/statement.pdf", "tenant-a")]
+        assert service.calls == [
+            (
+                ["acme/statement.pdf"],
+                {
+                    "start": "beginning",
+                    "skip": (),
+                    "version": None,
+                    "revision": None,
+                    "allowed_versions": ["tenant-a"],
+                    "origin": None,
+                },
+            )
+        ]
 
-    def test_an_explicit_version_still_wins(
-        self, users_table, document_version, monkeypatch
+    def test_an_explicit_version_and_revision_are_passed_on(
+        self, users_table, document_version, service
     ):
         """It has already been scope-checked, so the caller's choice stands."""
         users_table(items=[{"allowedConfigVersions": ["tenant-a", "tenant-a2"]}])
         document_version("tenant-a")
-        calls = self._queued(monkeypatch)
+        event = _event(_author_claims(), version="tenant-a2")
+        event["arguments"]["revision"] = 4
 
-        index.handler(_event(_author_claims(), version="tenant-a2"), None)
+        index.handler(event, None)
 
-        assert calls == [("acme/statement.pdf", "tenant-a2")]
+        (_, kwargs) = service.calls[0]
+        assert (kwargs["version"], kwargs["revision"]) == ("tenant-a2", 4)
 
-    def test_an_unscoped_caller_is_not_pinned(
-        self, users_table, document_version, monkeypatch
+    def test_an_unscoped_caller_passes_no_scope(
+        self, users_table, document_version, service
     ):
-        """Unchanged behaviour: no pin, so the active profile is resolved as before."""
         users_table(items=[])
         document_version("tenant-a")
-        calls = self._queued(monkeypatch)
 
         index.handler(_event(_author_claims(), version=None), None)
 
-        assert calls == [("acme/statement.pdf", None)]
+        (_, kwargs) = service.calls[0]
+        assert not kwargs["allowed_versions"]
 
-    def test_an_admin_is_not_pinned(self, users_table, document_version, monkeypatch):
+    def test_an_admin_passes_no_scope(self, users_table, document_version, service):
         users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
         document_version("tenant-a")
-        calls = self._queued(monkeypatch)
 
         index.handler(
             _event(
@@ -389,22 +407,21 @@ class TestTheForwardDirectionStaysInScope:
             None,
         )
 
-        assert calls == [("acme/statement.pdf", None)]
+        (_, kwargs) = service.calls[0]
+        assert kwargs["allowed_versions"] is None
 
-    def test_each_document_is_pinned_to_its_own_profile(
-        self, users_table, monkeypatch
+    def test_the_whole_batch_goes_to_the_service_in_one_call(
+        self, users_table, monkeypatch, service
     ):
-        """A batch spanning two in-scope profiles keeps each document where it is."""
         users_table(items=[{"allowedConfigVersions": ["tenant-*"]}])
         versions = {"a.pdf": "tenant-a", "b.pdf": "tenant-b"}
         monkeypatch.setattr(index, "_document_config_version", versions.get)
-        calls = self._queued(monkeypatch)
         event = _event(_author_claims(), version=None)
         event["arguments"]["objectKeys"] = ["a.pdf", "b.pdf"]
 
         index.handler(event, None)
 
-        assert calls == [("a.pdf", "tenant-a"), ("b.pdf", "tenant-b")]
+        assert [keys for keys, _ in service.calls] == [["a.pdf", "b.pdf"]]
 
 
 @pytest.mark.unit
@@ -425,321 +442,7 @@ class TestTheLookupIsTheSharedOne:
 
 
 @pytest.mark.unit
-class TestConfigPrefixMappingsOnReprocess:
-    """Moving a mapping and reprocessing is how a backlog is re-run under a new
-    profile — but the mapping must never override the scope pin.
-
-    That ordering is the easy thing to get backwards: the pin exists for exactly the
-    case "no explicit profile was requested", which is also the case a mapping wants
-    to fill. Consulting the mapping first would let a reprocess move a scoped
-    caller's own document out of their scope, reintroducing the bug this module's
-    header documents through a feature that looks unrelated to it.
-    """
-
-    def _queued(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            index,
-            "reprocess_document",
-            lambda key, version=None, revision=None, **kwargs: calls.append(
-                (key, version, kwargs.get("config_source"))
-            ),
-        )
-        return calls
-
-    def _mappings(self, monkeypatch, *entries):
-        monkeypatch.setattr(index, "_prefix_mappings", lambda: list(entries))
-
-    def test_an_unscoped_caller_picks_up_the_mapping(
-        self, users_table, document_version, monkeypatch
-    ):
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch, {"prefix": "acme/", "configProfile": "mapped-profile"}
-        )
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version=None), None)
-
-        assert calls == [("acme/statement.pdf", "mapped-profile", "prefix-mapping")]
-
-    def test_the_scope_pin_beats_the_mapping(
-        self, users_table, document_version, monkeypatch
-    ):
-        """The control this feature must not weaken."""
-        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch, {"prefix": "acme/", "configProfile": "somewhere-else"}
-        )
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version=None), None)
-
-        assert calls == [("acme/statement.pdf", "tenant-a", "document-pin")]
-
-    def test_a_mapping_wins_over_an_explicit_reprocess_request(
-        self, users_table, document_version, monkeypatch
-    ):
-        """The hole this closes: `mapping` precedence must not mean "the mapping
-        wins, except on reprocess".
-
-        An explicit request used to be returned before mappings were consulted at
-        all, so an operator could defeat an administrator's routing policy by
-        uploading, letting the mapping override them, and then reprocessing with
-        the profile they wanted. A reprocess request is the same kind of claim as a
-        profile named in upload metadata, so the same conflict mode adjudicates it.
-        """
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch,
-            {
-                "prefix": "acme/",
-                "configProfile": "mapped-profile",
-                "metadataPrecedence": "mapping",
-            },
-        )
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version="chosen"), None)
-
-        assert calls == [("acme/statement.pdf", "mapped-profile", "prefix-mapping")]
-
-    def test_a_deferring_mapping_still_honours_an_explicit_request(
-        self, users_table, document_version, monkeypatch
-    ):
-        """`metadata` precedence defers, so the request stands -- which is what
-        makes the fix above an application of the administrator's rule rather than
-        a blanket override of the caller."""
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch,
-            {
-                "prefix": "acme/",
-                "configProfile": "mapped-profile",
-                "metadataPrecedence": "metadata",
-            },
-        )
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version="chosen"), None)
-
-        assert calls == [("acme/statement.pdf", "chosen", "explicit-request")]
-
-    def test_a_refusing_mapping_refuses_the_reprocess(
-        self, users_table, document_version, monkeypatch
-    ):
-        """`reject` must not mean "refuse the upload, then accept the same conflict
-        on a re-run". Nothing is queued."""
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch,
-            {
-                "prefix": "acme/",
-                "configProfile": "mapped-profile",
-                "metadataPrecedence": "reject",
-            },
-        )
-        calls = self._queued(monkeypatch)
-
-        # The message must describe a REPROCESS, not upload metadata: the
-        # conflicting profile came from this request, not from the object, and the
-        # resolver's own reason says otherwise because it is written for ingest.
-        with pytest.raises(ValueError, match="Refused") as excinfo:
-            index.handler(_event(_author_claims(), version="chosen"), None)
-
-        assert calls == []
-        message = str(excinfo.value)
-        assert "acme/" in message, "the refusal must name the mapping to edit"
-        assert "upload metadata" not in message
-        assert "Reprocess without naming a profile" in message
-
-    def _metrics(self, monkeypatch):
-        """Every metric datum this resolver publishes, as (name, dimensions)."""
-        published = []
-
-        class Recorder:
-            def put_metric_data(self, **kwargs):
-                for datum in kwargs.get("MetricData", []):
-                    dims = {
-                        d["Name"]: d["Value"] for d in datum.get("Dimensions", [])
-                    }
-                    published.append((datum["MetricName"], dims))
-
-        monkeypatch.setattr(index, "cloudwatch", Recorder())
-        return published
-
-    def test_agreement_on_reprocess_is_not_published_as_a_conflict(
-        self, users_table, document_version, monkeypatch
-    ):
-        """Naming the profile the mapping already assigns is agreement.
-
-        The resolver treats it as agreement deliberately -- that is what stops
-        `reject` failing correctly-named requests -- so publishing
-        `PrefixMappingConflict` for it would make the conflict metric fire on the
-        harmless case and misreport how often the two actually disagree.
-        """
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch,
-            {
-                "prefix": "acme/",
-                "configProfile": "mapped-profile",
-                "metadataPrecedence": "mapping",
-            },
-        )
-        self._queued(monkeypatch)
-        published = self._metrics(monkeypatch)
-
-        index.handler(_event(_author_claims(), version="mapped-profile"), None)
-
-        names = [name for name, _ in published]
-        assert "PrefixMappingApplied" in names
-        assert "PrefixMappingConflict" not in names, (
-            "the request named the profile the mapping assigns, which is agreement "
-            f"rather than a conflict; published {names}"
-        )
-
-    def test_applied_means_matched_here_as_it_does_at_ingest(
-        self, users_table, document_version, monkeypatch
-    ):
-        """One metric, one meaning across both emitters.
-
-        `queue_sender` publishes `Applied` whenever a mapping MATCHED the key,
-        whoever won the precedence contest, and the CHANGELOG states that as the
-        definition. Both emitters feed one dashboard SEARCH expression, so a
-        narrower meaning here would make a `metadata`-precedence prefix show ingest
-        hits and no reprocess hits -- read as "unused on reprocess" rather than as
-        two definitions of one name.
-        """
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch,
-            {
-                "prefix": "acme/",
-                "configProfile": "mapped-profile",
-                # The mapping DEFERS, so it loses -- and must still count as
-                # matched.
-                "metadataPrecedence": "metadata",
-            },
-        )
-        self._queued(monkeypatch)
-        published = self._metrics(monkeypatch)
-
-        index.handler(_event(_author_claims(), version="chosen"), None)
-
-        applied = [dims for name, dims in published if name == "PrefixMappingApplied"]
-        assert applied == [{"Prefix": "acme/"}], (
-            "a mapping that matched but lost must still publish Applied, with the "
-            f"prefix dimension the dashboard filters on; published {published}"
-        )
-        # And this one IS a conflict, with the winner recorded.
-        assert ("PrefixMappingConflict", {"Winner": "metadata"}) in published
-
-    def test_a_refused_reprocess_publishes_rejected(
-        self, users_table, document_version, monkeypatch
-    ):
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch,
-            {
-                "prefix": "acme/",
-                "configProfile": "mapped-profile",
-                "metadataPrecedence": "reject",
-            },
-        )
-        self._queued(monkeypatch)
-        published = self._metrics(monkeypatch)
-
-        with pytest.raises(ValueError):
-            index.handler(_event(_author_claims(), version="chosen"), None)
-
-        assert "PrefixMappingRejected" in [name for name, _ in published]
-
-    def test_an_explicit_request_stands_where_no_mapping_governs_the_key(
-        self, users_table, document_version, monkeypatch
-    ):
-        """The common case, unchanged: with no mapping over the prefix the request
-        is honoured exactly as before."""
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(
-            monkeypatch, {"prefix": "elsewhere/", "configProfile": "mapped-profile"}
-        )
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version="chosen"), None)
-
-        assert calls == [("acme/statement.pdf", "chosen", "explicit-request")]
-
-    def test_a_mapping_outside_a_callers_scope_is_not_applied(
-        self, users_table, document_version, monkeypatch
-    ):
-        """Belt and braces: the pin above already covers a scoped caller, but the
-        resolved profile is scope-checked too so the rule holds if that ever stops
-        producing a pin."""
-        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
-        monkeypatch.setattr(index, "_document_config_version", lambda _key: None)
-        monkeypatch.setattr(
-            index,
-            "_enforce_document_scope",
-            lambda allowed, keys: {},
-        )
-        self._mappings(
-            monkeypatch, {"prefix": "acme/", "configProfile": "finance-prod"}
-        )
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version=None), None)
-
-        # No profile pinned -- but `active-profile` as the SOURCE, not an empty
-        # one: a blank ConfigSource cannot be told apart from a document written
-        # before the field existed. The scope denial is recorded in the log and
-        # deliberately NOT in the source, because the source travels onto the
-        # document and a value meaning "a mapping was refused here" would tell a
-        # scoped user that a mapping governs a prefix they cannot see.
-        assert calls == [("acme/statement.pdf", None, "active-profile")]
-
-    def test_no_mapping_leaves_the_reprocess_unpinned_as_before(
-        self, users_table, document_version, monkeypatch
-    ):
-        users_table(items=[])
-        document_version("tenant-a")
-        self._mappings(monkeypatch)
-        calls = self._queued(monkeypatch)
-
-        index.handler(_event(_author_claims(), version=None), None)
-
-        # Unpinned, as before mappings existed -- but the provenance is recorded.
-        # This is the ordinary case, so an empty source here would leave the
-        # commonest reprocess unable to answer the question ConfigSource exists for.
-        assert calls == [("acme/statement.pdf", None, "active-profile")]
-
-    def test_an_unreadable_mapping_table_does_not_refuse_the_reprocess(
-        self, monkeypatch
-    ):
-        """Fails open, like queue_sender: reprocessing under the active profile is a
-        far better outcome than refusing because a ROUTING table was unreadable."""
-        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "some-table")
-
-        class Boom:
-            def Table(self, _name):
-                raise RuntimeError("throttled")
-
-        monkeypatch.setattr(index, "_dynamodb", Boom())
-        assert index._prefix_mappings() == []
-
-    def test_no_configuration_table_wired_is_not_an_error(self, monkeypatch):
-        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
-        assert index._prefix_mappings() == []
-
+class TestTheConfigurationManager:
     def test_the_configuration_manager_is_built_once_per_container(
         self, monkeypatch
     ):

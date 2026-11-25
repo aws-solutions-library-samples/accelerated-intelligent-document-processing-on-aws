@@ -35,6 +35,7 @@ import {
   getTestSets,
 } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { useFormatters } from '../../i18n/format';
 
 const logger = new ConsoleLogger('UserManagementLayout');
 
@@ -55,6 +56,7 @@ const UserManagementLayout = (): React.JSX.Element => {
   const { awsConfig } = useAppContext();
   const { settings } = useSettingsContext();
   const { isAdmin, loading: roleLoading } = useUserRole();
+  const { formatDate } = useFormatters();
   // The isolation mode decides what an empty scope means (under Strict it denies
   // everything), and the grant source decides whether the scope is editable here at
   // all; `loaded` separates "not read yet" from "could not be read".
@@ -531,7 +533,7 @@ const UserManagementLayout = (): React.JSX.Element => {
     {
       id: 'createdAt',
       header: 'Created',
-      cell: (item: User) => (item.createdAt ? new Date(item.createdAt).toLocaleDateString() : 'N/A'),
+      cell: (item: User) => (item.createdAt ? formatDate(new Date(item.createdAt)) : 'N/A'),
       sortingField: 'createdAt',
     },
     {

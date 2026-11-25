@@ -35,6 +35,8 @@ from .exceptions import ReviewConflict, ReviewValidationError
 logger = logging.getLogger(__name__)
 
 DEFAULT_QUEUE_ID = "default"
+#: The key of a ``list_page`` cursor: the last queue id of the page before.
+_CURSOR_AFTER = "after"
 DEFAULT_TIME_LIMIT_MINUTES = 60
 #: An assignment holds the item until it is completed or an Admin unassigns it;
 #: the claim machinery's lease is set this far out so nothing expires.
@@ -208,6 +210,39 @@ def _stored_version(raw: Any, queue_id: Any) -> int:
         return int(raw)
     logger.warning("event=queue_definition_version_invalid queue=%s", queue_id)
     return 0
+
+
+def production_queue_lookup(definitions: "QueueDefStore") -> Callable[[str], Any]:
+    """A lookup of production review queues by id, for routing validation.
+
+    The answer is a ``routing_validation.QueueInfo``, or ``None`` when no
+    production queue has that id. Each read is strongly consistent and goes past
+    the queue cache, so a queue an Admin created a moment ago is found, and each
+    id is read once per lookup. The Default queue always exists: it is seeded on
+    first use, so before that it is answered from its seed. A Test Studio queue
+    is not a queue definition, so it is not found.
+    """
+    from idp_common.config.routing_validation import QueueInfo
+
+    found: dict[str, Any] = {}
+
+    def lookup(queue_id: str) -> Any:
+        if queue_id not in found:
+            definition = definitions.read_current(queue_id)
+            if definition is None and queue_id == DEFAULT_QUEUE_ID:
+                definition = default_definitions()[0]
+            found[queue_id] = (
+                QueueInfo(
+                    definition.id,
+                    definition.name or display_name(definition.id),
+                    definition.enabled,
+                )
+                if definition is not None
+                else None
+            )
+        return found[queue_id]
+
+    return lookup
 
 
 def default_definitions() -> list[QueueDefinition]:
@@ -386,6 +421,33 @@ class QueueDefStore:
 
     def get(self, queue_id: str) -> Optional[QueueDefinition]:
         return QueuesView(self.list()).queue(queue_id)
+
+    def list_page(
+        self, limit: int, cursor: Optional[str], *, fresh: bool = False
+    ) -> tuple[list[QueueDefinition], Optional[str]]:
+        """One page of the definitions, ordered by id, and the next page's cursor.
+
+        Pages are cut from the full list (``list``), which is small and cached;
+        ``fresh`` reads past the cache, as ``list`` does. The cursor names the
+        last id of the page before, so a queue created or deleted between two
+        pages moves nothing that was already returned.
+
+        Raises ``ReviewValidationError`` (``BAD_CURSOR``) for a cursor this did
+        not issue.
+        """
+        after = ""
+        if cursor:
+            after = keys.decode_cursor(cursor, multi=False).get(_CURSOR_AFTER, "")
+            if not after:
+                raise ReviewValidationError("BAD_CURSOR", "nextToken is not valid")
+        ordered = sorted(self.list(fresh=fresh), key=lambda d: d.id)
+        remaining = [d for d in ordered if d.id > after]
+        page = remaining[: max(1, limit)]
+        more = len(remaining) > len(page)
+        token = (
+            keys.encode_single_cursor({_CURSOR_AFTER: page[-1].id}) if more else None
+        )
+        return page, token
 
     def seed_defaults(self) -> list[QueueDefinition]:
         """Write the Default queue if absent; return the definitions as stored.

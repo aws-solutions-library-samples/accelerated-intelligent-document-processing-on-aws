@@ -137,6 +137,21 @@ Parameters:
       set-user-tenant. Under IdpClaim and Api, Admins cannot edit scopes and a
       non-Admin user with no tenant sees nothing.
 
+  TenantSelection:
+    Type: String
+    Default: "Disabled"
+    AllowedValues:
+      - "Disabled"
+      - "UserSelect"
+    Description: >-
+      Disabled (default): a user the identity provider grants two or more tenants is
+      granted none. UserSelect: such a user chooses which of their granted tenants is
+      active after signing in (a dialog, then a switcher in the navigation bar). The
+      choice is stored on the user's record and applies to every session of that user
+      until their next fresh sign-in. Requires TenantGrantSource=IdpClaim, because the
+      tenants offered are the ones the identity provider's claim grants. Admins are
+      never scoped and never choose.
+
   RefreshTokenValidityHours:
     Type: Number
     Default: 720
@@ -374,7 +389,7 @@ Parameters:
     Type: String
     Default: 'true'
     AllowedValues: [ 'true', 'false' ]
-    Description: Show the floating Quick Start chat widget in the web UI for prompt-based config bootstrap
+    Description: Offer Quick Start (prompt-based configuration bootstrap) in the web UI. When false, the UI hides it and the chat routes refuse it; idp-cli bootstrap is unaffected
 
   # Optional Knowledge Base Configuration
   DocumentKnowledgeBase:
@@ -675,6 +690,18 @@ Parameters:
       - ERROR
     Description: Default logging level for all logs
 
+  ManageApiGatewayAccountSettings:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: >-
+      Whether this deployment sets the Region's API Gateway CloudWatch logging
+      role, which REST API access logging (LogLevel INFO or DEBUG) requires. It
+      is one setting per account and Region, so let one deployment per Region
+      manage it and set false on the others; a deployment with false uses the
+      role the Region already has, and fails to create its API stage at INFO or
+      DEBUG if none is set. Has no effect at WARN or ERROR.
+
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -848,6 +875,22 @@ Parameters:
       Leave empty if the artifacts bucket uses SSE-S3 (default AES256) encryption.
     AllowedPattern: "^(|arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/.+)$"
     ConstraintDescription: Must be empty or a valid KMS key ARN
+
+  # Fixed when the stack is created: Custom::CustomerManagedKmsKeyCheck refuses
+  # any later change, in either direction. See docs/customer-managed-kms-key.md.
+  CustomerManagedKmsKeyArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional, new stacks only) ARN of an existing symmetric customer managed KMS
+      key, in this stack's account and Region, that encrypts the deployment's data at
+      rest instead of a key the stack creates. Its key policy must grant the service
+      principals listed in docs/customer-managed-kms-key.md. The value can only be set
+      when the stack is created: an update that changes it, including setting it on an
+      existing stack or clearing it, is refused and rolled back. Leave empty to have the
+      stack create and manage its own key.
+    AllowedPattern: "^(|arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/(mrk-[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))$"
+    ConstraintDescription: Must be empty or the ARN of a KMS key (arn:<partition>:kms:<region>:<account>:key/<key-id>), not an alias
 
   # ------------------------------------------------------------------------
   # Public template version-check (used to surface an "Update available"
@@ -1232,6 +1275,14 @@ Rules:
       - Assert: !Not [ !Equals [ !Ref ExternalIdPGroupAttributeName, "" ] ]
         AssertDescription: "TenantGrantSource=IdpClaim requires ExternalIdPGroupAttributeName (the claim that carries the group or role values)."
 
+  # The tenants a user may choose from are the ones the identity provider's claim
+  # grants, written by the sign-in trigger. Under Manual or Api there is no such list.
+  TenantSelectionNeedsIdpClaim:
+    RuleCondition: !Equals [ !Ref TenantSelection, "UserSelect" ]
+    Assertions:
+      - Assert: !Equals [ !Ref TenantGrantSource, "IdpClaim" ]
+        AssertDescription: "TenantSelection=UserSelect requires TenantGrantSource=IdpClaim (the tenants a user chooses from are the ones the identity provider's claim grants)."
+
   MLflowTrackingURIRequired:
     RuleCondition: !Equals [ !Ref EnableMLflow, "true" ]
     Assertions:
@@ -1536,6 +1587,9 @@ Conditions:
   EnableXRayTracingCondition: !Equals [ !Ref EnableXRayTracing, "true" ]
   UsePrivateApi: !Equals [ !Ref ApiGatewayVisibility, "PRIVATE" ]
   HasArtifactsBucketKmsKey: !Not [ !Equals [ !Ref ArtifactsBucketKmsKeyArn, "" ] ]
+  # CustomerManagedKmsKeyArn: a supplied key replaces CustomerManagedEncryptionKey.
+  UseSuppliedKmsKey: !Not [ !Equals [ !Ref CustomerManagedKmsKeyArn, "" ] ]
+  CreateStackKmsKey: !Equals [ !Ref CustomerManagedKmsKeyArn, "" ]
   CircuitBreakerEnabledCondition: !Equals [ !Ref CircuitBreakerEnabled, "true" ]
   HasCircuitBreakerErrorHandler: !Not [ !Equals [ !Ref CircuitBreakerErrorHandlerArn, "" ] ]
   CircuitBreakerTriggerServiceUnavailableEnabled: !Equals [ !Ref CircuitBreakerTriggerServiceUnavailable, "true" ]
@@ -1566,6 +1620,7 @@ Metadata:
           - AllowedSignUpEmailDomain
           - TenantIsolationMode
           - TenantGrantSource
+          - TenantSelection
           - RefreshTokenValidityHours
       - Label:
           default: "Configuration"
@@ -1695,6 +1750,10 @@ Metadata:
         Parameters:
           - ArtifactsBucketKmsKeyArn
       - Label:
+          default: "Advanced - Encryption (new stacks only)"
+        Parameters:
+          - CustomerManagedKmsKeyArn
+      - Label:
           default: "Advanced - Container Images"
         Parameters:
           - LambdaArchitecture
@@ -1721,6 +1780,7 @@ Metadata:
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
+          - ManageApiGatewayAccountSettings
 
     ParameterLabels:
       # --- Feature Platform ---
@@ -1794,6 +1854,8 @@ Metadata:
         default: "Queue Stalled Threshold (seconds)"
       LogLevel:
         default: "Logging Level"
+      ManageApiGatewayAccountSettings:
+        default: "Manage the Region's API Gateway Logging Role"
       LogRetentionDays:
         default: "Log Retention Period (days)"
       CloudFrontPriceClass:
@@ -1824,6 +1886,8 @@ Metadata:
         default: "Custom Domain URL (https://host, no trailing slash, optional)"
       ArtifactsBucketKmsKeyArn:
         default: "Artifacts Bucket KMS Key ARN (optional, for pre-created KMS-encrypted bucket)"
+      CustomerManagedKmsKeyArn:
+        default: "Customer Managed KMS Key ARN (optional, set only when creating the stack)"
       CircuitBreakerEnabled:
         default: "Enable Circuit Breaker"
       CircuitBreakerTriggerServiceUnavailable:
@@ -1948,7 +2012,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: DeployApiGateway
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # API Authentication - Cognito User Pool for M2M (client credentials)
@@ -2115,7 +2179,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   BatchPreProcessorFunction:
     Type: AWS::Serverless::Function
@@ -2186,7 +2250,7 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       LoggingConfig:
         LogGroup: !Ref BatchPreProcessorFunctionLogGroup
 
@@ -2200,7 +2264,7 @@ Resources:
     Properties:
       LogGroupName: !Sub "/${AWS::StackName}/lambda/BatchPreProcessorFunction"
       RetentionInDays: !Ref LogRetentionDays
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   ##########################################################################
   # Bastion Host (optional - for testing Private API Gateway)
@@ -2435,7 +2499,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             # Grant kms:Decrypt on the artifacts bucket KMS key when provided
             # This allows ConfigurationCopyFunction to read config files from a KMS-encrypted artifact bucket
             - !If
@@ -2460,7 +2524,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       RetentionInDays: !Ref LogRetentionDays
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   CopyConfigurationFiles:
     Type: Custom::ConfigurationCopy
@@ -2504,7 +2568,7 @@ Resources:
         pKnowledgeBaseBucketName: !Ref OutputBucket
         pInputDocumentUploadFolderPrefix: ""
         pS3SyncScheduleExpression: "cron(0/30 * ? * * *)" # default is to sync documents every 30 minutes
-        pCustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+        pCustomerManagedEncryptionKeyArn: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         pChunkingStrategy: "Fixed-size chunking"
         pMaxTokens: 8192
         pVectorStoreType: !Ref KnowledgeBaseVectorStore
@@ -2522,7 +2586,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateAgentCoreLambda
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   AgentCoreMCPHandlerFunction:
@@ -2563,6 +2627,9 @@ Resources:
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
+          # The reprocess tool asks this function to process documents again; it
+          # holds no reprocess logic of its own.
+          REPROCESS_FUNCTION_ARN: !GetAtt APIRESOLVERSTACK.Outputs.ReprocessDocumentResolverFunctionArn
           STRANDS_LOG_LEVEL: !Ref LogLevel
           AGENT_TABLE: !Ref AgentTable
           APPSYNC_API_URL: ""
@@ -2661,15 +2728,9 @@ Resources:
                 - !Sub "${InputBucket.Arn}/*"
                 - !Sub "${OutputBucket.Arn}/*"
                 - !Sub "${MCPContentBucket.Arn}/*"
-            # Reprocessing from classification deletes the document's earlier
-            # section results, which live in the Output bucket only. Nothing this
-            # function runs deletes from the Input, Reporting or MCP content
-            # buckets (the content bucket expires its objects by lifecycle rule).
-            - Effect: Allow
-              Action:
-                - s3:DeleteObject
-              Resource:
-                - !Sub "${OutputBucket.Arn}/*"
+            # No s3:DeleteObject: nothing this function runs deletes an object. A
+            # reprocess is the reprocess resolver's work, under its own role, and
+            # the MCP content bucket expires its objects by lifecycle rule.
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -2727,7 +2788,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - bedrock-agentcore:StartCodeInterpreterSession
@@ -2783,11 +2844,13 @@ Resources:
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
-              # The only function the agents call is the document lookup
-              # (LOOKUP_FUNCTION_NAME), so the grant names it rather than every
-              # function in the stack.
+              # The agents call the document lookup (LOOKUP_FUNCTION_NAME) and the
+              # reprocess tool calls the reprocess resolver
+              # (REPROCESS_FUNCTION_ARN), so the grant names those two rather than
+              # every function in the stack.
               Resource:
                 - !GetAtt LookupFunction.Arn
+                - !GetAtt APIRESOLVERSTACK.Outputs.ReprocessDocumentResolverFunctionArn
             - Effect: Allow
               Action:
                 - states:DescribeExecution
@@ -2883,7 +2946,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -2897,7 +2960,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateAgentCoreLambda
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   AgentCoreGatewayExecutionRole:
@@ -2951,7 +3014,7 @@ Resources:
       # Custom resources only re-run when a property changes; this forces the
       # manager to run on stack update and re-sync the gateway target's tool
       # schema (update_gateway_target_if_needed) onto existing deployments.
-      ToolSchemaVersion: "2026-11-11-mcp-caller-interceptor"
+      ToolSchemaVersion: "2026-11-17-reprocess-steps"
       SourceCodeHash: <LAMBDA_HASH_TOKEN>
 
   # Attaches the caller interceptor to the gateway (and detaches it on Delete).
@@ -2974,7 +3037,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateAgentCoreLambda
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   McpInterceptorAttachFunction:
@@ -3036,7 +3099,7 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}/mcp/caller-signing-key"
       Description: "Key the MCP gateway interceptor signs caller identities with; read only by the interceptor and the MCP handler"
-      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       GenerateSecretString:
         PasswordLength: 64
         ExcludePunctuation: true
@@ -3045,7 +3108,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateAgentCoreLambda
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # AgentCore Gateway request/response interceptor. Resolves the caller from the
@@ -3119,7 +3182,7 @@ Resources:
             - Effect: Allow
               Action:
                 - kms:Decrypt
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # The stack-created clients' secrets, in Secrets Manager under the stack key,
   # in place of the stack outputs that used to print them. The connector client's
@@ -3131,7 +3194,7 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}/mcp/credentials/${MCPConnectorClient}"
       Description: "Client ID and secret of the stack-created MCP client-credentials client (MCP Configuration: Default (stack-created))"
-      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       SecretString: !Sub
         - '{"clientId": "${Id}", "clientSecret": "${Secret}", "tokenUrl": "https://${Domain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"}'
         - Id: !Ref MCPConnectorClient
@@ -3144,7 +3207,7 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}/mcp/user-client"
       Description: "Client ID and secret of the MCP user-authentication client (authorization code flow, e.g. Amazon Quick user authentication)"
-      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       SecretString: !Sub
         - '{"clientId": "${Id}", "clientSecret": "${Secret}", "tokenUrl": "https://${Domain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token", "authorizationUrl": "https://${Domain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize"}'
         - Id: !Ref ExternalAppClient
@@ -3169,7 +3232,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateAgentCoreLambda
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   McpDefaultCredentialFunction:
@@ -3214,7 +3277,7 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:GenerateDataKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             # Its last log lines can arrive after a stack delete removed the log
             # group; without this they would recreate it with no retention or key.
             - Effect: Deny
@@ -3242,13 +3305,13 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   McpCredentialManagerLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: CreateAgentCoreLambda
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # The MCP Configuration page's operations (list, create, update, rotate, revoke,
@@ -3291,7 +3354,7 @@ Resources:
           GATEWAY_URL: !GetAtt AgentCoreGateway.GatewayUrl
           TOKEN_URL: !Sub "https://${GetDomain.OutputString}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
           OAUTH_SCOPES: idp-mcp-connector/access
-          KMS_KEY_ID: !GetAtt CustomerManagedEncryptionKey.Arn
+          KMS_KEY_ID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
@@ -3315,7 +3378,7 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:GenerateDataKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
@@ -3483,7 +3546,7 @@ Resources:
         OutputBucket: !Ref OutputBucket
         TrackingTable: !Ref TrackingTable
         HITLTableName: !Ref HITLTable
-        CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+        CustomerManagedEncryptionKeyArn: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
@@ -3636,7 +3699,7 @@ Resources:
         TestResultCacheUpdateQueueName: !GetAtt TestResultCacheUpdateQueue.QueueName
         
         # Other resources
-        CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+        CustomerManagedEncryptionKeyArn: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         ReportingDatabaseName: !Ref ReportingDatabase
         LookupFunctionName: !Ref LookupFunction
         SaveReportingFunctionName: !Ref SaveReportingDataFunctionV2
@@ -3648,9 +3711,11 @@ Resources:
         StackName: !Ref AWS::StackName
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
+        ManageApiGatewayAccountSettings: !Ref ManageApiGatewayAccountSettings
         DataRetentionInDays: !Ref DataRetentionInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        EnableQuickStartWidget: !Ref EnableQuickStartWidget
         
         # Conditional parameters
         HasGuardrailConfig: !If [HasGuardrailConfig, "true", "false"]
@@ -3816,7 +3881,7 @@ Resources:
         # key that encrypts TrackingTable. Without it, a feature Lambda
         # querying the table gets `AccessDeniedException: KMS key access
         # denied`.
-        CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+        CustomerManagedEncryptionKeyArn: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         WebUIBucketName: !Ref WebUIBucket
         WebUIBucketArn: !GetAtt WebUIBucket.Arn
         # Output + Working bucket names re-exported for feature stacks:
@@ -3900,10 +3965,103 @@ Resources:
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
   # === Feature Platform (optional) — END =================================
 
+  # CustomerManagedKmsKeyArn is a creation-time choice. This check refuses an
+  # update that changes it in either direction, and checks a supplied key on
+  # create (src/lambda/customer_managed_kms_key_check/index.py). Unconditional,
+  # because the case it exists for includes clearing the parameter on a stack
+  # created with a supplied key, where a resource conditioned on the parameter
+  # would already be gone. Nothing uses either key before it has answered:
+  # CustomerManagedEncryptionKey depends on it, so a refused clear fails before
+  # the stack creates a key of its own, and every reference to a supplied key
+  # reads it from this check's KeyArn attribute (the handler echoes the
+  # property), so a refused set or swap fails before anything is re-encrypted.
+  CustomerManagedKmsKeyCheckFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Function does not require VPC access
+          - id: W92
+            reason: Reserved concurrency not required
+    # checkov:skip=CKV_AWS_116: "DLQ not required for Cfn Custom Resource function"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
+    # checkov:skip=CKV_AWS_173: "Environment variables contain non-sensitive configuration values (log level only)"
+    Properties:
+      PermissionsBoundary:
+        !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 60
+      CodeUri: src/lambda/customer_managed_kms_key_check
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+      LoggingConfig:
+        LogGroup: !Ref CustomerManagedKmsKeyCheckFunctionLogGroup
+      Policies:
+        - Statement:
+            # Read this stack's own status, to tell a new stack from an
+            # existing one being updated, and a rollback from an update.
+            - Effect: Allow
+              Action: cloudformation:DescribeStacks
+              Resource: !Ref AWS::StackId
+        - !If
+          - UseSuppliedKmsKey
+          - Statement:
+              - Effect: Allow
+                Action: kms:DescribeKey
+                Resource: !Ref CustomerManagedKmsKeyArn
+          - !Ref AWS::NoValue
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CustomerManagedKmsKeyCheckFunctionLogGroup}"
+                - !GetAtt CustomerManagedKmsKeyCheckFunctionLogGroup.Arn
+
+  # Not encrypted with the deployment's key: the key depends on this check, so
+  # a log group the check's function writes to cannot wait for the key.
+  CustomerManagedKmsKeyCheckFunctionLogGroup:
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Logs one key ARN verdict per stack operation; encrypting it with the key it checks would make the check wait for that key"
+    # checkov:skip=CKV_AWS_158: "Logs one key ARN verdict per stack operation"
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref LogRetentionDays
+
+  CustomerManagedKmsKeyCheck:
+    Type: Custom::CustomerManagedKmsKeyCheck
+    Properties:
+      ServiceToken: !GetAtt CustomerManagedKmsKeyCheckFunction.Arn
+      StackName: !Ref AWS::StackName
+      KeyArn: !Ref CustomerManagedKmsKeyArn
+
+  # Retained on stack deletion, like the data it encrypts. Most of this stack's
+  # S3 buckets are retained (DeletionPolicy Retain or RetainExceptOnCreate) and
+  # encrypted with this key; deleting the key would leave every object in them
+  # unreadable once the key's deletion window ended. The alias below is not
+  # retained, so a new stack with the same name creates its own alias.
+  # docs/idp-cli.md ("The retained KMS key") says how to schedule the key's
+  # deletion once the retained buckets' data is no longer needed.
+  #
+  # Not created when CustomerManagedKmsKeyArn supplies a key: every reference to
+  # this key is then the supplied ARN instead, read from
+  # CustomerManagedKmsKeyCheck.KeyArn (the UseSuppliedKmsKey branch).
   CustomerManagedEncryptionKey:
     DependsOn:
       - IsStacknameLengthOK
+      - CustomerManagedKmsKeyCheck
     Type: AWS::KMS::Key
+    Condition: CreateStackKmsKey
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Metadata:
       security-matrix:
         rules_to_suppress:
@@ -3914,7 +4072,7 @@ Resources:
           - id: KMS-002
             reason: "kms:* permission for account root is standard pattern for administrative access to KMS keys"
     Properties:
-      Description: KMS key for DynamoDB encryption
+      Description: !Sub "Encrypts the data of IDP stack ${AWS::StackName}; kept when the stack is deleted"
       EnableKeyRotation: true
       KeyPolicy:
         Version: "2012-10-17"
@@ -3995,6 +4153,7 @@ Resources:
 
   CustomerManagedEncryptionKeyAlias:
     Type: AWS::KMS::Alias
+    Condition: CreateStackKmsKey
     Properties:
       AliasName: !Sub "alias/${AWS::StackName}-customer-encryption-key"
       TargetKeyId: !Ref CustomerManagedEncryptionKey
@@ -4085,7 +4244,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -4265,7 +4424,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -4357,7 +4516,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -4443,7 +4602,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -4538,7 +4697,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -4669,7 +4828,7 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:GenerateDataKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -4682,7 +4841,7 @@ Resources:
   TestSetBucketAutoDeleteFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   TestSetBucketAutoDelete:
@@ -4698,7 +4857,7 @@ Resources:
   FccDatasetDeployerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FccDatasetDeployerFunction:
@@ -4765,7 +4924,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -4794,7 +4953,7 @@ Resources:
   OcrBenchmarkDeployerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   OcrBenchmarkDeployerFunction:
@@ -4851,7 +5010,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -4880,7 +5039,7 @@ Resources:
   RvlCdipNmpDeployerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   RvlCdipNmpDeployerFunction:
@@ -4938,7 +5097,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -4967,7 +5126,7 @@ Resources:
   W2DatasetDeployerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   W2DatasetDeployerFunction:
@@ -5019,7 +5178,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -5083,7 +5242,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -5136,7 +5295,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -5230,7 +5389,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -5345,7 +5504,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -5614,6 +5773,9 @@ Resources:
               Type: string
             - Name: timestamp
               Type: timestamp
+            # The routing rule's reason as written, placeholders unfilled.
+            - Name: routing_reason
+              Type: string
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -5844,6 +6006,15 @@ Resources:
             # back to a document_sections_* JOIN when this is NULL. See
             # docs/reporting-sql-layer.md §10.
             - Name: document_class
+              Type: string
+            # The workflow execution the row's usage was incurred in, and how it
+            # ended (SUCCEEDED, FAILED, TIMED_OUT, ABORTED). An execution that did
+            # not succeed reports its partial usage too, so totals are actual
+            # spend; filter on execution_status to break failed attempts out.
+            # NULL on rows written before these columns existed.
+            - Name: execution_arn
+              Type: string
+            - Name: execution_status
               Type: string
           Compressed: true
         PartitionKeys:
@@ -6372,7 +6543,7 @@ Resources:
               # cleanly, so we use ``AWS::NoValue`` — the resulting
               # Resource list drops the extra ARN when it's empty.
               Resource:
-                - !GetAtt CustomerManagedEncryptionKey.Arn
+                - !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
                 - !If
                   - HasReportingBucketKmsKey
                   - !Ref ReportingBucketKmsKeyArn
@@ -6389,7 +6560,7 @@ Resources:
   MeteringHourMigrationFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   MeteringHourMigrationCustomResource:
@@ -6795,7 +6966,7 @@ Resources:
               # output. AWS::NoValue drops the extra Resource entry
               # when no BYO key is supplied.
               Resource:
-                - !GetAtt CustomerManagedEncryptionKey.Arn
+                - !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
                 - !If
                   - HasReportingBucketKmsKey
                   - !Ref ReportingBucketKmsKeyArn
@@ -6809,7 +6980,7 @@ Resources:
   DataMartRollupFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Dead-letter queue for the rollup Lambda's async invocations. Async
@@ -6823,7 +6994,7 @@ Resources:
     Properties:
       QueueName: !Sub "${AWS::StackName}-data-mart-rollup-dlq"
       MessageRetentionPeriod: 1209600  # 14 days (SQS max)
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   DataMartRollupDLQPolicy:
     Type: AWS::SQS::QueuePolicy
@@ -7104,7 +7275,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/vendedlogs/states/${AWS::StackName}-data-mart-migration"
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Alarm on ANY failed / aborted / timed-out state-machine execution.
@@ -7428,7 +7599,7 @@ Resources:
   DataMartMigrationDispatcherFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Hourly rollup: writes metering_hourly and control_plane_hourly for the
@@ -7631,7 +7802,7 @@ Resources:
       EncryptionConfiguration:
         S3Encryptions:
           - S3EncryptionMode: SSE-KMS
-            KmsKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+            KmsKeyArn: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   DocumentSectionsCrawler:
     Type: AWS::Glue::Crawler
@@ -7717,7 +7888,7 @@ Resources:
                 Action:
                   - kms:Decrypt
                   - kms:DescribeKey
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   EvaluationBaselineBucket:
     Type: AWS::S3::Bucket
@@ -7765,7 +7936,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -7995,7 +8166,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   ##########################################################################
   # GSI Attribute Backfill - Step Functions + Lambda for populating
@@ -8005,7 +8176,7 @@ Resources:
   BackfillWorkerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   BackfillWorkerFunction:
@@ -8045,7 +8216,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   BackfillStateMachineRole:
     Type: AWS::IAM::Role
@@ -8080,7 +8251,7 @@ Resources:
   BackfillTriggerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   BackfillTriggerFunction:
@@ -8120,7 +8291,7 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - Statement:
             # Lambda delivers an invocation's last log lines after the stack delete
             # has removed this group; denying the create keeps it deleted (#1754).
@@ -8175,7 +8346,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   InitializeConcurrencyTableLambda:
     Type: AWS::Serverless::Function
@@ -8223,7 +8394,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   InitializeConcurrencyTableCustomResource:
     Type: AWS::CloudFormation::CustomResource
@@ -8254,7 +8425,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
   ##########################################################################
   # Discovery tracking table for discovery jobs
   ##########################################################################
@@ -8278,7 +8449,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   ##########################################################################
   # Discovery SQS queue for processing discovery jobs
@@ -8289,7 +8460,7 @@ Resources:
     Properties:
       VisibilityTimeout: 900
       MessageRetentionPeriod: 86400 # 1 day
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt DiscoveryDLQ.Arn
         maxReceiveCount: 1000
@@ -8299,7 +8470,7 @@ Resources:
     Properties:
       VisibilityTimeout: 900
       MessageRetentionPeriod: 345600 # 4 days
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   DiscoveryQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -8357,7 +8528,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   UpdateConfigurationFunction:
     Type: AWS::Serverless::Function
@@ -8417,7 +8588,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - "s3:GetObject"
@@ -8467,7 +8638,7 @@ Resources:
   UpdateConfigurationFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Pattern stacks can update the Configuration table with a CustomResource, using the
@@ -8543,7 +8714,7 @@ Resources:
   UpdateSettingsFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   UpdateSettingsValues:
@@ -8625,7 +8796,7 @@ Resources:
   DocumentQueueDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 30
       MessageRetentionPeriod: 345600 # 4 days
 
@@ -8649,7 +8820,7 @@ Resources:
   DocumentQueue:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       # Must be at least the QueueProcessor Timeout (Lambda rejects the event
       # source mapping otherwise). It is also how long a message refused at the
       # concurrency gate waits before its next attempt, so it stays close to the
@@ -8686,7 +8857,7 @@ Resources:
   QueueSenderDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 30
       MessageRetentionPeriod: 345600 # 4 days
 
@@ -8866,7 +9037,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         # Hand a /Jobs batch this gate completed to JobTracker for zipping. One
         # function, one action — deliberately NOT the output-bucket get/put that
         # would let this function build the zip itself, which is the grant that
@@ -8895,7 +9066,7 @@ Resources:
   QueueSenderLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -9011,7 +9182,7 @@ Resources:
                 Action:
                   - kms:GenerateDataKey
                   - kms:Decrypt
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
                 Condition:
                   StringLike:
                     "kms:ViaService": !Sub "s3.${AWS::Region}.${AWS::URLSuffix}"
@@ -9043,7 +9214,7 @@ Resources:
     Condition: MalwareScanningEnabled
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 30
       # Longer than the other DLQs here (4 days). A dropped verdict is the only
       # record that a document was ever scanned, and the document itself sits in
@@ -9505,7 +9676,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         # Concurrency-counter reconciliation: compare the counter against the
         # executions that are really RUNNING, so a leaked counter cannot stop the
         # stack admitting documents forever. Scoped to this stack's own state
@@ -9567,7 +9738,7 @@ Resources:
   QueueProcessorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -9577,7 +9748,7 @@ Resources:
   WorkflowTrackerDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 30
       MessageRetentionPeriod: 345600 # 4 days
 
@@ -9733,8 +9904,11 @@ Resources:
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucket
         # Document version manifests: enumerate output object versions and
-        # write runs/<run_id>/manifest.json to the output bucket. Also delete
-        # output objects when fully deleting a REDACTED_SUPERSEDED original.
+        # write runs/<run_id>/manifest.json to the output bucket. Also purge
+        # output objects when fully deleting a REDACTED_SUPERSEDED original:
+        # delete_single_document deletes every version by VersionId, which needs
+        # s3:DeleteObjectVersion — DeleteObjects refuses each key without it in an
+        # HTTP 200 Errors array rather than raising (#1366).
         - Statement:
             - Effect: Allow
               Action:
@@ -9746,18 +9920,24 @@ Resources:
                 - s3:GetObject
                 - s3:PutObject
                 - s3:DeleteObject
+                - s3:DeleteObjectVersion
               Resource: !Sub "${OutputBucket.Arn}/*"
         # Delete the input object of a REDACTED_SUPERSEDED original (the
-        # redacted copy replaces it). Input bucket read/list/delete.
+        # redacted copy replaces it). The input bucket is versioned, so the
+        # un-redacted upload is purged by VersionId — every version and delete
+        # marker of the exact key (#2166): ListBucketVersions to enumerate them,
+        # DeleteObjectVersion to delete them.
         - Statement:
             - Effect: Allow
               Action:
                 - s3:ListBucket
+                - s3:ListBucketVersions
               Resource: !GetAtt InputBucket.Arn
             - Effect: Allow
               Action:
                 - s3:GetObject
                 - s3:DeleteObject
+                - s3:DeleteObjectVersion
               Resource: !Sub "${InputBucket.Arn}/*"
         - Statement:
             - Effect: Allow
@@ -9782,7 +9962,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - !If
           - CircuitBreakerEnabledCondition
           - SNSPublishMessagePolicy:
@@ -9800,7 +9980,7 @@ Resources:
   WorkflowTrackerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   WorkflowStateChangeRule:
@@ -9849,7 +10029,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: DeployApiGateway
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   # Condition must match JobTrackerDLQ's: a policy that deployed without its
   # queue would fail the stack update.
@@ -9875,7 +10055,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: DeployApiGateway
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   JobTracker:
@@ -9922,7 +10102,7 @@ Resources:
                 - kms:Encrypt
                 - kms:Decrypt
                 - kms:GenerateDataKey*
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   JobTrackerPermission:
     Type: AWS::Lambda::Permission
@@ -9942,7 +10122,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: ShouldEnablePostProcessingLambdaHook
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 30
       MessageRetentionPeriod: 345600 # 4 days
 
@@ -10029,13 +10209,13 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   PostProcessingDecompressorLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: ShouldEnablePostProcessingLambdaHook
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   PostProcessingLambdaHookRule:
@@ -10164,7 +10344,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - glue:CreateTable
@@ -10192,7 +10372,7 @@ Resources:
   SaveReportingDataFunctionV2LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -10203,7 +10383,7 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: Workflow Alerts
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   # Thirteen of the fourteen alarms in this template publish to AlertsTopic
   # directly; the fourteenth, BedrockServiceOutageAlarm, publishes to CircuitBreakerTopic and
@@ -10674,7 +10854,7 @@ Resources:
   PrefixMappingLookupFailedAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not read its configuration prefix mappings. Resolution FAILS OPEN by design: the document runs under the profile its upload named, or the active one. While this lasts every 'Refuse the conflict' mapping is bypassed and every mapped prefix reads as unmapped, so documents may run under the wrong configuration without saying so. Three Lambdas publish it and all three log 'Could not read the configuration prefix mappings'; one of them, UploadResolver, is the authorization case. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/monitoring.md for the emitters and what each window means."
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not read its configuration prefix mappings. Resolution FAILS OPEN by design: the document runs under the profile its upload named, or the active one. While this lasts every 'Refuse the conflict' mapping is bypassed and every mapped prefix reads as unmapped, so documents may run under the wrong configuration; each one processed in that window carries a warning processing issue saying no mapping was applied. Three Lambdas publish it and all three log 'Could not read the configuration prefix mappings'; one of them, UploadResolver, is the authorization case. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/monitoring.md for the emitters and what each window means."
       MetricName: PrefixMappingLookupFailed
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -10711,7 +10891,7 @@ Resources:
   PrefixMappingUnresolvableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when a ${AWS::StackName} configuration prefix mapping names a Configuration Profile that is not resolvable at routing time. The document still processes -- under the profile its upload named, or the active one -- so nothing fails, but every document arriving at that prefix runs under a configuration nobody chose for it. A PRUNED pinned revision is a different condition and is not seen here; such a document fails later, when the configuration is loaded. Creating a mapping refuses an absent profile and deleting a profile refuses while a mapping names it, so reaching this means the profile went by another route. Fix or delete the mapping at Configuration > Prefix Mappings. Emitters log 'Stale prefix mapping for'; see docs/monitoring.md."
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} configuration prefix mapping names a Configuration Profile that is not resolvable at routing time. Every document arriving at that prefix is refused and recorded as Failed, with a reason naming the mapping and the missing profile, rather than processed under some other profile. A PRUNED pinned revision is a different condition and is not seen here; such a document fails later, when the configuration is loaded. Creating a mapping refuses an absent profile and deleting a profile refuses while a mapping names it, so reaching this means the profile went by another route. Fix or delete the mapping at Configuration > Prefix Mappings. Emitters log 'Stale prefix mapping for'; see docs/monitoring.md."
       MetricName: PrefixMappingUnresolvable
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -10856,7 +11036,7 @@ Resources:
     Condition: CircuitBreakerEnabledCondition
     Properties:
       LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-CircuitBreakerManager"
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   CircuitBreakerManagerFunction:
@@ -10924,7 +11104,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - !If
           - HasCircuitBreakerErrorHandler
           - Statement:
@@ -10938,7 +11118,7 @@ Resources:
     Condition: CircuitBreakerEnabledCondition
     Properties:
       DisplayName: Circuit Breaker State Changes
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   BedrockServiceOutageAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -11039,7 +11219,7 @@ Resources:
   ReviewQueueSweeperFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ReviewQueueSweeperFunction:
@@ -11169,7 +11349,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - cloudwatch:PutMetricData
@@ -11200,7 +11380,7 @@ Resources:
   TestRunSweeperFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # The server-side driver for Test Studio run records. Before this existed, a
@@ -11303,7 +11483,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - cloudwatch:PutMetricData
@@ -12268,12 +12448,12 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   LookupFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
       RetentionInDays: !Ref LogRetentionDays
 
@@ -12303,7 +12483,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   # DynamoDB table for HITL user management
   UsersTable:
@@ -12336,7 +12516,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   # Secrets Manager secret for External MCP Agent credentials
   ExternalMCPAgentsSecret:
@@ -12345,7 +12525,7 @@ Resources:
       Name: !Sub "${AWS::StackName}/external-mcp-agents/credentials"
       Description: "Credentials for External MCP Agents - JSON array with required fields: mcp_url, cognito_user_pool_id, cognito_client_id, cognito_username, cognito_password. Optional fields: agent_name, agent_description"
       SecretString: "[]"
-      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   # ChatWithDocumentProcessor — long-running Lambda invoked async by the
   # send_chat_document_message_resolver. Does the heavy lifting (load doc,
@@ -12354,7 +12534,7 @@ Resources:
   ChatWithDocumentProcessorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ChatWithDocumentProcessorFunction:
@@ -12468,7 +12648,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - !If
               - HasGuardrailConfig
               - Effect: Allow
@@ -12549,6 +12729,7 @@ Resources:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -12635,7 +12816,7 @@ Resources:
               Action:
                 - kms:GenerateDataKey
                 - kms:Decrypt
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatMessagesTable
         - DynamoDBCrudPolicy:
@@ -12763,7 +12944,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - bedrock-agentcore:StartCodeInterpreterSession
@@ -12841,7 +13022,7 @@ Resources:
   AgentChatProcessorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -12863,7 +13044,7 @@ Resources:
   ChatStreamProcessorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ChatStreamProcessorFunction:
@@ -12907,6 +13088,7 @@ Resources:
           AWS_LWA_INVOKE_MODE: response_stream
           PORT: "8080"
           LOG_LEVEL: !Ref LogLevel
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           # Pin idp_common.metrics.put_metric to the stack namespace so
           # Bedrock throttle/latency/token emits from
           # idp_common.bedrock.client._put_metric match the
@@ -13127,7 +13309,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
@@ -13262,7 +13444,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   ##########################################################################
   # DynamoDB Table recording which user each chat session id belongs to
@@ -13293,7 +13475,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   ##########################################################################
   # DynamoDB Table for each user's Inbox messages and preferences
@@ -13339,7 +13521,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   # HITL review queues (idp_common.review_queues): one queue item per document in
   # review, its drafts and history, per-reviewer claim counters and the queue
@@ -13419,7 +13601,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   ##########################################################################
   # Lambda Functions for Agent Chat Session Management
@@ -13448,7 +13630,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   IdHelperChatMemoryTable:
     Type: AWS::DynamoDB::Table
@@ -13472,7 +13654,7 @@ Resources:
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
-        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+        KMSMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   ##########################################################################
   # Capacity Planning Lambda Functions
@@ -13571,10 +13753,15 @@ Resources:
           # explicit entry is what stops a different model's number being used.
           #
           # ⚠️ A code added here must resolve in EVERY Region the stack is deployed
-          # to, and the blast radius is not one row: get_simple_quotas fetches every
-          # entry in both maps with get_service_quota and re-raises any
-          # non-throttling error, so one code that does not exist in the stack's
-          # Region fails the whole Capacity Planning response for every model. The
+          # to. get_simple_quotas reads only the models the selected profile's
+          # steps call, and a code Service Quotas will not return there drops that
+          # model's steps from the quota table with a "Quota not read" warning
+          # naming the model and code — so a dead code costs a profile using that
+          # model its quota analysis rather than failing every profile (#2024).
+          # A model AWS publishes no quota for maps to null, which reports the
+          # same warning without a lookup. Opus 4.1 is that case: neither of its
+          # former codes (L-BD85BFCD, L-7EC72A47) nor any Opus 4.1 quota is listed
+          # by list-service-quotas in us-west-2 or us-east-1 (2026-11-15). The
           # two Sonnet 5.5 codes were therefore checked in more than the one Region
           # they were read from — both resolve, at 6,000,000, in us-east-1,
           # us-west-2, eu-west-1, eu-central-1, eu-west-2, ap-southeast-2 and
@@ -13599,8 +13786,8 @@ Resources:
           # model. ⚠️ So when reading Capacity Planning output: the RPM figure for
           # EITHER Sonnet is derived from a tokens-per-minute quota and is
           # approximate for both. The TPM figures are exact.
-          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
-          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
+          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":null,"us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
+          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":null,"us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
       Policies:
         - Statement:
             - Effect: Allow
@@ -13616,13 +13803,13 @@ Resources:
             - Effect: Allow
               Action:
                 - kms:Decrypt
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   CalculateCapacityFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-CalculateCapacity"
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   CalculateCapacityResolverFunction:
@@ -13667,7 +13854,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-CalculateCapacityResolver"
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
 
@@ -13677,7 +13864,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-VersionCheckResolver"
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   VersionCheckResolverFunction:
@@ -13745,7 +13932,7 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-AgentProcessor"
       RetentionInDays: !Ref LogRetentionDays
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Lambda function for agent request handler
   AgentProcessorFunction:
@@ -13962,7 +14149,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             - Effect: Allow
               Action:
                 - bedrock-agentcore:StartCodeInterpreterSession
@@ -14496,7 +14683,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: UseApiGatewayHosting
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   WebUIClientOAuthUrls:
@@ -14588,7 +14775,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: IsExternalIdPOIDC
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ResolveOIDCClientSecret:
@@ -14687,6 +14874,7 @@ Resources:
           # custom:idp_groups.
           EXTERNAL_IDP_NAME: !Ref ExternalIdPName
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          TENANT_SELECTION: !Ref TenantSelection
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           USERS_TABLE_NAME: !Ref UsersTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
@@ -14734,14 +14922,14 @@ Resources:
                   - kms:Encrypt
                   - kms:GenerateDataKey*
                   - kms:DescribeKey
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
           - !Ref AWS::NoValue
 
   ExternalIdPGroupMappingFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: ShouldMapExternalIdPGroups
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Separate IAM policy scoped to the specific UserPool.
@@ -14831,7 +15019,7 @@ Resources:
   GetDomainLambdaLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Preserve CR name - avoid forcing UserPoolDomain update.
@@ -15173,7 +15361,7 @@ Resources:
     # scripts/tests/test_lambda_log_groups.py.
     Condition: ShouldAllowSignUpEmailDomain
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   CognitoUserPoolEmailDomainVerifyPermission:
@@ -15222,7 +15410,7 @@ Resources:
   TestFileCopyQueueDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       MessageRetentionPeriod: 1209600 # 14 days
       VisibilityTimeout: 900
 
@@ -15245,7 +15433,7 @@ Resources:
   TestFileCopyQueue:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 900
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt TestFileCopyQueueDLQ.Arn
@@ -15274,7 +15462,7 @@ Resources:
   TestSetFileCopyQueueDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       MessageRetentionPeriod: 1209600 # 14 days
       VisibilityTimeout: 900
 
@@ -15297,7 +15485,7 @@ Resources:
   TestSetFileCopyQueue:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       VisibilityTimeout: 900
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt TestSetFileCopyQueueDLQ.Arn
@@ -15326,7 +15514,7 @@ Resources:
   TestSetFileCopierFunctionDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   TestSetFileCopierFunctionDLQPolicy:
     Type: AWS::SQS::QueuePolicy
@@ -15418,7 +15606,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       Events:
         SQSEvent:
           Type: SQS
@@ -15429,7 +15617,7 @@ Resources:
   TestSetFileCopierFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -15486,7 +15674,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   TestSetZipExtractorFunctionInvokePermission:
     Type: AWS::Lambda::Permission
@@ -15500,7 +15688,7 @@ Resources:
   TestSetZipExtractorFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Separate policies to break circular dependency
@@ -15698,7 +15886,7 @@ Resources:
   TestFileCopierFunctionDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   TestFileCopierFunctionDLQPolicy:
     Type: AWS::SQS::QueuePolicy
@@ -15776,7 +15964,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       Events:
         SQSEvent:
           Type: SQS
@@ -15787,7 +15975,7 @@ Resources:
   TestFileCopierFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   TestResultCacheUpdateQueue:
@@ -15796,7 +15984,7 @@ Resources:
       QueueName: !Sub "${AWS::StackName}-test-result-cache-update"
       VisibilityTimeout: 900
       MessageRetentionPeriod: 1209600
-      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      KmsMasterKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
 
   TestResultCacheUpdateQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -15935,7 +16123,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             # OpenAI GPT-5.x models are served via the bedrock-mantle endpoint
             # (OpenAI Responses API) and use a separate IAM action namespace.
             - Effect: Allow
@@ -15974,7 +16162,7 @@ Resources:
   DiscoveryProcessorFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -16024,11 +16212,11 @@ Resources:
         - Statement:
             - Effect: Allow
               Action: [kms:Encrypt, kms:Decrypt, kms:ReEncrypt*, kms:GenerateDataKey*, kms:DescribeKey]
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
   MultiDocDiscoveryPrepareFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # --- Nested Stack for container-based multi-doc discovery Lambdas ---
@@ -16051,7 +16239,7 @@ Resources:
         ConfigurationTableName: !Ref ConfigurationTable
         ConfigurationBucketName: !Ref ConfigurationBucket
         ConfigurationTableArn: !GetAtt ConfigurationTable.Arn
-        CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+        CustomerManagedEncryptionKeyArn: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LogLevel: !Ref LogLevel
         LogRetentionDays: !Ref LogRetentionDays
@@ -16109,7 +16297,7 @@ Resources:
                   - kms:Encrypt
                   - kms:Decrypt
                   - kms:GenerateDataKey*
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   MultiDocDiscoveryStateMachine:
     Type: AWS::Serverless::StateMachine
@@ -16230,7 +16418,7 @@ Resources:
                 - kms:ReEncrypt*
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
             # BDA permissions for blueprint optimization
             - Effect: Allow
               Action:
@@ -16256,7 +16444,7 @@ Resources:
   BlueprintOptimizationFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   ##########################################################################
@@ -16398,6 +16586,18 @@ Resources:
           ReferrerPolicy:
             Override: true
             ReferrerPolicy: strict-origin-when-cross-origin
+          # X-XSS-Protection: 0 turns off the legacy browser XSS filter, which
+          # is the current OWASP recommendation (the CSP above is the control).
+          # It is set explicitly rather than left out because of the Terraform
+          # module: the awscc provider stores an unset XSSProtection as an
+          # empty object and sends it back on every update of this policy,
+          # which Cloud Control rejects (Override and Protection are required),
+          # so any later change to this policy failed `terraform apply` (#1997).
+          # terraform/translator/tests/test_offline_templates.py asserts every
+          # SecurityHeadersConfig member the awscc schema has is set here.
+          XSSProtection:
+            Override: true
+            Protection: false
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -16602,7 +16802,7 @@ Resources:
     Properties:
       LogGroupName: !Sub "/${AWS::StackName}/codebuild/UICodeBuildProject"
       RetentionInDays: !Ref LogRetentionDays
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   UICodeBuildProject:
     Type: AWS::CodeBuild::Project
@@ -16635,8 +16835,7 @@ Resources:
                 - echo `ls -altr`
                 - echo `pwd`
                 - echo Installing NodeJS
-                - n 22.14.0
-                - npm install -g npm@11.1.0
+                - n 26.13.1
                 - echo Installing Web UI dependencies
                 - npm ci
             build:
@@ -16912,7 +17111,7 @@ Resources:
   StartUICodeBuildLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   CodeBuildRun:
@@ -16981,7 +17180,7 @@ Resources:
   UserManagementFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   UserManagementFunction:
@@ -17021,6 +17220,7 @@ Resources:
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          TENANT_SELECTION: !Ref TenantSelection
           ALLOWED_SIGNUP_EMAIL_DOMAINS: !Ref AllowedSignUpEmailDomain
       LoggingConfig:
         LogGroup: !Ref UserManagementFunctionLogGroup
@@ -17054,12 +17254,12 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   UserSyncFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   UserSyncFunction:
@@ -17108,7 +17308,7 @@ Resources:
             - Effect: Allow
               Action:
                 - kms:Decrypt
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       Events:
         DynamoDBStream:
           Type: DynamoDB
@@ -17121,7 +17321,7 @@ Resources:
   CompleteSectionReviewFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   CompleteSectionReviewFunction:
@@ -17210,7 +17410,7 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:GenerateDataKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
 
 
@@ -17225,7 +17425,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref CustomerManagedEncryptionKey
+              KMSMasterKeyID: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !Ref CustomerManagedEncryptionKey]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -17325,13 +17525,13 @@ Resources:
                 Action:
                   - kms:Decrypt
                   - kms:GenerateDataKey
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning List Documents Lambda (for Distributed Map)
   FinetuningListDocumentsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningListDocumentsFunction:
@@ -17378,13 +17578,13 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning Process Document Lambda (for Distributed Map parallel processing)
   FinetuningProcessDocumentLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningProcessDocumentFunction:
@@ -17431,13 +17631,13 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning Merge Data Lambda (combines parallel results)
   FinetuningMergeDataLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningMergeDataFunction:
@@ -17483,13 +17683,13 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning Job Creator Lambda
   FinetuningJobCreatorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningJobCreatorFunction:
@@ -17543,13 +17743,13 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning Job Status Checker Lambda
   FinetuningJobStatusCheckerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningJobStatusCheckerFunction:
@@ -17597,13 +17797,13 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning Deployment Handler Lambda
   FinetuningDeploymentHandlerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningDeploymentHandlerFunction:
@@ -17656,7 +17856,7 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
   # Fine-Tuning State Machine IAM Role
   FinetuningStateMachineRole:
@@ -17710,7 +17910,7 @@ Resources:
                   - kms:Encrypt
                   - kms:Decrypt
                   - kms:GenerateDataKey*
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
               - Effect: Allow
                 Action:
                   - s3:PutObject
@@ -17739,7 +17939,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/vendedlogs/states/${AWS::StackName}-FinetuningStateMachine"
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   # Fine-Tuning State Machine
@@ -17777,7 +17977,7 @@ Resources:
   FinetuningJobsResolverLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      KmsKeyId: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
       RetentionInDays: !Ref LogRetentionDays
 
   FinetuningJobsResolverFunction:
@@ -17846,7 +18046,7 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
-              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+              Resource: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
 
 
 
@@ -17861,7 +18061,7 @@ Resources:
 Outputs:
   CustomerManagedEncryptionKeyArn:
     Description: ARN of the customer-managed KMS encryption key used for S3 buckets. Needed when deploying Lambda Hook functions that read from the working bucket.
-    Value: !GetAtt CustomerManagedEncryptionKey.Arn
+    Value: !If [UseSuppliedKmsKey, !GetAtt CustomerManagedKmsKeyCheck.KeyArn, !GetAtt CustomerManagedEncryptionKey.Arn]
   ApplicationWebURL:
     Description: Application Web URL
     Value: !If

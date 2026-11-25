@@ -890,21 +890,23 @@ def _guard_tests(block: list[ast.stmt]) -> list[ast.If]:
 #: Counts as audited. Count pinning: a new retry site inside an already-covered
 #: module fails here rather than inheriting the verdict, and a LOST site fails too —
 #: which is a different remedy, so the messages say which direction moved.
-AUDITED_SLEEP_SITES = 11
-AUDITED_RAISING_GATES = 8
+AUDITED_SLEEP_SITES = 12
+AUDITED_RAISING_GATES = 9
 AUDITED_RETURNING_GATES = 1
 
 #: The exact metric names a refusal may emit, per ladder. Matched exactly rather than
 #: by suffix: a rename is invisible to an ``endswith`` check, which accepted
 #: ``TypoRequestsFailed``, and the full string is what a dashboard or alarm would have
-#: to be pointed at. Of the six, only ``BedrockRequestsFailed`` is plotted today
-#: (``patterns/unified/template.yaml``); the three ``*RetryAbandonedOutOfTime`` names
-#: are new in #1362 and nothing reads them yet.
+#: to be pointed at. Of these, only ``BedrockRequestsFailed`` is plotted today
+#: (``patterns/unified/template.yaml``); the ``*RetryAbandonedOutOfTime`` names
+#: (#1362, #1656) are read by nothing yet.
 EXPECTED_REFUSAL_METRICS = frozenset(
     {
         "BedrockRetryAbandonedOutOfTime",
         "BedrockEmbeddingRetryAbandonedOutOfTime",
         "LambdaHookRetryAbandonedOutOfTime",
+        # idp_common/decision_model/invoker.py: a decision-model call (#1656).
+        "DecisionModelRetryAbandonedOutOfTime",
     }
 )
 EXPECTED_FAILURE_METRICS = frozenset(
@@ -912,6 +914,8 @@ EXPECTED_FAILURE_METRICS = frozenset(
         "BedrockRequestsFailed",
         "BedrockEmbeddingRequestsFailed",
         "LambdaHookRequestsFailed",
+        # idp_common/decision_model/invoker.py: a decision-model call (#1656).
+        "DecisionModelRequestsFailed",
     }
 )
 
@@ -1173,9 +1177,15 @@ def test_the_attempt_timer_is_bound_before_the_try_that_reads_it():
     behavioural test for it would require a fixture that cannot arise, and a
     defensive binding with no assertion at all is a line the next cleanup deletes.
     """
-    tree = ast.parse((BEDROCK_SOURCE_DIR / "client.py").read_text(encoding="utf-8"))
+    # Every ladder module, not one named file: the closure is derived, so a new
+    # ladder is covered by construction rather than by a reviewer noticing.
     functions_needing_it: list[str] = []
-    for node in ast.walk(tree):
+    nodes = [
+        node
+        for path in _ladder_sources()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+    for node in nodes:
         if not isinstance(node, ast.FunctionDef):
             continue
         reads_in_handler = any(
@@ -1187,25 +1197,42 @@ def test_the_attempt_timer_is_bound_before_the_try_that_reads_it():
         if not reads_in_handler:
             continue
         functions_needing_it.append(node.name)
-        # The binding must come before the first Try in the function body.
-        first_try = next(
-            (i for i, stmt in enumerate(node.body) if isinstance(stmt, ast.Try)), None
-        )
-        assert first_try is not None, node.name
-        bound_before = any(
-            isinstance(stmt, ast.Assign)
-            and any(
+
+        def reads_timer(handler: ast.ExceptHandler) -> bool:
+            return any(
+                isinstance(n, ast.Name) and n.id == "attempt_start_time"
+                for n in ast.walk(handler)
+            )
+
+        def binds_timer(stmt: ast.stmt) -> bool:
+            return isinstance(stmt, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == "attempt_start_time"
                 for t in stmt.targets
             )
-            for stmt in node.body[:first_try]
-        )
+
+        # Every block holding a Try whose handler reads the timer must bind it
+        # earlier in that same block: the function body for a recursive ladder,
+        # the loop body for an iterative one.
+        guarded = []
+        for block_owner in ast.walk(node):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(block_owner, field, None)
+                if not isinstance(block, list):
+                    continue
+                for i, stmt in enumerate(block):
+                    if isinstance(stmt, ast.Try) and any(
+                        reads_timer(h) for h in stmt.handlers
+                    ):
+                        guarded.append(any(binds_timer(b) for b in block[:i]))
+        assert guarded, node.name
+        bound_before = all(guarded)
         assert bound_before, (
             f"{node.name} reads attempt_start_time in an except handler but binds it "
             "only inside the try, so an early failure raises UnboundLocalError "
             "instead of the error the caller has to classify"
         )
-    assert len(functions_needing_it) == 3, functions_needing_it
+    # bedrock/client.py's three ladders and decision_model/invoker.py's one.
+    assert len(functions_needing_it) == 4, functions_needing_it
 
 
 @pytest.mark.unit

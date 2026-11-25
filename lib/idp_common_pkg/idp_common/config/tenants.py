@@ -82,8 +82,10 @@ from botocore.exceptions import ClientError
 
 from idp_common.config.prefix_mappings import (
     MATCH_EXACT,
+    SUBMISSION_SOURCE_TEST_STUDIO,
     canonical_key,
     description_rejection_reason,
+    is_internal_producer,
     match_kind,
     prefix_rejection_reason,
 )
@@ -400,6 +402,25 @@ def resolve_grants(
     return {"outcome": GRANT_TENANT, "tenant": matched[0], "reason": None}
 
 
+def eligible_tenant_ids(
+    values: Iterable[str], tenants: Sequence[Mapping[str, Any]]
+) -> List[str]:
+    """The ids of every tenant a user's grant values give them, sorted.
+
+    :func:`resolve_grants` answers "which one tenant", and refuses two or more. This
+    answers "which tenants", for ``TenantSelection=UserSelect``, where a user who
+    holds several chooses one of them. Values that grant nothing are ignored.
+    """
+    wanted = {str(v) for v in values if v}
+    return sorted(
+        {
+            normalize_tenant(t)["tenantId"]
+            for t in tenants
+            if wanted & set(normalize_tenant(t)["grantedBy"])
+        }
+    )
+
+
 def mapping_rejection_reason(
     prefix: str, profile: str, tenants: Sequence[Mapping[str, Any]]
 ) -> Optional[str]:
@@ -597,9 +618,11 @@ def ingest_rejection_reason(
 
     Two cases where the sides are both ``None``:
 
-    * an internal producer (``submission_source`` set) — accepted. A forged source
-      outside every tenant reaches only an untenanted profile, which no tenant user
-      can be scoped to (:func:`scope_rejection_reason`);
+    * an internal producer (``submission_source`` one of
+      :data:`~idp_common.config.prefix_mappings.INTERNAL_SUBMISSION_SOURCES`) —
+      accepted. Any other value is an ordinary external upload. A principal that
+      writes one of those values directly reaches only an untenanted profile, which
+      no tenant user can be scoped to (:func:`scope_rejection_reason`);
     * anything else — refused. Strict mode does not process an external upload that
       lands outside every tenant, because nobody's scope would ever cover it and it
       would sit invisible to all but Admins.
@@ -620,7 +643,7 @@ def ingest_rejection_reason(
     profile_tid = profile_owner["tenantId"] if profile_owner else None
 
     if key_tid == profile_tid:
-        if key_tid is None and not submission_source:
+        if key_tid is None and not is_internal_producer(submission_source):
             return (
                 "Refused: this object is outside every tenant's prefixes, and this "
                 "deployment runs in strict tenant isolation, so a document must land "
@@ -630,7 +653,7 @@ def ingest_rejection_reason(
 
     if (
         key_tid is None
-        and submission_source == "test-studio"
+        and submission_source == SUBMISSION_SOURCE_TEST_STUDIO
         and test_run_profile is not None
         and profile
     ):

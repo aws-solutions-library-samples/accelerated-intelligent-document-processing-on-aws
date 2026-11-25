@@ -10,11 +10,12 @@ let registered = false;
  * Give Amplify UI (the sign-in form) its built-in French dictionary. Idempotent: the
  * dictionary is registered once per page load however many times this runs.
  *
- * `I18n.get` tries the full tag first and then its language subtag, so `fr-CA` picks up
- * this `fr` dictionary. PR 8 adds a `fr-CA` override dictionary here (Québec terms such as
- * "courriel") through `I18n.putVocabulariesForLanguage('fr-CA', ...)`; it layers on top of
- * `fr` by the same lookup. No English dictionary is registered: under `en`, `I18n.get`
- * finds nothing and Amplify's own English defaults render, exactly as before i18n.
+ * `I18n.get` tries the full tag first and then its language subtag, so under `fr-CA` the
+ * sign-in form uses this built-in `fr` dictionary. No `fr-CA` override dictionary (Québec
+ * terms such as "courriel") is registered; one would be added here, through
+ * `I18n.putVocabulariesForLanguage('fr-CA', ...)`, and would layer on top of `fr` by the same
+ * lookup. No English dictionary is registered: under `en`, `I18n.get` finds nothing and
+ * Amplify's own English defaults render, exactly as before i18n.
  */
 export const registerAmplifyVocabularies = (): void => {
   if (registered) return;

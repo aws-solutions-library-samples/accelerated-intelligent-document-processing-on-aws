@@ -18,6 +18,7 @@ The GenAI IDP Accelerator includes a comprehensive reporting database that captu
 - [Rule Validation Tables](#rule-validation-tables)
   - [Rule Validation Summary](#rule-validation-summary)
   - [Rule Validation Details](#rule-validation-details)
+- [Document Reviews Table](#document-reviews-table)
 - [Metering Table](#metering-table)
 - [Document Sections Tables](#document-sections-tables)
   - [Dynamic Section Tables](#dynamic-section-tables)
@@ -129,21 +130,84 @@ The `rule_validation_details` table contains individual rule validation results:
 | reasoning | string | Explanation for the recommendation |
 | supporting_pages | string | JSON array of page numbers supporting the validation |
 | validation_date | timestamp | When the validation was performed |
+| rule_id | string | Stable id of the policy rule: `<policy type>.<rule key>`, where the rule key is the rule's key in the Policy Schema. Null in rows written before rule ids existed |
+| verdict | string | The recommendation as one of `pass`, `fail`, `not_found` or `unknown`. Null in rows written before verdicts existed |
 
 This table is partitioned by date (YYYY-MM-DD format).
+
+`recommendation` is the label configured in `rule_validation.recommendation_options`, so it is free text. `verdict` is the same result in four fixed values: `Pass`, `Fail` and `Information Not Found` (ignoring case) become `pass`, `fail` and `not_found`, and any other label is `unknown`. Group and filter on `rule_id` and `verdict`; two policy rules can share a description, and a description can be edited.
+
+In `rule_validation_summary`, `pass_count`, `fail_count` and `information_not_found_count` are counts of the `pass`, `fail` and `not_found` verdicts.
+
+## Document Reviews Table
+
+The `document_reviews` table records the reviews of documents held in a review
+queue (see [Review Queues](./review-queues.md)). A row is written when a document is
+placed in a queue, with `review_status` `in_review`, and another when its review ends,
+with `complete` or `rejected`. The two rows of a review share `document_id` and
+`cycle_id`; take the latest by `timestamp` for a review's current state.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| document_id | string | Unique identifier for the document |
+| cycle_id | string | The review cycle. A document that is reviewed more than once has one row per cycle |
+| review_status | string | `in_review`, `complete` or `rejected` |
+| disposition | string | How the review ended: `complete`, `rejected`, `removed` or `skipped`. Null while the document is in review |
+| profile | string | The configuration profile the document was processed with |
+| queue | string | The id of the review queue the document was in |
+| reviewer | string | Who ended the review. Null while the document is in review |
+| reviewed_at | timestamp | When the review ended. Null while the document is in review |
+| enqueued_at | timestamp | When the document was placed in the queue |
+| reason_count | int | How many review reasons the document had (confidence alerts, missing required fields, sections whose extraction failed) |
+| top_reason_kind | string | The kind of the first review reason: `low_confidence`, `blueprint_confidence`, `missing_required` or `extraction_failed`. `routing_rule` when a [routing rule](./review-routing.md) placed the document and it had no such reason. Null for a document that was sent to review by hand |
+| reject_reason | string | The reason chosen for a rejected document |
+| escalated | boolean | Whether the item was escalated |
+| machine_run_id | string | The run that produced the machine output |
+| final_run_id | string | The run that followed the review, when it is known |
+| timestamp | timestamp | When the row was written |
+| routing_reason | string | The [reason](./review-routing.md#the-reason) of the routing rule that placed the document, **as written**: its `{placeholders}` are not filled in, so the column holds no value of the document. Null when the outcome that placed the document has no reason of its own, and for a document that was sent to review by hand |
+
+This table is partitioned by date (YYYY-MM-DD format).
+
+`routing_reason` is the last column, so it is an addition for a table that already
+has rows: rows written before the column existed read as null. Group on it to count
+reviews by the reason their routing rule states. The reason a reviewer reads, with
+the document's values in it, is in the document's
+[review status object](./review-queues.md#review-status-for-downstream-consumers),
+not in this table, which is read across configuration profiles.
 
 ## Metering Table
 
 The `metering` table captures detailed usage metrics and cost information for each document processing operation:
 
-**Rows are per run.** Each processing run of a document writes the usage of that run
-only. A run that resubmits a stored document (**Process Changes**, finishing or
+**Rows are per run.** Each processing run of a document — one workflow execution —
+writes the usage of that run only, once, under that execution. A run that resubmits a stored document (**Process Changes**, finishing or
 skipping a review, `idp-cli rerun-inference` or the SDK rerun) reports the stages it ran
 and none of the earlier runs' usage, so summing a document's rows over all runs gives
 its total usage without counting any run twice. The document's tracking record (the
 **Estimated Cost** in the Web UI) keeps the cumulative total of every run. Documents
 reprocessed before this behaviour was introduced keep the figures they were saved
 with: their rows are not rewritten.
+
+**Failed runs are included.** An execution that ends `FAILED`, `TIMED_OUT` or
+`ABORTED` writes the usage its stages had recorded on the document's tracking record
+before it stopped, so a sum over the table is actual spend, failed attempts
+included. Usage the failing step itself incurred is generally not recorded there and
+is not included; classification and summarization are the exception, because an
+attempt of either that fails transiently writes the usage of the calls it completed to
+the tracking record (as does a summarization that fails outright). Only the most recent
+failed attempt of a step is there, because each retry starts by replacing that record's
+usage; see [Cost calculator](cost-calculator.md). Rows written before `execution_status` existed hold NULL in it and come
+from executions that succeeded. To break failed attempts out:
+
+```sql
+SELECT COALESCE(execution_status, 'SUCCEEDED') AS execution_status,
+       COUNT(DISTINCT execution_arn) AS executions,
+       SUM(estimated_cost) AS cost
+FROM metering
+WHERE date = '2026-11-18'
+GROUP BY 1
+```
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -158,6 +222,9 @@ with: their rows are not rewritten.
 | timestamp | timestamp | Document COMPLETION time — when the workflow ended and the row was written. Same value as the partition. |
 | initial_event_time | timestamp | Original queue time — when the document was first enqueued. Preserved for consumers who need queue-time semantics. |
 | config_version | string | Configuration profile used for processing |
+| document_class | string | The document's class, derived from its sections: the one class, `mixed` for several, `unknown` for none |
+| execution_arn | string | The workflow execution the usage was incurred in. NULL on rows written before the column existed |
+| execution_status | string | How that execution ended: `SUCCEEDED`, `FAILED`, `TIMED_OUT` or `ABORTED`. NULL on rows written before the column existed |
 
 **Partitioned by `date` + `hour`** (both string; `YYYY-MM-DD` and `HH`).
 Partition values reflect **completion time** (write time), not queue
@@ -349,7 +416,9 @@ When a document is processed and a new section type (classification) is detected
 1. Creates a new Glue table for that section type (e.g., `document_sections_invoice`, `document_sections_receipt`, `document_sections_w2`)
 2. Configures the table with appropriate schema based on the extracted data
 3. Sets up partition projection for efficient date-based queries
-4. Updates the table schema if new fields are detected in subsequent documents
+4. Adds a column to the table when a later document has a field the table does not have yet
+
+The table's columns accumulate across documents. A field that one document of a class has and the next does not stays a column, so queries written against it keep working; columns are never removed or renamed by processing. Glue stores column names in lowercase, and the comparison with a document's field names ignores case, so a document whose fields the table already has causes no table update. When a column's type in the table differs from the type the reporting step writes to the Parquet files (for example a `timestamp` column recorded as `string`), the next document of that class corrects the column's type in place. A new table likewise gets one column per name ignoring case, so two field names in one document that differ only by case become a single column. An update keeps the table-level parameters already on the table, such as those the document sections crawler records, and sets only the ones the reporting step manages (the Parquet classification and the partition projection settings).
 
 **Important:** Section type names are normalized to lowercase for consistency with case-sensitive S3 paths. For example, a section classified as "W2" will create a table named `document_sections_w2` with data stored in `document_sections/w2/`.
 
@@ -363,7 +432,7 @@ Document sections are stored in dynamically created tables based on the section 
 | section_id | string | Unique identifier for the section |
 | document_id | string | Unique identifier for the document |
 | section_classification | string | Type/class of the section |
-| section_confidence | double | Confidence score for the section classification |
+| section_confidence | string | Confidence score for the section classification, written as a string like every other non-timestamp section column (cast before comparing); null when the classifier produced no score |
 | timestamp | timestamp | When the document was processed |
 | config_version | string | Configuration profile used for processing |
 
@@ -371,7 +440,7 @@ Document sections are stored in dynamically created tables based on the section 
 The remaining columns are dynamically inferred from the JSON extraction results and vary by section type. Common patterns include:
 - Nested JSON objects are flattened using dot notation (e.g., `customer.name`, `customer.address.street`)
 - Arrays are converted to JSON strings
-- Primitive values (strings, numbers, booleans) are preserved as their native types
+- Every other value is stored as a string, including numbers and booleans, so cast before aggregating; only `timestamp` and `evaluation_date` are written with a timestamp type
 
 **Partitioning:**
 Each section type table is partitioned by date (YYYY-MM-DD format) for efficient querying.

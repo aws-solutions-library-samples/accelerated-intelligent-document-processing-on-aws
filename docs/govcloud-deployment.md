@@ -53,7 +53,7 @@ Install on the machine you build from:
 2. aws (AWS CLI)
 3. [sam (AWS SAM)](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
 4. Python 3.12 (required to generate templates)
-5. Node.js >=22.12.0 and npm >=10.0.0
+5. Node.js >=26.0.0 and npm >=10.0.0
 6. A local Docker daemon
 7. The IDP CLI and SDK packages — run `make setup-venv` from the project root
    to create a `.venv` with everything installed, then
@@ -353,7 +353,7 @@ and operational troubleshooting are covered in
 Common deployment issues:
 
 - **Build failures** — re-run with `--verbose` (publish) to see detailed
-  errors; ensure Docker is running and Node.js >= 22.12.
+  errors; ensure Docker is running and Node.js >= 26.
 - **`E3006` cfn-lint errors during publish/deploy** — a GovCloud-unsupported
   resource type survived the transform; this is a bug worth reporting, not a
   local misconfiguration.

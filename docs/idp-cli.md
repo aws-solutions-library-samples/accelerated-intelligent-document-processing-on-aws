@@ -36,11 +36,13 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [publish](#publish)
   - [delete](#delete)
   - [bootstrap](#bootstrap)
+  - [fit-check](#fit-check)
   - [process](#process--run-inference)
   - [reprocess](#reprocess--rerun-inference)
   - [status](#status)
   - [download-results](#download-results)
   - [use-as-baseline](#use-as-baseline)
+  - [list-versions](#list-versions)
   - [delete-documents](#delete-documents)
   - [generate-manifest](#generate-manifest)
   - [validate-manifest](#validate-manifest)
@@ -48,6 +50,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [stop-workflows](#stop-workflows)
   - [load-test](#load-test)
   - [tenancy](#tenancy)
+  - [Terraform deployments](#terraform-deployments-1)
   - [terraform migrate-from-genai-idp-terraform](#terraform-migrate-from-genai-idp-terraform)
   - [discover](#discover)
   - [discover-multidoc](#discover-multidoc)
@@ -60,9 +63,13 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [config-revisions](#config-revisions)
   - [config-activate](#config-activate)
   - [config-delete](#config-delete)
+  - [config-routing-export and config-routing-import](#config-routing-export-and-config-routing-import)
+  - [config-sync-bda](#config-sync-bda)
+  - [review-queues](#review-queues)
   - [test-result](#test-result)
   - [abort-test-run](#abort-test-run)
   - [test-compare](#test-compare)
+  - [mcp credentials](#mcp-credentials)
   - [chat](#chat)
 - [Complete Evaluation Workflow](#complete-evaluation-workflow)
   - [Step 1: Deploy Your Stack](#step-1-deploy-your-stack)
@@ -198,13 +205,25 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
 The resolution order is:
 
 1. `--region` on the subcommand, if given.
-2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
-   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
-   instance metadata.
+2. Otherwise boto3's own chain: `AWS_DEFAULT_REGION`, then the `region`
+   configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
+   read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
+3. Otherwise `AWS_REGION`, for a shell that sets only that variable, as many
+   environments and other AWS SDKs do. This step applies to the commands that
+   work out the Region before calling AWS and pass it on: the configuration
+   commands that read a stack, `test-result`, `test-compare`, `abort-test-run`,
+   `discover-multidoc`, `deploy` (including the upload of a local
+   `--custom-config` and the `--terraform --from-code` build), `publish`, and
+   `reprocess` (and its deprecated alias `rerun-inference`). Other commands rely on boto3
+   alone, so in such a shell they need `--region` or `AWS_DEFAULT_REGION`.
 
-Nothing substitutes a hardcoded region for the configuration commands, so a
-command run with no `--region` and no region resolvable from the environment fails
-with boto3's `NoRegionError` rather than guessing.
+No command substitutes a hardcoded Region. A command run with no `--region` and
+no Region resolvable from the environment fails rather than guessing: the Test
+Studio commands, `discover-multidoc`, `deploy`, `publish` and `rerun-inference`
+say the Region could not be determined (`publish` says a Region is required), and
+the others fail with boto3's `NoRegionError` ("You must specify
+a region"). `remove-deleted-stack-resources` is the exception: it sweeps several
+Regions, and its `--region` defaults to `us-west-2`.
 
 `--region` applies to every AWS call a command makes, not only to the
 CloudFormation lookup that resolves a resource's name. That distinction is the
@@ -225,6 +244,15 @@ report success. It therefore covers
 A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
 no code outside a Lambda builds a configuration client without a region, so a new
 command cannot reintroduce the gap.
+
+The configuration commands that read a stack (`config-download`, `config-upload`,
+`config-activate` and the rest) also set both `AWS_REGION` and
+`AWS_DEFAULT_REGION` to the Region the stack was found in, for the rest of the
+command. A model setting the configuration leaves out resolves to that Region's
+inference profile (see [EU Region Model Support](eu-region-model-support.md)), and
+that lookup reads `AWS_REGION` first, so a shell whose `AWS_REGION` names another
+Region would otherwise get that Region's profiles, such as `us.` ids in a file
+downloaded from an EU stack.
 
 Three commands take no `--region` because they make no AWS calls at all:
 `config-create`, `config-validate` and `validate-manifest`.
@@ -346,9 +374,11 @@ idp-cli deploy [OPTIONS]
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
 - `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
   setting rather than a stack parameter (the `EnableHITL` parameter was removed in
-  v0.4.11) — enable it in the Web UI under **Configuration → Human-in-the-Loop
-  (HITL) Review (Optional)**, or set `hitl.enabled` in the config YAML passed to
-  `--custom-config`. The flag is
+  v0.4.11) — it is the **Review Routing** switch in the Web UI under
+  **Configuration → Processing Settings → Review Routing (Optional)**, or
+  `hitl.enabled` in the config YAML passed to `--custom-config`. A new stack turns
+  it on (see [The Review Routing switch](./review-routing.md#the-review-routing-switch)).
+  The flag is
   still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
   new pair starts at a comma or whitespace followed by `key=` (so a space-separated
@@ -380,9 +410,12 @@ idp-cli deploy [OPTIONS]
 - `--no-validate-template`: Skip CloudFormation template validation
 - `--terraform` (experimental): Deploy with Terraform instead of CloudFormation. See [Terraform deployments](#terraform-deployments) below and the [Terraform Deployment](./terraform.md) guide.
 - `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region; not with `--from-code`, which publishes its own)
+- `--terraform-module-version`: Deploy that published version of the Terraform module instead of the latest, looked up in the region's versions index (used with `--terraform`; not with `--terraform-module-url` or `--from-code`). See [Pinning a version](./terraform.md#pinning-a-version)
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
+- `--terraform-allow-replace-stateful`: Apply a plan that deletes or replaces a resource holding data or one CloudFormation would retain, losing that data; without it such a plan is refused and nothing is applied (used with `--terraform`; `--terraform-allow-replace-retained` is the earlier name)
+- `--terraform-state`: `local` (default) keeps the Terraform state in `terraform.tfstate` in `--terraform-dir`; `s3` keeps it in an encrypted, versioned S3 bucket `idp-tf-<stack-name>-<account>-<region>` that the CLI creates if missing (and never deletes), locked with the DynamoDB table `idp-tf-lock-<stack-name>`. A directory that already holds a local state is refused with `s3`; moving it is not supported yet. Used with `--terraform`; refused without it. See [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -531,6 +564,7 @@ Notes and caveats:
 - **Format:** comma-separated `key=value` pairs. Tag keys may contain spaces and the characters `. : / + - _` (a value may itself contain `=`; only the first `=` splits key from value). Commas inside a tag value are not supported.
 - **Update behavior:** re-running `deploy` with `--tags` **replaces** the stack's entire tag set with what you pass. Omitting `--tags` on an update **preserves** the existing tags (unlike a bare AWS API call, which would clear them).
 - **Not every resource type accepts propagated tags.** CloudFormation propagation is best-effort — a small number of resource types (e.g. some Cognito, CloudFront, and custom resources) do not receive stack tags. This is an AWS platform limitation, not a configuration option.
+- **With `--terraform`:** the Terraform module applies the tags to every taggable resource the same way; omitting `--tags` keeps the tags of the previous deploy from the same `--terraform-dir`. See [Tagging the deployment](terraform.md#tagging-the-deployment).
 - **Cost allocation:** to use these tags in AWS Cost Explorer / cost allocation reports you must additionally activate them as *cost allocation tags* in the Billing console (a one-time, account-level step); this CLI option does not do that for you.
 
 ```bash
@@ -566,16 +600,16 @@ idp-cli publish [OPTIONS]
 - `--headless`: Also generate a **headless (no-UI) template variant**. For commercial regions this produces `idp-main.yaml` **and** `idp-headless.yaml`; for GovCloud (`us-gov-*`) the headless template is additionally updated with GovCloud configuration defaults (ARN partition, GovCloud Bedrock models, `lending-package-sample-govcloud` preset).
 - `--govcloud`: Also generate the **GovCloud template variant** — the full Web UI with every `AWS::CloudFront::*` resource removed and API Gateway UI hosting forced. Writes `.aws-sam/idp-govcloud.yaml` beside `idp-main.yaml` and uploads it as `idp-govcloud.yaml`. The transform is linted against a GovCloud region, so an unsupported resource type that survived it fails the publish with the `cfn-lint` finding rather than at deploy time. Deploy the result with `idp-cli deploy --template-file .aws-sam/idp-govcloud.yaml`, or build and deploy in one step with `idp-cli deploy --from-code . --govcloud`.
 - `--public`: Make S3 artifacts publicly readable (for shared deployments)
-- `--terraform` (experimental): After the CloudFormation publish, also generate the Terraform module from the published main template and upload it beside the templates: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256` checksum, and `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The command prints the module source URL, an HTTPS S3 URL ending `.zip` that Terraform accepts as a module `source`. See [Terraform Deployment](./terraform.md#getting-the-module). It runs the translator in `terraform/translator` of the source checkout, which needs the SDK's `terraform` extra (`pip install -e "lib/idp_sdk[terraform]"`; `make setup` installs it).
+- `--terraform` (experimental): After the CloudFormation publish, also generate the Terraform module from the published main template and upload it beside the templates: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256` checksum, an entry in the versions index `<prefix>/terraform/idp-terraform-versions.json`, and `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). A release version (`X.Y.Z`) whose index entry or existing zip has a different checksum is refused before any module object is written (the CloudFormation templates are already published by then); a pre-release version is replaced. The command prints the module source URL, an HTTPS S3 URL ending `.zip` that Terraform accepts as a module `source`. See [Terraform Deployment](./terraform.md#getting-the-module). It runs the translator in `terraform/translator` of the source checkout, which needs the SDK's `terraform` extra (`pip install -e "lib/idp_sdk[terraform]"`; `make setup` installs it).
 - `--max-workers`: Maximum concurrent build workers (default: auto-detect)
 - `--clean-build`: Force full rebuild by deleting all checksum files
 - `--no-validate`: Skip CloudFormation template validation
 - `--lint / --no-lint`: Enable/disable ruff linting and cfn-lint (default: enabled)
 - `--verbose`, `-v`: Enable verbose build output
-- `--terraform`: After the CloudFormation publish, translate the published main template into a Terraform module (nested templates are fetched by their `TemplateURL`) and upload it to the same bucket and prefix: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256`, and the pointer `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The zip is deterministic, so republishing unchanged files gives the same checksum. Prints the module's HTTPS URL. With `--headless` and/or `--govcloud` as well, each variant template is also translated and published as its own module, named `idp-terraform-<variant>-<version>.zip` (plus `.sha256`) with the pointer `<prefix>/terraform/idp-terraform-<variant>-latest.json`; if a variant's translation fails, the publish fails and names the variant. Needs the source checkout's `terraform/translator`. See [Terraform deployments](#terraform-deployments).
+- `--terraform`: After the CloudFormation publish, translate the published main template into a Terraform module (nested templates are fetched by their `TemplateURL`) and upload it to the same bucket and prefix: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256`, an entry in the [versions index](./terraform.md#the-versions-index) `<prefix>/terraform/idp-terraform-versions.json`, and the pointer `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The zip is deterministic, so republishing unchanged files gives the same checksum. Prints the module's HTTPS URL. With `--headless` and/or `--govcloud` as well, each variant template is also translated and published as its own module, named `idp-terraform-<variant>-<version>.zip` (plus `.sha256`) with its own index `idp-terraform-<variant>-versions.json` and pointer `<prefix>/terraform/idp-terraform-<variant>-latest.json`; if a variant's translation fails, the publish fails and names the variant. Needs the source checkout's `terraform/translator`. See [Terraform deployments](#terraform-deployments).
 
 **Prerequisites** (same as `--from-code` deployments):
-- AWS SAM CLI, Docker (for container-image Lambdas), Node.js ≥ 22.12, npm ≥ 10, Python 3.12.
+- AWS SAM CLI, Docker (for container-image Lambdas), Node.js ≥ 26, npm ≥ 10, Python 3.12.
 
 **Examples:**
 
@@ -655,11 +689,11 @@ idp-cli delete [OPTIONS]
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume during the delete (used with `--terraform`)
 
 **S3 Bucket Behavior:**
-- **LoggingBucket**: `DeletionPolicy: Retain` - Always kept (unless using `--force-delete-all`)
-- **All other buckets**: `DeletionPolicy: RetainExceptOnCreate` - Deleted if empty
-- CloudFormation can ONLY delete S3 buckets if they're empty
+- **LoggingBucket, ConfigurationBucket, TestSetBucket and WebUIBucket**: `DeletionPolicy: Retain` - kept when the stack is deleted (unless using `--force-delete-all`)
+- **The other data buckets** (input, output, working, discovery, reporting, evaluation baseline, MCP content and fine-tuning data): `DeletionPolicy: RetainExceptOnCreate` - also kept when the stack is deleted; CloudFormation deletes them only when the stack's own creation fails and rolls back. The API Gateway hosting staging bucket is the exception: it is deleted with the stack
 - Use `--empty-buckets` to automatically empty buckets before deletion
 - Use `--force-delete-all` to delete ALL remaining resources after CloudFormation completes
+- The KMS key that encrypts the buckets is retained too, and costs about $1 a month until you schedule its deletion; see [The retained KMS key](#the-retained-kms-key)
 
 **Force Delete All Behavior:**
 
@@ -699,6 +733,10 @@ from one that deleted cleanly.
 - All CloudWatch Log Groups (retained by CloudFormation)
 - All S3 buckets including LoggingBucket
 - Handles nested stack resources automatically
+
+The retained KMS key is **not** deleted by `--force-delete-all`; the cleanup summary
+names it and prints the `aws kms schedule-key-deletion` command. See
+[The retained KMS key](#the-retained-kms-key) below.
 
 **Examples:**
 
@@ -871,6 +909,41 @@ Proceeding with stack deletion...
 
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
 
+#### The retained KMS key
+
+A stack deployed with a key of your own ([`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md))
+created no key, so nothing in this section applies to it: `delete` names the supplied
+key, says it is yours and that the retained data stays encrypted with it, and prints
+no deletion steps.
+
+The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
+data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
+leave every object in the retained buckets unreadable once its deletion window ended.
+Its alias, `alias/<stack-name>-customer-encryption-key`, is deleted with the stack, so
+a new stack with the same name creates its own key and alias. The key's description
+names the stack it belonged to.
+
+A retained key costs about $1 a month, rising to at most $3 a month once its yearly
+automatic rotation has run twice. A key scheduled for deletion is not charged. `delete`
+does not delete it, with or without `--force-delete-all`, because scheduling a key's
+deletion makes everything it encrypted unreadable, including data copied out of the
+buckets with its encryption intact. Once you no longer need any of the retained data:
+
+1. Find the key id. After a `--force-delete-all` or Terraform delete the CLI prints it.
+   Otherwise it is the `KMSMasterKeyID` of a retained bucket's default encryption
+   (`aws s3api get-bucket-encryption --bucket <retained-bucket-name>`), or the physical
+   id of `CustomerManagedEncryptionKey` in
+   `aws cloudformation list-stack-resources --stack-name <stack-id>`, which works for a
+   deleted stack when given its stack id.
+2. Delete the retained buckets, or make sure nothing you still need is encrypted with
+   the key.
+3. Schedule the key's deletion. The waiting period is 7 to 30 days, and
+   `aws kms cancel-key-deletion` undoes it until then:
+
+   ```bash
+   aws kms schedule-key-deletion --key-id <key-id> --pending-window-in-days 7
+   ```
+
 #### Deleting a Terraform deployment
 
 `delete --terraform` removes a Terraform deployment, keeping the resources CloudFormation would retain. See [Terraform deployments](#terraform-deployments-1) below and [Terraform Deployment](./terraform.md#deleting).
@@ -893,13 +966,13 @@ idp-cli deploy --terraform --from-code . --stack-name my-idp \
 
 With `--from-code`, `deploy --terraform` first builds and publishes the templates and the Terraform module from that checkout (as `publish --source-dir <dir> --terraform` does, honouring `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template`), then deploys that module. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url`.
 
-`deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. CloudFormation-only options (`--from-code`, `--template-url`, `--template-file`, `--tags`, `--custom-config` and the like) are refused with `--terraform`.
+`deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-module-version X.Y.Z` (deploy that published version instead of the latest: it is looked up in the region's `idp-terraform-versions.json`, or the variant's with `--headless`/`--govcloud`, and the zip is refused before anything is written if its sha256 differs from the index entry; not with `--terraform-module-url` or `--from-code`; see [Pinning a version](./terraform.md#pinning-a-version)), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--terraform-state local|s3` (where the state is kept; see the next paragraph and [Keeping the state in S3](./terraform.md#keeping-the-state-in-s3)), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. The CloudFormation-only options `--template-url`, `--template-file`, `--custom-config`, `--tags`, `--role-arn`, `--no-rollback`, `--log-level` and a non-default `--max-concurrent` are refused with `--terraform`; pass the settings they stand for with `--parameters`. `--from-code` is not among them (see above).
 
 When the module comes from the pointer, idp-cli downloads the zip to read its `idp-terraform.json` and refuses it if its SHA-256 differs from the pointer's `sha256`. That is a consistency check of the copy idp-cli reads, against the manifest beside it: Terraform downloads the module again itself, and that download is not checked. A module named with `--terraform-module-url` is not checked at all, because there is no pointer to compare it with; to verify an archive, see [Verifying the archive](./terraform.md#verifying-the-archive).
 
-The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, the values of the earlier deploy, remembered by CloudFormation parameter name in `idp-cli-parameters.json`, are kept and the new `--parameters` applied over them, as a CloudFormation update keeps parameters it is not given. An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
+The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory by default. With `--terraform-state s3` it is kept in an encrypted, versioned S3 bucket `idp-tf-<stack-name>-<account>-<region>`, which the CLI creates if missing and never deletes, locked with the DynamoDB table `idp-tf-lock-<stack-name>`; a directory that already holds a local state is refused. You can instead add your own backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, as on a CloudFormation update, every parameter not passed keeps the value the deployment has, whether it was set or defaulted, and the new `--parameters` are applied over them; a parameter new in the release takes its default. The values are read from the deployment's label stack, which records each parameter's value in effect, so a second operator deploying from another directory against the same state gets the same settings, and a deployment made by an earlier `idp-cli` keeps its defaulted values on its first upgrade. `NoEcho` values, which the label stack leaves out, come from the directory's `idp-cli-parameters.json`, which after each apply records every parameter's value in effect by CloudFormation parameter name. Before the plan the command lists the kept values that differ from the new module's defaults and the new parameters that took their defaults. Without a label stack (`enable_cfn_stack_label = false`), a directory an earlier `idp-cli` wrote holds only the passed values, so the parameters never passed take the new defaults, and the command warns, naming each whose default changed (see [Upgrading](./terraform.md#upgrading)). An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
 
-`delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained. `--force-delete-all` does not apply.
+`delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete except those with `force_destroy` (the custom-resource bridge buckets, which `destroy` empties itself, after the custom resources that read them are gone), removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained, plus the log groups AWS services created for the deployment's resources, which the destroy leaves (see [Deleting](./terraform.md#deleting)). `--force-delete-all` does not apply.
 
 Plain `deploy` and `delete` (without `--terraform`) refuse a Terraform deployment's label stack.
 
@@ -928,21 +1001,29 @@ changes something only lists the changes unless given `--apply`, and every phase
 | `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
 | `check-retention` | Nothing (lists every object, and every object version of a versioned bucket, in each kept bucket) | `--accept-expiry KIND` (repeatable) |
 | `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800), `--ignore-document KEY` (repeatable) |
-| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
+| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>`, `--restore-after-apply` (with `--restore`, once the first apply has run) |
 | `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
 | `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
-| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset | `--apply` |
+| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset. Without a `fix-config` backup in the migration directory it checks every profile in the configuration table against its revision history | `--apply` |
 | `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
 | `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
 
 ```bash
 idp-cli terraform migrate-from-genai-idp-terraform plan --stack-name my-idp \
     --region us-west-2 --old-state old-idp.tfstate --admin-email admin@example.com
+# Turn off the old agent-jobs table's time-to-live at least an hour before `apply`
+# (see step 1a of the migration guide for finding the table's name):
+aws dynamodb update-time-to-live --region us-west-2 --table-name <agent jobs table> \
+    --time-to-live-specification Enabled=false,AttributeName=expiresAfter
 idp-cli terraform migrate-from-genai-idp-terraform check-retention --stack-name my-idp --region us-west-2
 idp-cli terraform migrate-from-genai-idp-terraform freeze --stack-name my-idp --region us-west-2 --apply --wait
 idp-cli terraform migrate-from-genai-idp-terraform fix-config --stack-name my-idp --region us-west-2 --apply
 idp-cli terraform migrate-from-genai-idp-terraform adopt-user-pool --stack-name my-idp --region us-west-2 --apply
-idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 --apply
+# An hour or more after the time-to-live disable; without an agent jobs table, omit
+# --accept-change:
+idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 \
+    --accept-change module.idp.aws_dynamodb_table.agent_table:ttl-changed --apply
+idp-cli terraform migrate-from-genai-idp-terraform restore-config --stack-name my-idp --region us-west-2 --apply
 idp-cli terraform migrate-from-genai-idp-terraform detach --stack-name my-idp --region us-west-2 \
     --old-terraform-dir ./old-idp --apply
 idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my-idp \
@@ -996,8 +1077,8 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 - `--stack-name`: Target CloudFormation stack. **Omit for local mode** (print schema, no save).
 - `--class-name`: Document class name to use as the schema `$id` / document type.
 - `--field-hint`: A field the schema must include. Repeatable: `--field-hint X --field-hint Y`.
-- `--config-profile` (alias: `--config-version`): Existing configuration profile to source catalog classes from / merge the new class into.
-- `--target-profile` (alias: `--target-version`): Name of the configuration profile to create (default: `bootstrap-<class>`).
+- `--config-profile` (alias: `--config-version`): Existing configuration profile whose classes are searched for a template to adapt. Nothing is written to it.
+- `--target-profile` (alias: `--target-version`): Configuration profile to create, or to add the class to (default: `bootstrap-<class>`). `default` and stack-managed profiles are refused.
 - `--count`, `-c`: Number of synthetic documents to generate (default: `3`).
 - `--threshold`: Generation quality threshold, 1–10 (default: `7`).
 - `--augment`: Apply scan/fax-style image augmentation to generated documents.
@@ -1011,6 +1092,22 @@ requires the Test Set Generator extension (deployed stack) or
 `pip install -e "lib/idp_common_pkg[synthesis]"` (local); without it, the config is still
 created and you can upload your own documents to build a test set. See the
 [Quick Start guide](./quick-start.md) for the full workflow.
+
+---
+
+### `fit-check`
+
+Run a folder of sample documents through a deployed stack and write a structured
+fit report (`fit-report.json` and `fit-report.md`): per document its class, each
+field's presence and confidence, the solution-profile limitations the run observed,
+latency and an estimated cost. Without `--config-profile` it generates a **new**
+configuration profile with Discovery (or Quick Start from `--description`) and never
+changes the active one. See [Fit Check](./fit-check.md) for every option, the report
+fields, and what is uploaded, kept and removed by `--cleanup`.
+
+```bash
+idp-cli fit-check --stack-name my-idp-stack --samples ./samples-to-check/ --cleanup
+```
 
 ---
 
@@ -1034,13 +1131,15 @@ idp-cli run-inference [OPTIONS]
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
 - `--batch-id`: Custom batch ID (auto-generated if omitted, ignored with --test-set)
-- `--batch-prefix`: Prefix for auto-generated batch ID (default: `cli-batch`)
+- `--batch-prefix`: Prefix for auto-generated batch ID (default: `cli-batch`). A generated batch ID is `<prefix>-<YYYYMMDD-HHMMSS>-<8 hex characters>`: the UTC time it was created, then a random suffix, so two batches started with the same prefix in the same second get different IDs. Pass `--batch-id` to choose the ID yourself.
 - `--file-pattern`: File pattern for directory/S3 scanning (default: `*.pdf`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
+- `--config-revision`: Revision of `--config-profile` to pin (e.g. `7`). Omit it to process under the profile's current configuration; pinning reproduces exactly what that revision recorded
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
+- `--attribute KEY=VALUE` (repeatable) and `--attributes-file <json>`: [Document attributes](./document-attributes.md) stored with every document and returned with its results. Values given with `--attribute` are strings and override the file's value for the same key; a manifest's `attributes` column overrides both per row. An invalid set is refused before anything is uploaded. Not accepted with `--test-set`
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
@@ -1063,6 +1162,20 @@ widen or narrow the window.
 answers immediately: a document id that is not in the table is reported missing
 straight away rather than after a minute, so a typo or a document whose data
 retention has elapsed does not look like a slow query.
+
+**A document waiting for human review ends the monitor.**
+
+With Review Routing on (`hitl.enabled: true`), a document that a routing rule
+holds for review (with the built-in routing rules, one that raises a confidence
+alert, for example) ends its first processing run as `HITL_IN_PROGRESS` and waits
+for a reviewer. Nothing more happens to it until someone works it, so
+`--monitor` counts it under **Awaiting Review** rather than **Running**, and
+stops once no document is queued or running. The final summary says how many
+documents are awaiting review, lists them, and says where to work them: the
+web UI's review queues (**Home › Queues**, or **Review Studio › Review
+Management** for an Admin). The document moves on when its review ends
+(completed, rejected or sent back); run `idp-cli status --batch-id <id>`
+afterwards to see the outcome.
 
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:
@@ -1139,7 +1252,7 @@ idp-cli process \
 
 ### `reprocess` / `rerun-inference`
 
-Reprocess existing documents from a specific pipeline step.
+Process existing documents again, starting at a step.
 
 **Usage:**
 ```bash
@@ -1148,14 +1261,31 @@ idp-cli reprocess [OPTIONS]
 idp-cli rerun-inference [OPTIONS]
 ```
 
+The stack does the work. For each document it checks that the document can start at
+the step, clears the outputs the run will produce again and queues the run, so the
+CLI, the SDK, the web UI's **Reprocess** dialog and the MCP tool offer the same steps
+and refuse the same requests. See
+[Reprocessing](./document-versions.md#reprocessing).
+
 **Use Cases:**
 - Test different classification or extraction configurations without re-running OCR
 - Fix classification errors and reprocess extraction
-- Iterate on prompt engineering rapidly
+- Run policy rule validation, summarization or evaluation again after a configuration change
+- Finish documents that failed part-way (`--step resume`)
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--step` (required): Pipeline step to rerun from (`classification` or `extraction`)
+- `--step` (required): The step the run starts at: `beginning` (alias `ocr`),
+  `classification`, `extraction`, `assessment`, `policy_rule_validation`,
+  `summarization`, `evaluation`, or `resume`, which starts each failed document at the
+  first step it has no output for
+- `--skip`: An optional step to leave out of the run (`assessment`,
+  `policy_rule_validation`, `summarization`, `evaluation`); repeat for several. A
+  skipped step keeps the output it has
+- `--profile`: Configuration profile to process the documents under (default: the
+  profile each document was processed with). Another profile starts at the beginning
+  only
+- `--revision`: Revision of `--profile` to process the documents under
 - **Document Source** (choose ONE):
   - `--document-ids`: Comma-separated document IDs
   - `--batch-id`: Batch ID to get all documents from
@@ -1164,47 +1294,73 @@ idp-cli rerun-inference [OPTIONS]
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
 
-**Step Behavior:**
-- `classification`: Clears page classifications and sections, reruns classification → extraction → assessment
-- `extraction`: Keeps classifications, clears extraction data, reruns extraction → assessment
-
 **Examples:**
 
 ```bash
-# Rerun classification for specific documents
+# Start again at classification for specific documents
 idp-cli reprocess \
     --stack-name my-stack \
     --step classification \
     --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf" \
     --monitor
 
-# Rerun extraction for entire batch
+# Run extraction again for a batch, without summarization and evaluation
 idp-cli reprocess \
     --stack-name my-stack \
     --step extraction \
-    --batch-id cli-batch-20251015-143000 \
+    --skip summarization --skip evaluation \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --monitor
 
-# Automated rerun (skip confirmation - perfect for CI/CD)
+# Finish documents that stopped part-way (skip confirmation - for CI/CD)
 idp-cli reprocess \
     --stack-name my-stack \
-    --step classification \
+    --step resume \
     --batch-id test-set \
     --force \
     --monitor
 ```
 
-**What Gets Cleared:**
+**What a start step does:**
 
-| Step | Clears | Keeps |
-|------|--------|-------|
-| `classification` | Page classifications, sections, extraction results | OCR data (pages, images, text) |
-| `extraction` | Section extraction results, attributes | OCR data, page classifications, section structure |
+| Step | The run does | Kept |
+|------|--------------|------|
+| `beginning` | Every step | Nothing: the output is cleared, except the version history |
+| `classification` | Classification and every later step | OCR data (pages, images, text) |
+| `extraction` | Extraction and every later step | OCR data, page classifications, section structure |
+| `assessment` | Assessment and every later step | The extracted values |
+| `policy_rule_validation` | Policy rule validation, Review Routing, summarization, evaluation | Extraction and assessment results |
+| `summarization` | Review Routing, summarization, evaluation | The policy rule validation result as well |
+| `evaluation` | Review Routing, evaluation | The summary as well |
 
-**Benefits:**
-- Leverages existing OCR data (saves time and cost)
-- Rapid iteration on classification/extraction configurations
-- Perfect for prompt engineering experiments
+`classification`, `extraction` and `assessment` are steps of Pipeline mode. For a
+BDA-mode document `classification` and `extraction` mean the beginning, and
+`assessment` is refused.
+
+**Before it asks for confirmation**, the command prints what the run does to the
+outputs a document has, once for Pipeline mode and once for BDA mode, because the
+stack decides which mode a document is in: **What will be cleared and produced
+again** (the output of the start step and of every later step) and **What will be
+kept** (the outputs of the earlier steps, and of a step left out with `--skip`,
+marked `(skipped)`). A step that does not exist in a mode is reported as refused for
+documents of that mode. For `--step resume` it says that each document starts at the
+first step it has no output for. `--force` skips the confirmation; the description
+is still printed.
+
+**Results.** After the summary each document is listed on its own line: queued, with
+the step its run starts at, or not queued, with the stack's message and a reason code
+(`RUN_IN_PROGRESS`, `OUTPUT_MISSING`, `STEP_NOT_IN_MODE`, `NOT_FAILED`,
+`OTHER_PROFILE_BEGINNING_ONLY`, `MALWARE_GATE`, …). Each failure carries its own
+message: a document the stack has no record of cannot start at a later step
+(`OUTPUT_MISSING`), a document the malware gate refuses, or whose status could not be
+read, is `MALWARE_GATE`, and a document whose file is not in the input bucket is
+reported as not found there. A document that cannot be reprocessed does not stop the
+others.
+
+**Permissions.** The caller's credentials need `lambda:InvokeFunction` on the stack's
+reprocess resolver function, and `cloudformation:DescribeStackResources` and
+`cloudformation:DescribeStacks` on the stack, which is how the CLI finds the function.
+A stack deployed from a release that has no such function is reported as such.
 
 **Demo:**
 
@@ -1227,7 +1383,7 @@ idp-cli status [OPTIONS]
 - `--document-id`: Single document ID (check individual document)
 
 **Optional Filters and Display:**
-- `--object-status`: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING, PROCESSING)
+- `--object-status`: Only show documents whose current status is exactly this value, for example `COMPLETED`, `FAILED`, `QUEUED`, `RUNNING` or a step such as `OCR` or `EXTRACTING`. The accepted values are the statuses a document can be recorded with, and `idp-cli status --help` lists them. Without it, documents in every status are shown.
 - `--show-details`: Show detailed document information in table format
 - `--get-time`: Calculate and display timing statistics (processing time, queue time, total time)
 - `--include-metering`: Include Lambda metering statistics (GB-seconds by stage) - requires `--get-time`
@@ -1239,11 +1395,29 @@ idp-cli status [OPTIONS]
 - `--format`: Output format - `table` (default) or `json`
 - `--region`: AWS region (optional)
 
+A single document's status also shows its review, when it has one: the review status
+(`in_review`, `complete` or `rejected`), **Review queue** (the queue's name),
+**Routed by** (the routing rule that placed the document; see
+[Review Routing](./review-routing.md)), **Reason** (what the reviewer is told: the
+routing rule's [reason](./review-routing.md#the-reason) with the document's values
+in it) and **Failed policy rules** (how many policy rules the document failed):
+
+```
+Review queue: Approvals
+Routed by: rule 'Invoices over 1000'
+Reason: Invoice total 1250.00 is over 1000. Check the total against the line items.
+Failed policy rules: 1
+FINAL STATUS: HITL_IN_PROGRESS | Duration: 84.2s | Exit Code: 2
+```
+
+Each line is printed only when the document has that value. The reason can hold
+extracted values, so treat the output as document content.
+
 **How --batch-id Works:**
 
 The `--batch-id` option performs a PK substring search in the DynamoDB tracking table. This means:
 - It searches for all documents where the PK (Primary Key) contains your search string
-- You can search for exact batch IDs: `cli-batch-20251015-143000`
+- You can search for exact batch IDs: `cli-batch-20251015-143000-7f3a9c1e`
 - You can search for partial matches: `batch-123` finds all documents with "batch-123" in their path
 - You can search across multiple batches: `invoice` finds all documents with "invoice" in their name
 
@@ -1253,7 +1427,7 @@ The `--batch-id` option performs a PK substring search in the DynamoDB tracking 
 # Search for all documents in a batch (PK substring search)
 idp-cli status \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000
+    --batch-id cli-batch-20251015-143000-7f3a9c1e
 
 # Search for documents across batches with partial match
 idp-cli status \
@@ -1317,6 +1491,15 @@ For each metric, you'll see:
 - Average, Median, Min, Max, Standard Deviation, Total
 - ObjectKey for min/max values (helps identify outliers)
 
+With `--format json`, `--get-time` writes these statistics to stdout as one JSON object
+instead of the tables: `processing_time`, `queue_time` and `total_time` (each with
+`average`, `median`, `min`, `min_key`, `max`, `max_key`, `stdev` and `total`, in
+seconds), `valid_count` and `missing_data_count`, plus `metering` and `metering_count`
+when `--include-metering` is given. `success` is `false`, with an `error` message, when
+no matching document has the timestamps the statistics need. The exit code is `0` in
+either case, as it is for the table form. `--format json` is still ignored with
+`--wait`.
+
 **Lambda Metering:**
 
 When using `--include-metering` with `--get-time`, you'll see GB-seconds usage by stage:
@@ -1353,7 +1536,13 @@ Processing Time (WorkflowStartTime → CompletionTime):
 The command returns exit codes for scripting:
 - `0` - Document(s) completed successfully
 - `1` - Document(s) failed
-- `2` - Document(s) still processing, or the outcome could not be established
+- `2` - Document(s) still processing, waiting for human review, or the outcome could not be established
+
+`--wait` returns once no document is queued or running, so a batch that is only
+waiting on reviewers ends the wait. It exits `2` rather than `0` in that case,
+because "every document completed" is not yet true; a batch with a failure still
+exits `1`. `--format json` reports the count as `awaiting_review`, and the table
+output's final line reads `AWAITING REVIEW (<n> awaiting review)`.
 
 ⚠️ **`--wait`, the polled table form and `--format json` all derive their code from the
 same place.** A
@@ -1397,12 +1586,43 @@ $ idp-cli status --stack-name my-stack --document-id batch-123/invoice.pdf --for
   "exit_code": 0
 }
 
+# A document held in a review queue also carries its review
+$ idp-cli status --stack-name my-stack --document-id batch-123/big-invoice.pdf --format json
+{
+  "document_id": "batch-123/big-invoice.pdf",
+  "status": "HITL_IN_PROGRESS",
+  "duration": 84.2,
+  "start_time": "2025-01-01T10:30:45Z",
+  "end_time": "2025-01-01T10:32:09Z",
+  "review_status": "in_review",
+  "review_queue": "Approvals",
+  "routed_by": "rule 'Invoices over 1000'",
+  "routing_reason": "Invoice total 1250.00 is over 1000. Check the total against the line items.",
+  "policy_failures": [
+    {
+      "rule_id": "invoice_controls.total_matches_lines",
+      "policy": "invoice_controls",
+      "name": "total_matches_lines",
+      "reason": "The line items add up to 1200.00, not 1250.00.",
+      "pages": [1]
+    }
+  ],
+  "policy_failure_count": 1,
+  "current_step": "HITL_IN_PROGRESS",
+  "exit_code": 2
+}
+
 # Table output includes final status summary
 $ idp-cli status --stack-name my-stack --document-id batch-123/invoice.pdf
 [status table]
 
 FINAL STATUS: COMPLETED | Duration: 125.4s | Exit Code: 0
 ```
+
+`review_queue`, `routed_by`, `routing_reason`, `policy_failures` and
+`policy_failure_count` are present only for a document that was placed in a review
+queue and has that value. `policy_failures` lists the first failed policy rules and
+`policy_failure_count` counts all of them.
 
 **Scripting Examples:**
 
@@ -1479,13 +1699,13 @@ idp-cli download-results [OPTIONS]
 # Download all results
 idp-cli download-results \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --output-dir ./results/
 
 # Download only extraction results
 idp-cli download-results \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --output-dir ./results/ \
     --file-types sections
 
@@ -1508,7 +1728,7 @@ idp-cli download-results \
 
 ```
 ./results/
-└── cli-batch-20251015-143000/
+└── cli-batch-20251015-143000-7f3a9c1e/
     └── invoice.pdf/
         ├── pages/
         │   └── 1/
@@ -1608,22 +1828,39 @@ idp-cli delete-documents [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--status-filter`: Only delete documents with this status (use with --batch-id or --pattern)
-  - Options: `FAILED`, `COMPLETED`, `PROCESSING`, `QUEUED`
+- `--status-filter`: Only delete documents whose current status is exactly this value (use with --batch-id or --pattern).
+  - Accepts any status a document can be recorded with, for example `FAILED`, `COMPLETED` or `QUEUED`; `idp-cli delete-documents --help` lists them all.
+  - A document still being processed carries the name of its current step, such as `RUNNING`, `OCR` or `EXTRACTING`. There is no `PROCESSING` status, and the option refuses that value.
 - `--dry-run`: Show what would be deleted without actually deleting
 - `--force`, `-y`: Skip confirmation prompt
 - `--region`: AWS region (optional)
 
 **What Gets Deleted:**
-- Source files from input bucket
-- Processed outputs from output bucket
+- Source files from input bucket, **every version** of the exact key. The input bucket is
+  versioned, so the uploaded file is not kept as a recoverable noncurrent version; a
+  deleted upload cannot be restored from the bucket afterwards.
+- Processed outputs from output bucket, including every version (document version history)
 - DynamoDB tracking records
 - List entries in tracking table
+
+The input purge needs `s3:ListBucketVersions` on the input bucket and
+`s3:DeleteObjectVersion` on its objects, in addition to the unversioned permissions. With
+credentials that lack them, the upload is still removed the versionless way, so it is no
+longer the current object, but versions the purge could not delete (all of them, if the
+listing itself is refused) stay in the bucket, and the document is reported as failed with
+the input bucket named. Use `--dry-run` first: nothing a delete
+removes can be recovered.
 
 **Exit codes:** `No documents found for batch …` with exit 0 means the selector matched
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
+
+A document is found by its tracking record's key, so one record whose `ObjectKey`
+attribute is a number, null or missing is still
+selected with the rest of its batch rather than failing the whole command, and a
+warning in the log names it. A document with several processing runs is listed and
+counted once.
 
 **A delete that could not finish says so.** Each document's cleanup has several steps —
 the input object, every output version, the tracking-list row, the run records, the
@@ -1659,18 +1896,18 @@ idp-cli delete-documents \
 # Delete all documents in a batch
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123
+    --batch-id cli-batch-20250123-091500-2b8e4d60
 
 # Delete only failed documents in a batch
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123 \
+    --batch-id cli-batch-20250123-091500-2b8e4d60 \
     --status-filter FAILED
 
 # Dry run to see what would be deleted
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123 \
+    --batch-id cli-batch-20250123-091500-2b8e4d60 \
     --dry-run
 
 # Delete documents matching a wildcard pattern
@@ -1700,15 +1937,15 @@ idp-cli delete-documents \
 **Output Example:**
 ```
 Connecting to stack: my-stack
-Getting documents for batch: cli-batch-20250123
+Getting documents for batch: cli-batch-20250123-091500-2b8e4d60
 Found 15 document(s) in batch
   (filtered by status: FAILED)
 
 ⚠️  Documents to be deleted:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • cli-batch-20250123/doc1.pdf
-  • cli-batch-20250123/doc2.pdf
-  • cli-batch-20250123/doc3.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc1.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc2.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc3.pdf
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Delete 3 document(s) permanently? [y/N]: y
@@ -1970,9 +2207,11 @@ Monitoring Batch: initial-run
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  Status Summary
  ─────────────────────────────────────
- ✓ Completed      3     100%
- ⏸ Queued         0       0%
- ✗ Failed         0       0%
+ ✓ Completed         3     100%
+ ⟳ Running           0       0%
+ ⏸ Queued            0       0%
+ ✗ Failed            0       0%
+ ◐ Awaiting Review   0       0%
 ```
 
 ---
@@ -2609,7 +2848,7 @@ idp-cli config-create [OPTIONS]
 - `--features`: Feature set (default: `min`)
   - `min`: classification and extraction only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
   - `core`: the sections of min plus ocr. Unlike min, it does not turn summarization or evaluation off. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
-  - `all`: every section at its default values, except `hitl`, `chat` and `rule_validation`. ⚠️ On upload the file is merged over the stack's preset or the profile's current configuration, so **every setting it writes is reset to its default there**: `summarization` and `evaluation` are written `enabled: true`, for example, and switch back on where a preset turned them off. Without `--include-prompts` the long prompt fields are not written, so those keep the deployment's own values. Edit the file before uploading, or ask for only the sections you mean to change. The three sections are left out so that the reset does not also switch human review, the chat companion or rule validation on or off. Name them explicitly to include them (`--features hitl`, or a comma-separated list of section names); a feature set cannot be combined with section names, so `all` plus one of them means listing every section
+  - `all`: every section at its default values, except `hitl`, `chat`, `rule_validation` and `routing`. ⚠️ On upload the file is merged over the stack's preset or the profile's current configuration, so **every setting it writes is reset to its default there**: `summarization` and `evaluation` are written `enabled: true`, for example, and switch back on where a preset turned them off. Without `--include-prompts` the long prompt fields are not written, so those keep the deployment's own values. Edit the file before uploading, or ask for only the sections you mean to change. Those sections are left out so that the reset does not also switch human review, the chat companion or rule validation on or off, or replace a profile's review routing rules with the built-in table. Name them explicitly to include them (`--features hitl`, or a comma-separated list of section names); a feature set cannot be combined with section names, so `all` plus one of them means listing every section
   - Or one or more section names, comma-separated: `summarization`, or `"classification,extraction,summarization"`. A single name and a list are read the same way. A name that is not a section of the configuration is **refused** with exit 1 and the list of valid sections, rather than dropped, and a feature set cannot be combined with section names
 - No feature set writes a `classes` section. The system defaults define no document classes, and an empty `classes: []` uploaded over a profile would replace the profile's classes with none, so the key is left out and the profile keeps its own. `--features classes` on its own is refused for the same reason. Add your classes under a top-level `classes:` key
 - The header comment of the generated file states which sections it copies, which it switches off, which it leaves out, and whether confidence scoring is on
@@ -2623,7 +2862,7 @@ idp-cli config-create [OPTIONS]
 # Generate minimal config to stdout
 idp-cli config-create
 
-# Generate a config with every section except hitl, chat and rule_validation
+# Generate a config with every section except hitl, chat, rule_validation and routing
 idp-cli config-create --features all --output full-config.yaml
 
 # Custom section selection
@@ -2642,14 +2881,15 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 **Validation Checks:**
 - **YAML/JSON Syntax** - Ensures file is well-formed
 - **Schema Validation** - Validates against Pydantic models
-- **Model IDs** - Verifies every Bedrock model ID the configuration names is in `config_library/pricing.yaml`: each section's model, the confidence, escalation, review-agent, chat, agent, discovery, rule-validation and evaluation models, the per-class `x-aws-idp-extraction-model`, `x-aws-idp-extraction-escalation-model` and `x-aws-idp-confidence-escalation-model` overrides, and the `model` in the `x-aws-idp-evaluation-method-config` of any field evaluated with `LLM`. `config-upload` runs the same check unless given `--no-validate`. An ID is compared as written, so one with surrounding spaces or in upper case is reported like any other typo. Embedding-model fields are not checked, because `pricing.yaml` prices no embedding model. A model named by an ARN whose underlying model cannot be determined offline is a warning rather than an error
+- **Model IDs** - Verifies every Bedrock model ID the configuration names is in `config_library/pricing.yaml`: each section's model, the confidence, escalation, review-agent, chat, agent, discovery, rule-validation and evaluation models, the per-class `x-aws-idp-extraction-model`, `x-aws-idp-extraction-escalation-model` and `x-aws-idp-confidence-escalation-model` overrides, and the `model` in the `x-aws-idp-evaluation-method-config` of any field evaluated with `LLM`. `config-upload` runs the same check unless given `--no-validate`. An ID is compared as written, so one with surrounding spaces or in upper case is reported like any other typo. Embedding-model fields are not checked, because they also take Titan Multimodal Embeddings, which `pricing.yaml` does not price. A model named by an ARN whose underlying model cannot be determined offline is a warning rather than an error
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
-  - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` may appear at most once (comments removed), because classification refuses the prompt otherwise. The prompt is checked as classification builds it: after the placeholder removal `modality.images: false` applies (every `{DOCUMENT_IMAGE}` is removed), and with the class-confidence block (`task_prompt_topk`, `task_prompt_verbalized` and their packet variants) added, so a `{DOCUMENT_IMAGE}` inside that block is counted as classification counts it. An empty prompt is checked as the shipped prompt classification sends in its place. The section-classification prompt is not checked under `method: decision_model` unless `low_confidence.on_low_confidence` is `llm`, because it is not sent otherwise
+  - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` may appear at most once, because extraction refuses the prompt otherwise. The same limit is checked on the integrated-confidence extraction prompt when `extraction.confidence.mode` is `integrated`, and on each class's `x-aws-idp-extraction-task-prompt`
   - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it. `{DOCUMENT_IMAGE}` may appear at most once in the prompt the confidence pass sends — this prompt with comments removed, plus `extraction.geometry.task_prompt_bbox` when `extraction.geometry.mode` is `llm` or `llm_grounded` — because the pass refuses the document otherwise. An explicit empty prompt (`task_prompt: ""`, or one holding only a comment) is refused for the same reason. Both checks run in `integrated` mode too, where the separate pass still runs for some sections; leave the key out to use the system default
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
+- **Extraction mode** - Warns when the file sets `extraction.agentic.enabled: true` but `extraction.mode` resolves to `simple`, because the mode decides the extraction path and the document would run simple extraction. A file downloaded in full carries `mode: simple`, which is how this happens; the warning names `mode: advanced` as the setting to change. It is a warning, not an error
 - **Pre-0.9 classification layout** - Warns when the file still uses the flat
   classification keys, naming the ones it converted, so you can save the nested
   form and keep it. A second warning appears for the one conversion that
@@ -2790,6 +3030,31 @@ Process under it with: --config-profile lending --config-revision 7
 Nothing is printed when the stack has no revision history. A save that changes
 nothing records no new revision, so the number printed is then the revision
 already current — which is still the correct one to pin.
+
+**Warnings:** the command prints every warning once, under a `Warnings:` heading
+on standard output. There are two kinds:
+
+- When validation runs (the default), the same warnings
+  [`config-validate`](#config-validate) reports for the file: for example an unread
+  key, with the field it was probably meant to be, or a class whose prompt is too
+  short for prompt caching to engage.
+- What the saved configuration will not do although the upload is accepted: for
+  example a routing rule that tests a policy rule result in a profile where policy
+  rule validation is off or has no policies. Every upload is checked for these, not
+  only one that changes the routing table. See
+  [Warnings](./review-routing.md#warnings).
+
+```
+Warnings:
+  ⚠ Routing table 'review-routing', rule 'compliance-check': this routing rule tests a policy rule result (failed_policy_rule_count), and policy rule validation is off for this profile or it has no policies, so the routing rule never matches.
+```
+
+They are non-fatal. The configuration is stored and the exit code stays 0. When
+validation refuses the upload, the validation warnings are printed beside the
+error, because an unread key is often the reason a value did not take. With
+`--no-validate` the file is not validated, so only the second kind is printed.
+Both commands print each warning exactly as written, so a key or value containing
+square brackets is shown verbatim.
 
 ---
 
@@ -2991,6 +3256,71 @@ This uses the same mechanism as the Web UI configuration management system.
 
 ---
 
+### `config-routing-export` and `config-routing-import`
+
+Convert a configuration's [review routing](./review-routing.md) table to DMN XML and
+back. Both work on local files: no stack is read and no AWS call is made.
+
+```bash
+# Write the routing table of a configuration file as DMN (1.5 by default)
+idp-cli config-routing-export --config-file ./config.yaml --output routing.dmn
+idp-cli config-routing-export -f ./config.yaml -o routing.dmn --dmn-version 1.3
+
+# Read a DMN file as a routing section, and upload it to a profile
+idp-cli config-routing-import --dmn-file routing.dmn --output routing.yaml
+idp-cli config-upload --stack-name my-stack \
+    --config-file routing.yaml --config-profile claims
+```
+
+`config-routing-import` writes a configuration file that holds only the `routing`
+section (YAML, or JSON when the name ends in `.json`; `-` writes YAML to stdout).
+Uploading it replaces the profile's routing table. The queues the rules name are
+checked when the file is uploaded. A DMN file the importer cannot represent is
+refused with the construct it stopped at; see
+[DMN XML export and import](./review-routing.md#dmn-xml-export-and-import).
+
+---
+
+### `review-queues`
+
+Administer the production [review queues](./review-queues.md): `list`, `create`,
+`update` and `delete`. The commands invoke the stack's review queues resolver function
+with the caller's credentials, which need `lambda:InvokeFunction` on it and
+`cloudformation:DescribeStackResources` and `cloudformation:DescribeStacks` on the
+stack.
+
+```bash
+# List the queues (--json for scripting; --limit and --next-token page through them)
+idp-cli review-queues list --stack-name my-stack
+
+# Create a queue and list two Annotators on it
+idp-cli review-queues create --stack-name my-stack \
+    --id approvals --name Approvals \
+    --annotator ana@example.com --annotator ben@example.com
+
+# Replace a queue's definition from a file; options given with it override it
+idp-cli review-queues update --stack-name my-stack --file approvals.yaml --disabled
+
+# Delete a queue; the documents in it move to the Default queue
+idp-cli review-queues delete --stack-name my-stack --id approvals --yes
+```
+
+`create` and `update` take the definition from `--file` (YAML or JSON), from options
+(`--id`, `--name`, `--description`, `--priority`, `--time-limit-minutes`, `--annotator`,
+`--checklist-item`, `--reject-reason`, `--skip-reason`, `--enabled` / `--disabled`), or
+both. Only the id is required to create a queue. An update replaces the definition: a
+setting left out is reset to its default, except Enabled and the skip reasons.
+`update --expected-version <n>` refuses the update if the queue has been written since
+it was at version `n` (the `version` that `review-queues list --json` shows), so two
+editors cannot overwrite each other unnoticed; without it the update replaces
+whatever is stored.
+
+A profile's routing rules name a queue by its id, and a save is refused when a
+routing rule names a queue the stack does not have, so create the queue first.
+See [Review Routing](./review-routing.md).
+
+---
+
 ### `test-result`
 
 Get test results for a specific Test Studio test run with automatic evaluation triggering.
@@ -3137,8 +3467,8 @@ idp-cli test-compare \
 
 **Output:**
 - **Console**: Side-by-side table with accuracy, precision, recall, F1 score, and cost for each test run
-- **JSON file**: `comparison-<timestamp>.json` - Complete comparison data with full test results and config differences
-- **CSV file**: `comparison-<timestamp>.csv` - Metrics table suitable for spreadsheets
+- **JSON file**: `comparison-<timestamp>-<suffix>.json` - Complete comparison data with full test results and config differences
+- **CSV file**: `comparison-<timestamp>-<suffix>.csv` - Metrics table suitable for spreadsheets
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs
@@ -3369,7 +3699,7 @@ Unlike `discover` (which analyzes one document at a time), `discover-multidoc` a
 
 **Requires:** `pip install -e "lib/idp_common_pkg[multi_document_discovery]"` (scikit-learn, scipy, numpy, strands-agents)
 
-**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. For discovering schemas from individual documents, use [`discover`](#discover) instead.
+**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. The summary lists the documents left in no class this way, and separately the documents whose embedding failed. For discovering schemas from individual documents, use [`discover`](#discover) instead.
 
 **Usage:**
 ```bash

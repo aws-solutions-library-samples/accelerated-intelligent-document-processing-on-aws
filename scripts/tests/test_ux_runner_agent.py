@@ -344,6 +344,64 @@ def test_another_profile_changes_the_two_tool_lists_and_nothing_else() -> None:
 
 
 @pytest.mark.unit
+def test_a_screen_review_may_only_look_and_within_what_the_mr_test_may_do() -> None:
+    """A screen review shows French and pseudo-locale controls, whose names the
+    commit guard's English verbs never match, so its grant gives no input at all."""
+    granted = tool_profiles.SCREEN_REVIEW_ALLOWED_TOOLS
+    assert set(granted) == {
+        tool_profiles.mcp_tool(DEVTOOLS, tool)
+        for tool in (
+            "navigate_page",
+            "wait_for",
+            "hover",
+            "take_snapshot",
+            "take_screenshot",
+        )
+    }
+    assert len(set(granted)) == len(granted), "a duplicate grant"
+    assert set(granted) <= set(tool_profiles.EXPERT_ALLOWED_TOOLS)
+
+
+@pytest.mark.unit
+def test_a_screen_review_denies_every_input_tool_and_the_recorder_by_name() -> None:
+    denied = tool_profiles.SCREEN_REVIEW_DISALLOWED_TOOLS
+    assert len(set(denied)) == len(denied), "a duplicate denial"
+    assert set(tool_profiles.EXPERT_DISALLOWED_TOOLS) <= set(denied)
+    expert_only = set(tool_profiles.EXPERT_ALLOWED_TOOLS) - set(
+        tool_profiles.SCREEN_REVIEW_ALLOWED_TOOLS
+    )
+    assert expert_only <= set(denied)
+    for tool in ("click", "fill", "fill_form", "type_text", "press_key", "drag"):
+        assert tool_profiles.mcp_tool(DEVTOOLS, tool) in denied, tool
+    assert tool_profiles.mcp_tool(DEVTOOLS, "handle_dialog") in denied
+    for tool in tool_profiles.RECORDER_TOOLS:
+        assert tool_profiles.mcp_tool(RECORDER, tool) in denied, tool
+    assert not set(denied) & set(tool_profiles.SCREEN_REVIEW_ALLOWED_TOOLS)
+
+
+@pytest.mark.unit
+def test_every_tool_of_the_pinned_server_is_granted_or_denied_in_a_screen_review() -> (
+    None
+):
+    allowed = set(tool_profiles.SCREEN_REVIEW_ALLOWED_TOOLS)
+    denied = set(tool_profiles.SCREEN_REVIEW_DISALLOWED_TOOLS)
+    for tool in tool_profiles.DEVTOOLS_TOOLS_AT_PIN:
+        name = tool_profiles.mcp_tool(DEVTOOLS, tool)
+        assert (name in allowed) != (name in denied), (
+            f"{name} must be in exactly one of SCREEN_REVIEW_ALLOWED_TOOLS and "
+            "SCREEN_REVIEW_DISALLOWED_TOOLS"
+        )
+
+
+@pytest.mark.unit
+def test_the_screen_review_profile_is_its_two_lists_themselves() -> None:
+    profile = tool_profiles.SCREEN_REVIEW
+    assert profile.name == "screen-review"
+    assert profile.allowed is tool_profiles.SCREEN_REVIEW_ALLOWED_TOOLS
+    assert profile.disallowed is tool_profiles.SCREEN_REVIEW_DISALLOWED_TOOLS
+
+
+@pytest.mark.unit
 def test_the_prompt_reaches_the_runner_only_on_stdin(tmp_path: Path) -> None:
     calls: list[dict[str, Any]] = []
     answer = {
@@ -778,6 +836,43 @@ def test_the_recorder_server_runs_isolated_python_with_its_output_directory() ->
     assert args[args.index("/usr/local/bin/python3") + 1 :][:2] == ["-I", "-B"]
     assert not any(arg.startswith("PYTHON") for arg in args)
     assert args[args.index("--out") + 1] == "/run/ux/recordings"
+
+
+def _servers_without_recorder(**recorder: Path) -> dict[str, Any]:
+    return agent.mcp_servers(
+        toolchain=paths.Toolchain(Path("/opt/ux-runner")),
+        relay=Path("/work/ux-harness/scripts/ux_runner/review_relay.py"),
+        refusal_log=Path("/run/ux/agent/guard/guard-refusals.jsonl"),
+        python="/usr/local/bin/python3",
+        home=Path("/run/ux/agent/home"),
+        fs_root=Path("/run/ux/agent/mcp-files"),
+        **recorder,
+    )
+
+
+@pytest.mark.unit
+def test_a_session_that_records_nothing_gets_the_relay_alone() -> None:
+    """A screen review starts no recorder, so its config names no recorder server,
+    and the relay it gets is the MR UX test's, argument for argument."""
+    servers = _servers_without_recorder()
+    assert list(servers) == [DEVTOOLS]
+    assert servers[DEVTOOLS] == _servers()[DEVTOOLS]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "recorder",
+    [
+        {"recorder_out": Path("/run/ux/recordings")},
+        {"recorder_adapter": Path("/work/ux-harness/scripts/ux_recorder_mcp.py")},
+    ],
+    ids=["output-only", "adapter-only"],
+)
+def test_a_recorder_needs_both_its_adapter_and_its_output_directory(
+    recorder: dict[str, Path],
+) -> None:
+    with pytest.raises(agent.AgentError, match="needs both its adapter"):
+        _servers_without_recorder(**recorder)
 
 
 @pytest.mark.unit

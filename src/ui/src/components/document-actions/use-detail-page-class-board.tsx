@@ -6,6 +6,7 @@
 // (updateDocumentSections, which keeps the extracted values) and Save and Re-extract
 // (that save, then processChanges for the sections whose class or pages changed).
 import React, { useMemo } from 'react';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag } from 'react-intl';
 
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
@@ -13,8 +14,30 @@ import { submitProcessChanges } from '../common/process-changes';
 import type { GroupedSection } from '../common/section-grouping';
 import type { EditBoard } from '../edit-screen/edit-model';
 import { documentName } from '../review-queues/review-api';
-import { REEXTRACT_ORDER_ONLY_REASON, reextractNoClassReason } from './action-reasons';
+import { actionReasonMessages, reextractNoClassReason } from './action-reasons';
 import type { DocumentActionGates } from './document-action-gates';
+
+/** Renders a `<b>...</b>` element value: a button's label named inside a sentence. */
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
+
+const messages = defineMessages<{
+  consequence: { readonly b: MessageTag };
+  reextracting: { readonly name: string; readonly count: number; readonly ids: string };
+}>({
+  consequence: {
+    id: 'documentActions.pageGrouping.consequence',
+    defaultMessage:
+      "<b>Save page grouping</b> rewrites this document's section grouping and keeps the extracted field values, including any a reviewer corrected; the document is not reprocessed, so they may no longer match their pages. <b>Save and Re-extract</b> saves the grouping, then extracts again the sections whose class or pages changed, replacing their values.",
+    description:
+      'What the two saves of the Edit Page Grouping board on the document page do. <b>Save page grouping</b> and <b>Save and Re-extract</b> are the labels of its two save buttons, shown in bold.',
+  },
+  reextracting: {
+    id: 'documentActions.pageGrouping.reextracting',
+    defaultMessage: 'Saved the page grouping of {name}, and re-extracting {count, plural, one {section} other {sections}} {ids}.',
+    description:
+      'Success notification after Save and Re-extract on the Edit Page Grouping board saved the grouping and sent the re-extract. {name} is the document name; {count} is how many sections; {ids} lists their numbers, separated by commas.',
+  },
+});
 
 interface DetailBoardDocument {
   objectKey: string;
@@ -40,9 +63,8 @@ export const toModifiedSections = (sections: GroupedSection[]) =>
     isDeleted: false,
   }));
 
-const plural = (n: number) => (n > 1 ? 's' : '');
-
 export const useDetailPageClassBoard = ({ item, gates, mergedConfig, refresh }: DetailBoardInput): EditBoard => {
+  const intl = useIntl();
   const key = item.objectKey;
   const name = documentName(key);
   const sections = useMemo<GroupedSection[]>(
@@ -65,13 +87,7 @@ export const useDetailPageClassBoard = ({ item, gates, mergedConfig, refresh }: 
     sections: () => sections,
     classOptions: getConfigClassOptions(mergedConfig),
     canChangeClass: gates.canChangeClass,
-    consequence: (
-      <>
-        <b>Save page grouping</b> rewrites this document&apos;s section grouping and keeps the extracted field values, including any a
-        reviewer corrected; the document is not reprocessed, so they may no longer match their pages. <b>Save and Re-extract</b> saves the
-        grouping, then extracts again the sections whose class or pages changed, replacing their values.
-      </>
-    ),
+    consequence: <FormattedMessage {...messages.consequence} values={{ b: bold }} />,
     save: async (next) => {
       const message = await saveDocumentGroupingOrThrow(key, next);
       await refresh();
@@ -81,8 +97,8 @@ export const useDetailPageClassBoard = ({ item, gates, mergedConfig, refresh }: 
       disabledReason: (changed) => {
         if (gates.reextractBlockedReason) return gates.reextractBlockedReason;
         const noClass = changed.filter((s) => !s.documentClass).map((s) => s.sectionId);
-        if (noClass.length > 0) return reextractNoClassReason(noClass);
-        return changed.length === 0 ? REEXTRACT_ORDER_ONLY_REASON : undefined;
+        if (noClass.length > 0) return reextractNoClassReason(noClass, intl);
+        return changed.length === 0 ? intl.formatMessage(actionReasonMessages.reextractOrderOnly) : undefined;
       },
       run: async (changed) => {
         try {
@@ -91,7 +107,7 @@ export const useDetailPageClassBoard = ({ item, gates, mergedConfig, refresh }: 
           void refresh();
         }
         const ids = changed.map((s) => s.sectionId).join(', ');
-        return `Saved the page grouping of ${name}, and re-extracting section${plural(changed.length)} ${ids}.`;
+        return intl.formatMessage(messages.reextracting, { name, count: changed.length, ids });
       },
     },
   };

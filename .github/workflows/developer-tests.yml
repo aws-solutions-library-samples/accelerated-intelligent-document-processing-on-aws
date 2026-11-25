@@ -432,7 +432,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: src/ui/package-lock.json
 
@@ -477,6 +477,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history: `make terraform-replay-releases` (inside terraform-check)
+          # reads the template tree of each release in
+          # terraform/tools/replay_releases.json from its recorded commit.
+          fetch-depth: 0
 
       - name: Set up Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

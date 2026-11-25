@@ -1,21 +1,22 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useMemo } from 'react';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type MessageTag, type NoMessageValues } from 'react-intl';
 import { useLocation } from 'react-router-dom';
 import type { SideNavigationProps } from '@cloudscape-design/components';
-import { Badge, Box, Button, Hotspot, Link, Popover, SideNavigation, SpaceBetween } from '@cloudscape-design/components';
+import { Badge, Box, Button, Link, Popover, SideNavigation, SpaceBetween } from '@cloudscape-design/components';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import useInstalledFeatures from '../../hooks/use-installed-features';
 import useCatalogFeatures from '../../hooks/use-catalog-features';
-import { buildFeaturesNavSection, COMING_SOON_HREF } from './feature-platform-nav-items';
+import { BROWSE_CATALOG_HREF, buildFeaturesNavSection, COMING_SOON_HREF } from './feature-platform-nav-items';
 import useLatestVersion from '../../hooks/use-latest-version';
 import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
+import { TourHotspot } from '../../contexts/tourHotspots';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
-import { isQuickStartEnabled } from '../../utils/quick-start-flag';
+import useQuickStartAvailable from '../../hooks/use-quick-start-available';
 import './navigation.css';
 
 import {
@@ -43,15 +44,304 @@ import {
   REVIEW_QUEUES_PATH,
 } from '../../routes/constants';
 
-const messages = defineMessages<{ mcpConfiguration: NoMessageValues }>({
+const messages = defineMessages<{
+  documentsSection: NoMessageValues;
+  documentList: NoMessageValues;
+  uploadDocuments: NoMessageValues;
+  assistantsSection: NoMessageValues;
+  knowledgeBase: NoMessageValues;
+  agentChat: NoMessageValues;
+  testStudioSection: NoMessageValues;
+  testSets: NoMessageValues;
+  testExecutions: NoMessageValues;
+  configurationSection: NoMessageValues;
+  viewEditConfiguration: NoMessageValues;
+  viewConfiguration: NoMessageValues;
+  discovery: NoMessageValues;
+  customModels: NoMessageValues;
+  customModelsRegionNote: NoMessageValues;
+  customModelsRegionBadge: NoMessageValues;
+  capacityPlanning: NoMessageValues;
+  userManagement: NoMessageValues;
+  prefixMappings: NoMessageValues;
+  mcpConfiguration: NoMessageValues;
+  viewEditPricing: NoMessageValues;
+  viewPricing: NoMessageValues;
+  viewEditModelLimits: NoMessageValues;
+  viewModelLimits: NoMessageValues;
+  resourcesSection: NoMessageValues;
+  blog: NoMessageValues;
+  documentation: NoMessageValues;
+  sourceCode: NoMessageValues;
+  reportIssue: NoMessageValues;
+  deploymentInfoSection: NoMessageValues;
+  stackName: { readonly stackName: string };
+  version: { readonly version: string };
+  build: { readonly buildDateTime: string };
+  pattern: { readonly pattern: string };
+  region: { readonly region: string };
+  updateAvailable: NoMessageValues;
+  updateBadge: NoMessageValues;
+  latestVersion: { readonly version: string; readonly strong: MessageTag };
+  currentVersion: { readonly version: string; readonly strong: MessageTag };
+  updateStackLink: NoMessageValues;
+  updateStackHelp: NoMessageValues;
+  contactAdministrator: NoMessageValues;
+  quickStart: NoMessageValues;
+}>({
+  documentsSection: {
+    id: 'navigation.documents.section',
+    defaultMessage: 'Documents',
+    description: 'Side navigation section that holds the document list and the upload page.',
+  },
+  documentList: {
+    id: 'navigation.documents.list',
+    defaultMessage: 'Document List',
+    description: 'Side navigation link, in the Documents section, to the list of processed documents.',
+  },
+  uploadDocuments: {
+    id: 'navigation.documents.upload',
+    defaultMessage: 'Upload Documents',
+    description: 'Side navigation link, in the Documents section, to the page that uploads documents for processing.',
+  },
+  assistantsSection: {
+    id: 'navigation.assistants.section',
+    defaultMessage: 'Assistants',
+    description: 'Side navigation section that holds the Knowledge Base and Agent Chat assistants. Admin users only.',
+  },
+  knowledgeBase: {
+    id: 'navigation.assistants.knowledgeBase',
+    defaultMessage: 'Knowledge Base',
+    description: 'Side navigation link, in the Assistants section, to the page that queries the knowledge base built from the documents.',
+  },
+  agentChat: {
+    id: 'navigation.assistants.agentChat',
+    defaultMessage: 'Agent Chat',
+    description: 'Side navigation link, in the Assistants section, to the chat with the analytics agent.',
+  },
+  testStudioSection: {
+    id: 'navigation.testStudio.section',
+    defaultMessage: 'Test Studio',
+    description:
+      'Side navigation section that holds the test sets and the test executions. "Test Studio" is the name of that part of the application.',
+  },
+  testSets: {
+    id: 'navigation.testStudio.sets',
+    defaultMessage: 'Test Sets',
+    description: 'Side navigation link, in the Test Studio section, to the Test Sets tab.',
+  },
+  testExecutions: {
+    id: 'navigation.testStudio.executions',
+    defaultMessage: 'Test Executions',
+    description: 'Side navigation link, in the Test Studio section, to the Test Executions tab, which lists the test runs.',
+  },
+  configurationSection: {
+    id: 'navigation.configuration.section',
+    defaultMessage: 'Configuration',
+    description: 'Side navigation section that holds the configuration pages (processing configuration, discovery, pricing, users).',
+  },
+  viewEditConfiguration: {
+    id: 'navigation.configuration.viewEdit',
+    defaultMessage: 'View/Edit Configuration',
+    description:
+      'Side navigation link, in the Configuration section, to the processing configuration page, for users who may edit it (Admin, Author).',
+  },
+  viewConfiguration: {
+    id: 'navigation.configuration.view',
+    defaultMessage: 'View Configuration',
+    description:
+      'Side navigation link, in the Configuration section, to the processing configuration page, for users who may only read it (Viewer).',
+  },
+  discovery: {
+    id: 'navigation.configuration.discovery',
+    defaultMessage: 'Discovery',
+    description:
+      'Side navigation link, in the Configuration section, to the page that discovers document classes and attributes from sample documents.',
+  },
+  customModels: {
+    id: 'navigation.configuration.customModels',
+    defaultMessage: 'Custom Models',
+    description: 'Side navigation link, in the Configuration section, to the page that fine-tunes custom models.',
+  },
+  customModelsRegionNote: {
+    id: 'navigation.configuration.customModelsRegionNote',
+    defaultMessage:
+      'Custom Models requires Amazon Nova fine-tuning, which is currently available in us-east-1 only. Deploy your stack in us-east-1 to use this feature.',
+    description:
+      'Popover text behind the badge of the Custom Models link when the deployment is not in the us-east-1 AWS Region, where that link is greyed out. "us-east-1" is a Region code and stays as it is.',
+  },
+  customModelsRegionBadge: {
+    id: 'navigation.configuration.customModelsRegionBadge',
+    defaultMessage: 'us-east-1 only',
+    description:
+      'Badge next to the Custom Models link when the deployment is not in the us-east-1 AWS Region, where that link is greyed out. "us-east-1" is a Region code and stays as it is.',
+  },
+  capacityPlanning: {
+    id: 'navigation.configuration.capacityPlanning',
+    defaultMessage: 'Capacity Planning',
+    description: 'Side navigation link, in the Configuration section, to the page that plans model throughput capacity.',
+  },
+  userManagement: {
+    id: 'navigation.configuration.userManagement',
+    defaultMessage: 'User Management',
+    description:
+      'Side navigation link, in the Configuration section, to the page that manages the users of the application. Admin users only.',
+  },
+  prefixMappings: {
+    id: 'navigation.configuration.prefixMappings',
+    defaultMessage: 'Prefix Mappings',
+    description:
+      'Side navigation link, in the Configuration section, to the page that maps upload prefixes to configuration profiles. Admin users only.',
+  },
   mcpConfiguration: {
     id: 'navigation.configuration.mcpConfiguration',
     defaultMessage: 'MCP Configuration',
     description: 'Side navigation link, in the Configuration section, to the page that manages MCP server credentials. Admin users only.',
   },
+  viewEditPricing: {
+    id: 'navigation.configuration.viewEditPricing',
+    defaultMessage: 'View / Edit Pricing',
+    description: 'Side navigation link, in the Configuration section, to the model pricing page, for Admin users, who may edit it.',
+  },
+  viewPricing: {
+    id: 'navigation.configuration.viewPricing',
+    defaultMessage: 'View Pricing',
+    description:
+      'Side navigation link, in the Configuration section, to the model pricing page, for users who may only read it (Author, Viewer).',
+  },
+  viewEditModelLimits: {
+    id: 'navigation.configuration.viewEditModelLimits',
+    defaultMessage: 'View / Edit Model Limits',
+    description: 'Side navigation link, in the Configuration section, to the model limits page, for Admin users, who may edit it.',
+  },
+  viewModelLimits: {
+    id: 'navigation.configuration.viewModelLimits',
+    defaultMessage: 'View Model Limits',
+    description:
+      'Side navigation link, in the Configuration section, to the model limits page, for users who may only read it (Author, Viewer).',
+  },
+  resourcesSection: {
+    id: 'navigation.resources.section',
+    defaultMessage: 'Resources',
+    description: 'Side navigation section of external links: the blog, the documentation, the source code and the issue tracker.',
+  },
+  blog: {
+    id: 'navigation.resources.blog',
+    defaultMessage: 'Blog',
+    description: 'Side navigation link, in the Resources section, to the blog post about the solution (opens in a new tab).',
+  },
+  documentation: {
+    id: 'navigation.resources.documentation',
+    defaultMessage: 'Documentation',
+    description: 'Side navigation link, in the Resources section, to the published documentation of the solution (opens in a new tab).',
+  },
+  sourceCode: {
+    id: 'navigation.resources.sourceCode',
+    defaultMessage: 'Source Code',
+    description: 'Side navigation link, in the Resources section, to the source repository of the solution on GitHub (opens in a new tab).',
+  },
+  reportIssue: {
+    id: 'navigation.resources.reportIssue',
+    defaultMessage: 'Report an issue',
+    description: 'Side navigation link, in the Resources section, to the issue tracker of the solution on GitHub (opens in a new tab).',
+  },
+  deploymentInfoSection: {
+    id: 'navigation.deploymentInfo.section',
+    defaultMessage: 'Deployment Info',
+    description:
+      'Last section of the side navigation: facts about this deployment (stack name, version, build, pattern, Region). Its entries are not links.',
+  },
+  stackName: {
+    id: 'navigation.deploymentInfo.stackName',
+    defaultMessage: 'Stack Name: {stackName}',
+    description: 'Entry of the Deployment Info section. {stackName} is the name of the CloudFormation stack of this deployment.',
+  },
+  version: {
+    id: 'navigation.deploymentInfo.version',
+    defaultMessage: 'Version: {version}',
+    description: 'Entry of the Deployment Info section. {version} is the version number of the deployed solution, such as 0.4.2.',
+  },
+  build: {
+    id: 'navigation.deploymentInfo.build',
+    defaultMessage: 'Build: {buildDateTime}',
+    description:
+      'Entry of the Deployment Info section. {buildDateTime} is the build timestamp of the deployed solution, as the build wrote it.',
+  },
+  pattern: {
+    id: 'navigation.deploymentInfo.pattern',
+    defaultMessage: 'Pattern: {pattern}',
+    description:
+      'Entry of the Deployment Info section. {pattern} is the name of the deployed processing pattern, such as Pattern-2 or Unified.',
+  },
+  region: {
+    id: 'navigation.deploymentInfo.region',
+    defaultMessage: 'Region: {region}',
+    description: 'Entry of the Deployment Info section. {region} is the code of the AWS Region of this deployment, such as us-east-1.',
+  },
+  updateAvailable: {
+    id: 'navigation.deploymentInfo.updateAvailable',
+    defaultMessage: 'Update available',
+    description:
+      'Header of the popover behind the Update badge of the Version entry, shown when a newer version of the solution is published.',
+  },
+  updateBadge: {
+    id: 'navigation.deploymentInfo.updateBadge',
+    defaultMessage: 'Update',
+    description:
+      'Badge next to the Version entry of the Deployment Info section when a newer version of the solution is published. Opens the popover.',
+  },
+  latestVersion: {
+    id: 'navigation.deploymentInfo.latestVersion',
+    defaultMessage: 'Latest published version: <strong>v{version}</strong>',
+    description:
+      'First line of the Update available popover. {version} is the newest published version number, such as 0.4.3; <strong> puts it in bold.',
+  },
+  currentVersion: {
+    id: 'navigation.deploymentInfo.currentVersion',
+    defaultMessage: 'Currently deployed: <strong>v{version}</strong>',
+    description:
+      'Second line of the Update available popover. {version} is the version number deployed here, such as 0.4.2; <strong> puts it in bold.',
+  },
+  updateStackLink: {
+    id: 'navigation.deploymentInfo.updateStackLink',
+    defaultMessage: 'Update stack in CloudFormation →',
+    description:
+      'Link in the Update available popover, for Admin users, that opens the AWS CloudFormation console on the stack update page (new tab).',
+  },
+  updateStackHelp: {
+    id: 'navigation.deploymentInfo.updateStackHelp',
+    defaultMessage: 'Opens the AWS CloudFormation console with the new template URL pre-filled. Review parameters before applying.',
+    description: 'Small print under the CloudFormation link of the Update available popover, for Admin users.',
+  },
+  contactAdministrator: {
+    id: 'navigation.deploymentInfo.contactAdministrator',
+    defaultMessage: 'Contact your administrator to update this deployment to the latest version.',
+    description: 'Small print of the Update available popover for users who are not Admins and cannot update the stack themselves.',
+  },
+  quickStart: {
+    id: 'navigation.quickStart.button',
+    defaultMessage: 'Quick Start',
+    description: 'Button above the side navigation that opens the Quick Start guide of the application.',
+  },
 });
 
 const MCP_CONFIGURATION_HREF = `#${MCP_CONFIGURATION_PATH}`;
+const CAPACITY_PLANNING_HREF = `#${CAPACITY_PLANNING_PATH}`;
+const CUSTOM_MODELS_HREF = `#${CUSTOM_MODELS_PATH}`;
+// The first link of the Configuration, Test Studio and Resources sections. A section has
+// no href of its own and its text follows the UI's language, so the code below finds a
+// section by the link that leads it (see isSectionLedBy).
+const CONFIGURATION_HREF = `#${CONFIGURATION_PATH}`;
+const TEST_SETS_HREF = `#${TEST_STUDIO_PATH}?tab=sets`;
+const BLOG_URL = 'https://www.amazon.com/genai-idp-accelerator';
+
+/** Whether `item` is the section whose first link is `href`. */
+const isSectionLedBy = (item: unknown, href: string): boolean => {
+  const section = item as { type?: string; items?: ReadonlyArray<{ href?: string }> };
+  return section.type === 'section' && section.items?.[0]?.href === href;
+};
+
+const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
 
 const NAV_HOTSPOTS: Record<string, string> = {
   [`#${DOCUMENTS_PATH}`]: 'nav-documents',
@@ -70,7 +360,7 @@ const NAV_HOTSPOTS: Record<string, string> = {
 };
 
 const withInfoHotspot = (link: SideNavigationProps.Link, hotspotId: string): SideNavigationProps.Link => {
-  const hotspot = React.createElement(Hotspot, { hotspotId, side: 'right' });
+  const hotspot = React.createElement(TourHotspot, { hotspotId, side: 'right' });
   const info = link.info ? React.createElement(SpaceBetween, { direction: 'horizontal', size: 'xxs' }, link.info, hotspot) : hotspot;
   return { ...link, info };
 };
@@ -79,7 +369,8 @@ const withNavHotspots = (items: readonly SideNavigationProps.Item[]): SideNaviga
   items.map((item) => {
     if (item.type === 'section' && Array.isArray((item as SideNavigationProps.Section).items)) {
       const section = item as SideNavigationProps.Section;
-      if (section.text === 'Extensions' && section.items.length > 0) {
+      // The Extensions section, which Browse catalog leads.
+      if (isSectionLedBy(section, BROWSE_CATALOG_HREF)) {
         const [first, ...rest] = section.items;
         const firstWithHotspot = first.type === 'link' ? withInfoHotspot(first as SideNavigationProps.Link, 'nav-extensions') : first;
         return { ...section, items: [firstWithHotspot, ...rest] };
@@ -96,65 +387,69 @@ const withNavHotspots = (items: readonly SideNavigationProps.Item[]): SideNaviga
     return item;
   });
 
+type NavIntl = Pick<IntlShape, 'formatMessage'>;
+
+// The role-specific items are built per render from `intl`, so every label is in the
+// UI's language; the hrefs do not change with it.
+
 // Full navigation items for Admin users (all features)
-export const adminNavItems = [
+export const adminNavItems = (intl: NavIntl) => [
   {
     type: 'section',
-    text: 'Documents',
+    text: intl.formatMessage(messages.documentsSection),
     items: [
-      { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
-      { type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.documentList), href: `#${DOCUMENTS_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.uploadDocuments), href: `#${UPLOAD_DOCUMENT_PATH}` },
     ],
   },
   {
     type: 'section',
-    text: 'Assistants',
+    text: intl.formatMessage(messages.assistantsSection),
     items: [
-      { type: 'link', text: 'Knowledge Base', href: `#${DOCUMENTS_KB_QUERY_PATH}` },
-      { type: 'link', text: 'Agent Chat', href: `#${AGENT_CHAT_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.knowledgeBase), href: `#${DOCUMENTS_KB_QUERY_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.agentChat), href: `#${AGENT_CHAT_PATH}` },
     ],
   },
   {
     type: 'section',
-    text: 'Test Studio',
+    text: intl.formatMessage(messages.testStudioSection),
     items: [
-      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
-      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
+      { type: 'link', text: intl.formatMessage(messages.testSets), href: TEST_SETS_HREF },
+      { type: 'link', text: intl.formatMessage(messages.testExecutions), href: `#${TEST_STUDIO_PATH}?tab=executions` },
     ],
   },
   {
     type: 'section',
-    text: 'Configuration',
+    text: intl.formatMessage(messages.configurationSection),
     items: [
-      { type: 'link', text: 'View/Edit Configuration', href: `#${CONFIGURATION_PATH}` },
-      { type: 'link', text: 'Discovery', href: `#${DISCOVERY_PATH}` },
-      { type: 'link', text: 'Custom Models', href: `#${CUSTOM_MODELS_PATH}` },
-      { type: 'link', text: 'Capacity Planning', href: `#${CAPACITY_PLANNING_PATH}` },
-      { type: 'link', text: 'User Management', href: `#${USER_MANAGEMENT_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.viewEditConfiguration), href: CONFIGURATION_HREF },
+      { type: 'link', text: intl.formatMessage(messages.discovery), href: `#${DISCOVERY_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.customModels), href: CUSTOM_MODELS_HREF },
+      { type: 'link', text: intl.formatMessage(messages.capacityPlanning), href: CAPACITY_PLANNING_HREF },
+      { type: 'link', text: intl.formatMessage(messages.userManagement), href: `#${USER_MANAGEMENT_PATH}` },
       // Admin-only, and only in this list: a mapping assigns a Configuration
       // Profile, which is the document-visibility partition, so it is not an
       // Author-level setting.
-      { type: 'link', text: 'Prefix Mappings', href: `#${CONFIG_PREFIX_MAPPINGS_PATH}` },
-      // Admin-only: MCP service credentials. Hidden on a stack without MCP. The text
-      // here is the English; FullNavigation formats it in the UI's language.
-      { type: 'link', text: String(messages.mcpConfiguration.defaultMessage), href: MCP_CONFIGURATION_HREF },
-      { type: 'link', text: 'View / Edit Pricing', href: `#${PRICING_PATH}` },
-      { type: 'link', text: 'View / Edit Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.prefixMappings), href: `#${CONFIG_PREFIX_MAPPINGS_PATH}` },
+      // Admin-only: MCP service credentials. Hidden on a stack without MCP.
+      { type: 'link', text: intl.formatMessage(messages.mcpConfiguration), href: MCP_CONFIGURATION_HREF },
+      { type: 'link', text: intl.formatMessage(messages.viewEditPricing), href: `#${PRICING_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.viewEditModelLimits), href: `#${MODEL_CONFIG_LIMITS_PATH}` },
     ],
   },
   {
     type: 'section',
-    text: 'Resources',
+    text: intl.formatMessage(messages.resourcesSection),
     items: [
       {
         type: 'link',
-        text: 'Blog',
-        href: 'https://www.amazon.com/genai-idp-accelerator',
+        text: intl.formatMessage(messages.blog),
+        href: BLOG_URL,
         external: true,
       },
       {
         type: 'link',
-        text: 'Documentation',
+        text: intl.formatMessage(messages.documentation),
         href: 'https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/',
         external: true,
       },
@@ -166,13 +461,13 @@ export const adminNavItems = [
       },
       {
         type: 'link',
-        text: 'Source Code',
+        text: intl.formatMessage(messages.sourceCode),
         href: 'https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws',
         external: true,
       },
       {
         type: 'link',
-        text: 'Report an issue',
+        text: intl.formatMessage(messages.reportIssue),
         href: 'https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues',
         external: true,
       },
@@ -181,48 +476,48 @@ export const adminNavItems = [
 ];
 
 // Author navigation: same as admin but without User Management or the Assistants section (Knowledge Base, Agent Chat) (not yet config-version scoped)
-export const authorNavItems = [
+export const authorNavItems = (intl: NavIntl) => [
   {
     type: 'section',
-    text: 'Documents',
+    text: intl.formatMessage(messages.documentsSection),
     items: [
-      { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
-      { type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.documentList), href: `#${DOCUMENTS_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.uploadDocuments), href: `#${UPLOAD_DOCUMENT_PATH}` },
     ],
   },
   {
     type: 'section',
-    text: 'Test Studio',
+    text: intl.formatMessage(messages.testStudioSection),
     items: [
-      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
-      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
+      { type: 'link', text: intl.formatMessage(messages.testSets), href: TEST_SETS_HREF },
+      { type: 'link', text: intl.formatMessage(messages.testExecutions), href: `#${TEST_STUDIO_PATH}?tab=executions` },
     ],
   },
   {
     type: 'section',
-    text: 'Configuration',
+    text: intl.formatMessage(messages.configurationSection),
     items: [
-      { type: 'link', text: 'View/Edit Configuration', href: `#${CONFIGURATION_PATH}` },
-      { type: 'link', text: 'Discovery', href: `#${DISCOVERY_PATH}` },
-      { type: 'link', text: 'Custom Models', href: `#${CUSTOM_MODELS_PATH}` },
-      { type: 'link', text: 'Capacity Planning', href: `#${CAPACITY_PLANNING_PATH}` },
-      { type: 'link', text: 'View Pricing', href: `#${PRICING_PATH}` },
-      { type: 'link', text: 'View Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.viewEditConfiguration), href: CONFIGURATION_HREF },
+      { type: 'link', text: intl.formatMessage(messages.discovery), href: `#${DISCOVERY_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.customModels), href: CUSTOM_MODELS_HREF },
+      { type: 'link', text: intl.formatMessage(messages.capacityPlanning), href: CAPACITY_PLANNING_HREF },
+      { type: 'link', text: intl.formatMessage(messages.viewPricing), href: `#${PRICING_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.viewModelLimits), href: `#${MODEL_CONFIG_LIMITS_PATH}` },
     ],
   },
   {
     type: 'section',
-    text: 'Resources',
+    text: intl.formatMessage(messages.resourcesSection),
     items: [
       {
         type: 'link',
-        text: 'Blog',
-        href: 'https://www.amazon.com/genai-idp-accelerator',
+        text: intl.formatMessage(messages.blog),
+        href: BLOG_URL,
         external: true,
       },
       {
         type: 'link',
-        text: 'Documentation',
+        text: intl.formatMessage(messages.documentation),
         href: 'https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/',
         external: true,
       },
@@ -234,13 +529,13 @@ export const authorNavItems = [
       },
       {
         type: 'link',
-        text: 'Source Code',
+        text: intl.formatMessage(messages.sourceCode),
         href: 'https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws',
         external: true,
       },
       {
         type: 'link',
-        text: 'Report an issue',
+        text: intl.formatMessage(messages.reportIssue),
         href: 'https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues',
         external: true,
       },
@@ -249,35 +544,35 @@ export const authorNavItems = [
 ];
 
 // Viewer navigation: read-only access to documents, config, capacity planning (no KB or Agent Chat — not yet config-version scoped)
-export const viewerNavItems = [
+export const viewerNavItems = (intl: NavIntl) => [
   {
     type: 'section',
-    text: 'Documents',
-    items: [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }],
+    text: intl.formatMessage(messages.documentsSection),
+    items: [{ type: 'link', text: intl.formatMessage(messages.documentList), href: `#${DOCUMENTS_PATH}` }],
   },
   {
     type: 'section',
-    text: 'Configuration',
+    text: intl.formatMessage(messages.configurationSection),
     items: [
-      { type: 'link', text: 'View Configuration', href: `#${CONFIGURATION_PATH}` },
-      { type: 'link', text: 'Capacity Planning', href: `#${CAPACITY_PLANNING_PATH}` },
-      { type: 'link', text: 'View Pricing', href: `#${PRICING_PATH}` },
-      { type: 'link', text: 'View Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.viewConfiguration), href: CONFIGURATION_HREF },
+      { type: 'link', text: intl.formatMessage(messages.capacityPlanning), href: CAPACITY_PLANNING_HREF },
+      { type: 'link', text: intl.formatMessage(messages.viewPricing), href: `#${PRICING_PATH}` },
+      { type: 'link', text: intl.formatMessage(messages.viewModelLimits), href: `#${MODEL_CONFIG_LIMITS_PATH}` },
     ],
   },
   {
     type: 'section',
-    text: 'Resources',
+    text: intl.formatMessage(messages.resourcesSection),
     items: [
       {
         type: 'link',
-        text: 'Blog',
-        href: 'https://www.amazon.com/genai-idp-accelerator',
+        text: intl.formatMessage(messages.blog),
+        href: BLOG_URL,
         external: true,
       },
       {
         type: 'link',
-        text: 'Documentation',
+        text: intl.formatMessage(messages.documentation),
         href: 'https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/',
         external: true,
       },
@@ -289,13 +584,13 @@ export const viewerNavItems = [
       },
       {
         type: 'link',
-        text: 'Source Code',
+        text: intl.formatMessage(messages.sourceCode),
         href: 'https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws',
         external: true,
       },
       {
         type: 'link',
-        text: 'Report an issue',
+        text: intl.formatMessage(messages.reportIssue),
         href: 'https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues',
         external: true,
       },
@@ -367,6 +662,7 @@ const buildCfnUpdateStackUrl = (region: string | undefined, stackName: string | 
  * Admin's.
  */
 const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
+  const intl = useIntl();
   const { settings } = useSettingsContext();
   const { isAdmin } = useUserRole();
   // Version-check for the "Update available" indicator. Returns
@@ -385,26 +681,26 @@ const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
     isAdmin && cfnUpdateStackUrl ? (
       <SpaceBetween size="xs">
         <Box>
-          Latest published version: <strong>v{latestVersion}</strong>
+          <FormattedMessage {...messages.latestVersion} values={{ version: latestVersion ?? '', strong }} />
           <br />
-          Currently deployed: <strong>v{currentVersion}</strong>
+          <FormattedMessage {...messages.currentVersion} values={{ version: currentVersion ?? '', strong }} />
         </Box>
         <Link external href={cfnUpdateStackUrl}>
-          Update stack in CloudFormation →
+          <FormattedMessage {...messages.updateStackLink} />
         </Link>
         <Box variant="small" color="text-body-secondary">
-          Opens the AWS CloudFormation console with the new template URL pre-filled. Review parameters before applying.
+          <FormattedMessage {...messages.updateStackHelp} />
         </Box>
       </SpaceBetween>
     ) : (
       <SpaceBetween size="xs">
         <Box>
-          Latest published version: <strong>v{latestVersion}</strong>
+          <FormattedMessage {...messages.latestVersion} values={{ version: latestVersion ?? '', strong }} />
           <br />
-          Currently deployed: <strong>v{currentVersion}</strong>
+          <FormattedMessage {...messages.currentVersion} values={{ version: currentVersion ?? '', strong }} />
         </Box>
         <Box variant="small" color="text-body-secondary">
-          Contact your administrator to update this deployment to the latest version.
+          <FormattedMessage {...messages.contactAdministrator} />
         </Box>
       </SpaceBetween>
     );
@@ -413,7 +709,11 @@ const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
     const deploymentInfoItems: SideNavigationProps.Item[] = [];
 
     if (settings?.StackName) {
-      deploymentInfoItems.push({ type: 'link', text: `Stack Name: ${settings.StackName}`, href: '#stackname' });
+      deploymentInfoItems.push({
+        type: 'link',
+        text: intl.formatMessage(messages.stackName, { stackName: settings.StackName as string }),
+        href: '#stackname',
+      });
     }
     if (settings?.Version) {
       // Attach an "Update" badge + popover when the version-check resolver
@@ -422,7 +722,7 @@ const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
       // is built above.
       const versionItem: SideNavigationProps.Link = {
         type: 'link',
-        text: `Version: ${settings.Version}`,
+        text: intl.formatMessage(messages.version, { version: settings.Version as string }),
         href: '#version',
       };
       if (isUpdateAvailable && latestVersion) {
@@ -431,33 +731,39 @@ const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
         // the styling consistent with the existing "us-east-1 only" badge.
         (versionItem as SideNavigationProps.Link & { info?: React.ReactNode }).info = (
           <Popover
-            header="Update available"
+            header={intl.formatMessage(messages.updateAvailable)}
             dismissButton={false}
             position="right"
             size="medium"
             triggerType="custom"
             content={updatePopoverContent}
           >
-            <Badge color="blue">Update</Badge>
+            <Badge color="blue">
+              <FormattedMessage {...messages.updateBadge} />
+            </Badge>
           </Popover>
         );
       }
       deploymentInfoItems.push(versionItem);
     }
     if (settings?.BuildDateTime) {
-      deploymentInfoItems.push({ type: 'link', text: `Build: ${settings.BuildDateTime}`, href: '#builddatetime' });
+      deploymentInfoItems.push({
+        type: 'link',
+        text: intl.formatMessage(messages.build, { buildDateTime: settings.BuildDateTime as string }),
+        href: '#builddatetime',
+      });
     }
     if (settings?.IDPPattern) {
       const pattern = (settings.IDPPattern as string).split(' ')[0];
-      deploymentInfoItems.push({ type: 'link', text: `Pattern: ${pattern}`, href: '#idppattern' });
+      deploymentInfoItems.push({ type: 'link', text: intl.formatMessage(messages.pattern, { pattern }), href: '#idppattern' });
     }
     if (deployedRegion) {
-      deploymentInfoItems.push({ type: 'link', text: `Region: ${deployedRegion}`, href: '#region' });
+      deploymentInfoItems.push({ type: 'link', text: intl.formatMessage(messages.region, { region: deployedRegion }), href: '#region' });
     }
 
     return {
       type: 'section',
-      text: 'Deployment Info',
+      text: intl.formatMessage(messages.deploymentInfoSection),
       items: deploymentInfoItems,
     } as SideNavigationProps.Item;
   }
@@ -475,7 +781,8 @@ const FullNavigation = ({
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
+  const { loading: roleLoading, isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
+  const quickStartAvailable = useQuickStartAvailable();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
@@ -493,44 +800,42 @@ const FullNavigation = ({
   // isAdmin gates the badge wording only: installing is Admin-only, so a
   // non-admin reads lifecycle state rather than an action they cannot take.
   const featuresSection = useMemo(
-    () => buildFeaturesNavSection(installedFeatures, catalogFeatures, isAdmin),
-    [installedFeatures, catalogFeatures, isAdmin],
+    () => buildFeaturesNavSection(installedFeatures, catalogFeatures, isAdmin, intl),
+    [installedFeatures, catalogFeatures, isAdmin, intl],
   );
 
   // Select navigation items based on user role (highest privilege wins)
   const baseItems = useMemo(() => {
     if (items) return items;
     let roleItems: Array<Record<string, unknown>>;
-    if (isAdmin) roleItems = adminNavItems;
-    else if (isAuthor) roleItems = authorNavItems;
-    else if (isViewerOnly) roleItems = viewerNavItems;
-    else roleItems = viewerNavItems; // Viewer, and Viewer + Reviewer (the union)
+    if (isAdmin) roleItems = adminNavItems(intl);
+    else if (isAuthor) roleItems = authorNavItems(intl);
+    else if (isViewerOnly) roleItems = viewerNavItems(intl);
+    else roleItems = viewerNavItems(intl); // Viewer, and Viewer + Reviewer (the union)
 
     // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
-    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), {
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount, intl), {
       showWork: isQueueWorker,
       taskCount: reviewCount,
       showJobs: !!canReview,
+      intl,
     });
     roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
-      const section = buildReviewStudioNavSection() as unknown as Record<string, unknown>;
-      const isSection = (i: Record<string, unknown>, text: string) => i.type === 'section' && i.text === text;
-      const testStudioIdx = roleItems.findIndex((i) => isSection(i, 'Test Studio'));
-      const resourcesIdx = roleItems.findIndex((i) => isSection(i, 'Resources'));
+      const section = buildReviewStudioNavSection(intl) as unknown as Record<string, unknown>;
+      const testStudioIdx = roleItems.findIndex((i) => isSectionLedBy(i, TEST_SETS_HREF));
+      const resourcesIdx = roleItems.findIndex((i) => isSectionLedBy(i, BLOG_URL));
       const at = testStudioIdx >= 0 ? testStudioIdx + 1 : resourcesIdx >= 0 ? resourcesIdx : roleItems.length;
       roleItems = [...roleItems.slice(0, at), section, ...roleItems.slice(at)];
     }
 
     // Insert the dynamic Extensions section just before Resources
     // (or at the end if Resources isn't present).
-    const resourcesIdx = roleItems.findIndex(
-      (i) => (i as { type?: string }).type === 'section' && (i as { text?: string }).text === 'Resources',
-    );
+    const resourcesIdx = roleItems.findIndex((i) => isSectionLedBy(i, BLOG_URL));
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount, canReview]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount, canReview, intl]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -552,10 +857,11 @@ const FullNavigation = ({
     const deployedRegion = import.meta.env.VITE_AWS_REGION as string | undefined;
     const isCustomModelsSupported = deployedRegion === 'us-east-1';
 
-    // Build list of items to hide from the Configuration section
+    // Build list of items to hide from the Configuration section, by href: the text
+    // follows the UI's language, the href does not.
     const hiddenConfigItems = new Set<string>();
     if (!isCapacityPlanningSupported) {
-      hiddenConfigItems.add('Capacity Planning');
+      hiddenConfigItems.add(CAPACITY_PLANNING_HREF);
     }
     // MCP Configuration only where the stack has an MCP server. Hidden until the
     // settings say so, so a stack without MCP never shows a dead link. Keyed on the
@@ -565,21 +871,18 @@ const FullNavigation = ({
     // Transform navigation items: hide unsupported items, grey out region-restricted items
     return baseItems
       .map((rawItem) => {
-        const item = rawItem as { type?: string; text?: string; items?: unknown[] };
-        if (item.type === 'section' && item.text === 'Configuration') {
+        const item = rawItem as { type?: string; items?: unknown[] };
+        if (isSectionLedBy(item, CONFIGURATION_HREF)) {
           const section = item as unknown as SideNavigationProps.Section;
           return {
             ...item,
             items: section.items
-              .filter((subItem) => !hiddenConfigItems.has((subItem as { text?: string }).text ?? ''))
+              .filter((subItem) => !hiddenConfigItems.has((subItem as { href?: string }).href ?? ''))
               .filter((subItem) => showMcpConfiguration || (subItem as { href?: string }).href !== MCP_CONFIGURATION_HREF)
               .map((subItem) => {
                 const link = subItem as SideNavigationProps.Link;
-                if (link.href === MCP_CONFIGURATION_HREF) {
-                  return { ...link, text: intl.formatMessage(messages.mcpConfiguration) };
-                }
                 // Grey out Custom Models with region badge when not in us-east-1
-                if (link.text === 'Custom Models' && !isCustomModelsSupported) {
+                if (link.href === CUSTOM_MODELS_HREF && !isCustomModelsSupported) {
                   return {
                     ...link,
                     href: '#custom-models-unavailable',
@@ -590,10 +893,9 @@ const FullNavigation = ({
                         position: 'right',
                         size: 'medium',
                         triggerType: 'custom',
-                        content:
-                          'Custom Models requires Amazon Nova fine-tuning, which is currently available in us-east-1 only. Deploy your stack in us-east-1 to use this feature.',
+                        content: intl.formatMessage(messages.customModelsRegionNote),
                       },
-                      React.createElement(Badge, { color: 'grey' }, 'us-east-1 only'),
+                      React.createElement(Badge, { color: 'grey' }, intl.formatMessage(messages.customModelsRegionBadge)),
                     ),
                   };
                 }
@@ -603,7 +905,7 @@ const FullNavigation = ({
         }
         return item;
       })
-      .filter((item) => !hiddenConfigItems.has((item as { text?: string }).text ?? ''));
+      .filter((item) => !hiddenConfigItems.has((item as { href?: string }).href ?? ''));
   }, [baseItems, settings?.IDPPattern, settings?.McpServerEndpoint, intl]);
 
   // Determine active link based on current path
@@ -660,16 +962,24 @@ const FullNavigation = ({
   const deploymentInfo = useDeploymentInfoNavSection();
   if (deploymentInfo) navigationItems.push(deploymentInfo);
 
+  if (roleLoading && !items) {
+    return (
+      <div className="idp-side-nav">
+        <SideNavigation items={[]} header={header} />
+      </div>
+    );
+  }
+
   return (
     <div className="idp-side-nav">
       {/* Annotator-only and Reviewer-only users get QueueWorkerNavigation, which has no Quick Start. */}
-      {isQuickStartEnabled() && (
+      {quickStartAvailable && (
         <div className="nav-quick-start">
-          <Hotspot hotspotId="nav-quick-start" side="right">
+          <TourHotspot hotspotId="nav-quick-start" side="right">
             <Button variant="primary" iconName="gen-ai" onClick={() => window.dispatchEvent(new CustomEvent('openQuickStart'))}>
-              Quick Start
+              <FormattedMessage {...messages.quickStart} />
             </Button>
-          </Hotspot>
+          </TourHotspot>
         </div>
       )}
       <SideNavigation
@@ -690,6 +1000,7 @@ const FullNavigation = ({
  * and a Reviewer works Production queues only. Mounts no feature or catalog hooks.
  */
 const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
+  const intl = useIntl();
   const location = useLocation();
   const path = location.pathname;
   const { unreadCount } = useInbox();
@@ -697,7 +1008,12 @@ const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activ
   const deploymentInfo = useDeploymentInfoNavSection();
   const { canReview } = useUserRole();
   const items: SideNavigationProps.Item[] = [
-    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null, showJobs: !!canReview }),
+    buildHomeNavSection(buildInboxNavLink(unreadCount, intl), {
+      showWork: true,
+      taskCount: reviewWork?.count ?? null,
+      showJobs: !!canReview,
+      intl,
+    }),
     ...(deploymentInfo ? [deploymentInfo] : []),
   ];
   // The edit pages (a Test Studio item under /review-queues/.../items for an Annotator, or a document's

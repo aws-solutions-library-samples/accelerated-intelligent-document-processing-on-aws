@@ -473,7 +473,7 @@
     "status": "suppressed",
     "firstDetectedAt": "2026-07-07T01:25:57.555Z",
     "assessmentCount": 4,
-    "suppressionReason": "Accepted — the mitigation is in the tree but not yet effective. src/ui/.npmrc DOES set min-release-age=7 (added in the SRT/ASH remediation), so the rule's ask is satisfied in-tree. It is inert in CI for now: the key requires npm >= 11.10, while .gitlab-ci.yml pins npm@11.1.0 and src/ui/package.json engines still allow npm >= 10, so today it only emits an 'Unknown user config' warning. It costs nothing meanwhile (npm ci installs from the committed lockfile and resolves nothing from the registry) and starts protecting the `npm install` path as soon as the build npm reaches 11.10. Kept as 'suppressed' rather than 'resolved' because 'resolved' is not sticky: semgrep keys on (path, line, issue) and this rule's message text changes, so each rule-text update would re-open the finding — and run.py now blocks 'reopened' as well as 'open', which would fail CI on an unrelated rule edit."
+    "suppressionReason": "Accepted — the mitigation is in the tree. src/ui/.npmrc DOES set min-release-age=7 (added in the SRT/ASH remediation), so the rule's ask is satisfied in-tree. The key requires npm >= 11.10; every CI uses the npm bundled with the pinned Node 26.13.1 (11.20.0), which honours it, while src/ui/package.json engines still allow npm >= 10, on which it only emits an 'Unknown user config' warning. npm ci installs from the committed lockfile and resolves nothing from the registry, so the key protects the `npm install` path that adds or upgrades a dependency. Kept as 'suppressed' rather than 'resolved' because 'resolved' is not sticky: semgrep keys on (path, line, issue) and this rule's message text changes, so each rule-text update would re-open the finding — and run.py now blocks 'reopened' as well as 'open', which would fail CI on an unrelated rule edit."
   },
   {
     "source": "security-matrix",
@@ -795,7 +795,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.660Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. The flagged environment variables are the fixture's RSA private exponent and OIDC client secret. Both are generated per run by deploy.py (rsa_parameters / secrets.token_urlsafe), sign nothing but this fixture's own test tokens, and are destroyed with the stack. There is no real credential to protect."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. The flagged environment variables are the fixture's RSA private exponent and OIDC client secret. Both are generated per run by deploy.py (rsa_parameters / secrets.token_urlsafe), sign nothing but this fixture's own test tokens, and are destroyed with the stack. There is no real credential to protect."
   },
   {
     "source": "security-matrix",
@@ -810,7 +810,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.660Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. X-Ray tracing on a fixture that lives for the duration of one manual verification run has no operational value; there is nothing to trace it for and nobody to read it."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. X-Ray tracing on a fixture that lives for the duration of one manual verification run has no operational value; there is nothing to trace it for and nobody to read it."
   },
   {
     "source": "security-matrix",
@@ -825,7 +825,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.660Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. CloudWatch alarms presuppose an on-call owner and a lifetime longer than one verification run. A failure here fails the verification script, which is the intended signal."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. CloudWatch alarms presuppose an on-call owner and a lifetime longer than one verification run. A failure here fails the verification script, which is the intended signal."
   },
   {
     "source": "security-matrix",
@@ -840,7 +840,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.661Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: an OIDC provider must accept the arbitrary query and form parameters that /authorize and /token carry (redirect_uri, state, scope, code, grant_type, client_id, client_secret...). Attaching a RequestValidator would reject valid OIDC requests and break the flow this fixture exists to exercise."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: an OIDC provider must accept the arbitrary query and form parameters that /authorize and /token carry (redirect_uri, state, scope, code, grant_type, client_id, client_secret...). Attaching a RequestValidator would reject valid OIDC requests and break the flow this fixture exists to exercise."
   },
   {
     "source": "security-matrix",
@@ -855,7 +855,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.661Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: the discovery document, JWKS, /authorize, /token and /userinfo endpoints must be reachable without AWS authentication for Cognito to federate to them at all. An OIDC provider that required AWS auth could not serve any relying party."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: the discovery document, JWKS, /authorize, /token and /userinfo endpoints must be reachable without AWS authentication for Cognito to federate to them at all. An OIDC provider that required AWS auth could not serve any relying party."
   },
   {
     "source": "security-matrix",
@@ -870,7 +870,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.662Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: AuthorizationType must be NONE so Cognito can reach the OIDC endpoints. Setting AWS_IAM or COGNITO_USER_POOLS here would make the provider unusable as an identity provider."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: AuthorizationType must be NONE so Cognito can reach the OIDC endpoints. Setting AWS_IAM or COGNITO_USER_POOLS here would make the provider unusable as an identity provider."
   },
   {
     "source": "security-matrix",
@@ -885,7 +885,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.662Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: this method serves the unauthenticated OIDC endpoints (discovery, JWKS, /authorize, /token, /userinfo) that a relying party must be able to call."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: this method serves the unauthenticated OIDC endpoints (discovery, JWKS, /authorize, /token, /userinfo) that a relying party must be able to call."
   },
   {
     "source": "security-matrix",
@@ -900,7 +900,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.662Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — AuthorizationType must be NONE for Cognito to reach the OIDC endpoints."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — AuthorizationType must be NONE for Cognito to reach the OIDC endpoints."
   },
   {
     "source": "security-matrix",
@@ -915,6 +915,45 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.663Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — the OIDC endpoints are unauthenticated by design."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — the OIDC endpoints are unauthenticated by design."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "Lambda function may contain sensitive data in environment variables",
+    "fix": "Use AWS Secrets Manager or SSM Parameter Store for sensitive environment variables like 'DECIDER_MAX_REQUEST_TOKENS'. Replace direct values with references like '{{resolve:secretsmanager:MySecret:SecretString:password}}' or use dynamic references with Ref or GetAtt.",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-002",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "False positive on a variable name: DECIDER_MAX_REQUEST_TOKENS is the upstream decider's request-size limit (a token count, 24576), read by its handler to refuse a request too large to finish inside the function's timeout. It holds no secret; the function's environment holds only that limit, the image long side and the published-version string."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "No X-Ray tracing configured for Lambda function",
+    "fix": "Set TracingConfig.Mode to 'Active' to enable X-Ray tracing for the Lambda function",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-004",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "Scanner limitation: DeciderFunction sets TracingConfig.Mode to !If [EnableXRayTracingCondition, Active, PassThrough], and EnableXRayTracing defaults to 'true', so tracing is Active unless the installer turns it off; its role attaches AWSXrayWriteOnlyAccess. scripts/tests/test_xray_tracing.py asserts the conditional form for every function in this template."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "Lambda function container image may not be stored in a secure repository",
+    "fix": "Store the container image 'ECRRepository.RepositoryUri:DeciderImageBuild.ImageTag' in a secure repository like Amazon ECR with vulnerability scanning enabled.",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-015",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "Scanner limitation: the ImageUri is !Sub of this stack's own ECRRepository (KMS-encrypted with the host's customer-managed key, ScanOnPush true, a repository policy limited to this function), tagged by the image-build custom resource. The scanner cannot resolve the intrinsic to see that it is Amazon ECR."
   }
 ]

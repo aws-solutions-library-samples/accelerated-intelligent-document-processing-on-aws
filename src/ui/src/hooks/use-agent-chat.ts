@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -22,6 +23,47 @@ import {
 } from '../components/agent-chat/session-opt-ins';
 
 const logger = new ConsoleLogger('useAgentChat');
+
+const uiMessages = defineMessages<{
+  chartTitle: NoMessageValues;
+  generating: NoMessageValues;
+  connectionLost: NoMessageValues;
+  sendFailed: NoMessageValues;
+  accessDenied: { readonly error: string };
+  loadFailed: NoMessageValues;
+}>({
+  chartTitle: {
+    id: 'agentChat.session.chartTitle',
+    defaultMessage: 'Chart',
+    description: "Title above a chart in an Agent Chat answer when the agent's chart has no title of its own.",
+  },
+  generating: {
+    id: 'agentChat.session.generating',
+    defaultMessage: 'Generating final result...',
+    description: 'Placeholder shown in the Agent Chat while the agent prepares a table or chart answer. The answer replaces it.',
+  },
+  connectionLost: {
+    id: 'agentChat.session.connectionLost',
+    defaultMessage: 'Connection to chat service lost. Please refresh the page.',
+    description: 'Error above the Agent Chat messages when the connection that delivers the answers fails.',
+  },
+  sendFailed: {
+    id: 'agentChat.session.sendFailed',
+    defaultMessage: 'Failed to send message. Please try again.',
+    description: 'Error above the Agent Chat messages when a message could not be sent and the server gave no reason.',
+  },
+  accessDenied: {
+    id: 'agentChat.session.accessDenied',
+    defaultMessage: 'Access denied: {error}. Check your role permissions.',
+    description:
+      "Error above the Agent Chat messages when the user's role may not use the chat. {error} is the server's explanation, in English.",
+  },
+  loadFailed: {
+    id: 'agentChat.session.loadFailed',
+    defaultMessage: 'Failed to load chat session. Please try again.',
+    description: 'Error above the Agent Chat messages when a previous conversation could not be loaded.',
+  },
+});
 const client = generateClient();
 // Chat responses are delivered by streaming from the Lambda Function URL when
 // one is configured (VITE_STREAM_URL). When it is absent — e.g. AWS GovCloud,
@@ -79,6 +121,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
   };
 
   const agentConfig: AgentChatConfig = { ...defaultConfig, ...config };
+  const intl = useIntl();
 
   // Use context for persistent state
   const {
@@ -442,7 +485,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
                 plugins: {
                   title: {
                     display: true,
-                    text: parsed.title || 'Chart',
+                    text: parsed.title || intl.formatMessage(uiMessages.chartTitle),
                   },
                 },
               },
@@ -484,6 +527,9 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     return null;
   };
 
+  // The placeholder below is written with this text and found later by its id, never by the text.
+  const generating = intl.formatMessage(uiMessages.generating);
+
   // Handle streaming messages with proper phase management
   const handleStreamingMessage = (newMessage: ChatMessage): void => {
     // Handle new tool message types using the messageType field from GraphQL
@@ -504,11 +550,13 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     if (newMessage.messageType === 'structured_data_start') {
       structuredDataModeRef.current = true;
 
-      // Add a placeholder message to show we're generating the final result
+      // Add a placeholder message to show we're generating the final result. Its text is
+      // written here, when the answer starts, and a language switch does not re-word it; the
+      // final response replaces it.
       updateMessages((prevMessages) => {
         const placeholderMessage: ChatMessage = {
           role: 'assistant',
-          content: 'Generating final result...',
+          content: generating,
           messageType: 'text',
           toolUseData: null,
           isProcessing: true,
@@ -559,7 +607,8 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
 
         const updatedMessages = [...prevMessages];
         const placeholderIndex = updatedMessages.findIndex(
-          (msg) => msg.content === 'Generating final result...' && msg.sessionId === newMessage.sessionId && msg.isProcessing,
+          (msg) =>
+            typeof msg.id === 'string' && msg.id.endsWith('-generating') && msg.sessionId === newMessage.sessionId && msg.isProcessing,
         );
 
         if (placeholderIndex >= 0) {
@@ -914,7 +963,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
       },
       error: (err: unknown) => {
         logger.error('Subscription error:', err);
-        updateAgentChatState({ error: 'Connection to chat service lost. Please refresh the page.' });
+        updateAgentChatState({ error: intl.formatMessage(uiMessages.connectionLost) });
       },
     });
 
@@ -1055,11 +1104,11 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     } catch (err) {
       // Extract detailed error message from GraphQL errors
       const gqlErr = err as { errors?: { message: string; errorType?: string }[]; message?: string };
-      let errorMessage = 'Failed to send message. Please try again.';
+      let errorMessage = intl.formatMessage(uiMessages.sendFailed);
       if (gqlErr.errors && gqlErr.errors.length > 0) {
         const firstError = gqlErr.errors[0];
         if (firstError.errorType === 'Unauthorized') {
-          errorMessage = `Access denied: ${firstError.message}. Check your role permissions.`;
+          errorMessage = intl.formatMessage(uiMessages.accessDenied, { error: String(firstError.message) });
         } else {
           errorMessage = firstError.message || errorMessage;
         }
@@ -1164,7 +1213,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
 
       logger.info(`Loaded chat session ${targetSessionId} with ${formattedMessages.length} messages`);
     } catch (err) {
-      updateAgentChatState({ error: 'Failed to load chat session. Please try again.' });
+      updateAgentChatState({ error: intl.formatMessage(uiMessages.loadFailed) });
       logger.error('Error loading chat session:', err);
       throw err;
     } finally {

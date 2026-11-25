@@ -184,8 +184,10 @@ LEGACY_EXAMPLES = {
     "us.anthropic.claude-opus-4-1-20250805-v1:0": {
         "review_by": "2027-01-08",
         "note": (
-            "endOfLifeTime 2027-01-08T08:00:00Z; still carries quota codes in "
-            "template.yaml, which is correct while it remains invocable"
+            "endOfLifeTime 2027-01-08T08:00:00Z; keeps its keys in template.yaml's "
+            "quota maps while it remains invocable, mapped to null because "
+            "Service Quotas lists no Opus 4.1 quota (us-west-2 and us-east-1, "
+            "2026-11-15)"
         ),
     },
 }

@@ -7,13 +7,31 @@ import os
 from datetime import datetime, timezone
 
 import boto3
-from idp_common.api_adapter import ResourceAccessDenied
+from idp_common.api_adapter import ResourceAccessDenied, ResourceNotFound
+from idp_common.config.feature_flags import step_enabled
 from idp_common.docs_service import create_document_service
 
 # Import IDP Common modules
 from idp_common.models import Section, Status
-from idp_common.review_queues.regrouping import regroup_refusal
+from idp_common.review_queues.regrouping import discard_drafts, regroup_refusal
 from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
+from idp_common.run_plan.clearing import (
+    ROW_POLICY_RULE_VALIDATION,
+    clear_for_start,
+    clear_policy_rule_validation,
+)
+from idp_common.run_plan.eligibility import (
+    EligibilityContext,
+    ReprocessRequest,
+    check,
+    reviewed_for,
+)
+from idp_common.run_plan.mode import PIPELINE, ProcessingMode, resolve_processing_mode
+from idp_common.run_plan.models import RunKind, RunPlan
+from idp_common.run_plan.planned import planned_run
+from idp_common.run_plan.restart import decide_restart
+from idp_common.run_plan.sender import EVENT_DOCUMENT_RUN_REQUESTED, send_run
+from idp_common.run_plan.steps import BEGINNING, POLICY_RULE_VALIDATION
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -42,9 +60,11 @@ _QUEUE_MANAGED_MESSAGE = (
 # completeSectionReview (Admin, Reviewer, Annotator) — the sibling that edits a
 # section's CONTENT — rather than processChanges' narrower pair, because correcting a
 # packet split is the same kind of annotation work and, unlike processChanges, it does
-# not requeue the document through the pipeline.
+# not requeue the document through the pipeline. getProcessChangesPlan says what
+# processChanges would run, so it admits the callers processChanges admits.
 _OPERATION_GROUPS = {
     "processChanges": {"Admin", "Reviewer"},
+    "getProcessChangesPlan": {"Admin", "Reviewer"},
     "updateDocumentSections": {"Admin", "Reviewer", "Annotator"},
 }
 
@@ -557,6 +577,137 @@ def _assert_not_a_bda_structural_edit(document, modified_sections, modified_page
         raise _refusal(_BDA_MODE_MESSAGE)
 
 
+#: Stands in for the processing mode where it does not matter: a run from the
+#: beginning exists in both modes and needs no earlier output.
+_ANY_MODE = ProcessingMode(PIPELINE, None, None, False)
+
+
+def _assert_no_other_run(object_key, document):
+    """Refuse saved edits while a run is working on the document.
+
+    Process Changes queues a run. A second run beside one that is in progress
+    would have both write the same document, so the request is refused with the
+    eligibility rule every run a person starts goes through
+    (``idp_common.run_plan.eligibility``). The same rule refuses a document the
+    malware gate holds or refused, which must never reach the pipeline.
+
+    Applies to every caller, Admin included: it is about the document's state,
+    not who asked. Runs before anything is written.
+    """
+    answer = check(
+        ReprocessRequest(object_key=object_key, kind=RunKind.SAVED_EDITS),
+        EligibilityContext(
+            load_document=lambda _key: document,
+            mode_for=lambda _profile, _revision: _ANY_MODE,
+        ),
+    )
+    if not answer.ok:
+        logger.warning("Rejecting processChanges: %s", answer.code)
+        raise _refusal(f"{answer.code}: {answer.message}")
+
+
+def _processing_mode(document):
+    """The mode the requeued run takes, as the queue processor resolves it.
+
+    Never raises: a configuration that cannot be read gives Pipeline mode, in
+    which a step that is not ready is found not ready, so the run starts at the
+    beginning.
+    """
+    try:
+        from idp_common.config import ConfigurationManager
+
+        manager = ConfigurationManager()
+        version = document.config_version or manager.resolve_active_version()
+        return resolve_processing_mode(manager, version, document.config_revision)
+    except Exception as e:  # noqa: BLE001 — see the docstring
+        logger.warning("Could not resolve the processing mode: %s", e)
+        return _ANY_MODE
+
+
+def _run_plan_for(object_key, document, modified_pages, mode=None):
+    """The plan of the run that follows saved edits, from the edited document.
+
+    Where it starts is decided by ``idp_common.run_plan.restart.decide_restart``:
+
+    | The edits | Start |
+    |---|---|
+    | A page's class was reset | ``classification`` |
+    | A section has no extraction result (changed, added, or its page text edited) | ``extraction``, for those sections |
+    | Otherwise | ``policy_rule_validation`` |
+
+    The start is checked against the document as edited. When the document is
+    not ready for it (a page with no class that was not reset, a document that
+    never finished), the run starts at the beginning, where each step's own check
+    skips what exists.
+
+    ``mode`` is the processing mode the run takes (a ``ProcessingMode``); it is
+    resolved here when the caller has not resolved it.
+    """
+    mode = mode or _processing_mode(document)
+    decision = decide_restart(
+        document,
+        kind=RunKind.SAVED_EDITS,
+        mode=mode.mode,
+        class_reset=any(page.get("classReset") for page in modified_pages or []),
+    )
+    answer = check(
+        ReprocessRequest(
+            object_key=object_key,
+            start=decision.start,
+            kind=RunKind.SAVED_EDITS,
+            sections=decision.sections,
+        ),
+        EligibilityContext(
+            load_document=lambda _key: document,
+            mode_for=lambda _profile, _revision: mode,
+        ),
+    )
+    if not answer.ok:
+        logger.info(
+            "The document is not ready to start at %s (%s); starting at the beginning",
+            decision.start,
+            answer.code,
+        )
+        return RunPlan(kind=RunKind.SAVED_EDITS, start=BEGINNING)
+    try:
+        return RunPlan(
+            kind=RunKind.SAVED_EDITS,
+            start=answer.start,
+            sections=list(answer.sections),
+            reviewed=reviewed_for(document, answer.start),
+        )
+    except ValueError as e:
+        # More sections than a plan can name: extract every section, and each
+        # one that has its result is skipped by the step's own check.
+        logger.info("Not naming the sections in the run plan: %s", e)
+        return RunPlan(kind=RunKind.SAVED_EDITS, start=answer.start)
+
+
+def _planned_run_for(run_plan, mode):
+    """The steps of the run ``run_plan`` starts, in the processing mode it takes.
+
+    One derivation for the plan read and for the answer of ``processChanges``, so
+    the steps a caller is shown before confirming are the steps the call reports.
+    A step the document's configuration has switched off is listed as not enabled;
+    with no configuration read, every step is listed as enabled.
+    """
+    return planned_run(
+        run_plan.start,
+        mode.mode,
+        kind=RunKind.SAVED_EDITS,
+        skip=run_plan.skip,
+        enabled=step_enabled(mode.config) if mode.config else {},
+        sections=run_plan.sections,
+    )
+
+
+#: What a saved regroup tells the holder of a review item, after the section count.
+_REGROUPED_IN_REVIEW_MESSAGE = (
+    "Sections that are new or whose pages changed are extracted again when the "
+    "review is completed."
+)
+
+
 def _caller_key(event):
     """The caller's owner key from verified claims, as a review claim records it."""
     from idp_common.notifications.keys import recipient_key_from_claims
@@ -588,6 +739,12 @@ def update_document_sections(event):
     introduces: processChanges is safe to call mid-run because it never writes, whereas
     this would race the pipeline's own save. A document waiting in a review queue is
     not in flight, and is regrouped only by the holder of its review item.
+
+    In a review, the run that follows its completion extracts again the sections the
+    regroup added or whose pages it changed. A BDA run cannot, so a document that is
+    processed in BDA mode is not regrouped in a review. The drafts of the sections a
+    regroup removes are deleted once the grouping is saved, so a section that is later
+    given one of their ids starts with no corrections.
     """
     args = event.get("arguments", {})
     object_key = args.get("objectKey")
@@ -640,6 +797,9 @@ def update_document_sections(event):
         if refusal:
             logger.warning("Rejecting updateDocumentSections on a document in review")
             return {"success": False, "message": refusal, "processingJobId": None}
+        # The run after the review extracts a regrouped section again. A BDA run
+        # keeps the sections a document has, so the regroup is refused (a 400).
+        _assert_not_a_bda_structural_edit(document, incoming, [])
     elif status not in _EDITABLE_STATUSES:
         return {
             "success": False,
@@ -769,18 +929,96 @@ def update_document_sections(event):
     # nothing is running that we could race.
     dynamodb_service.update_document(document)
 
+    saved = f"Page grouping saved as {len(document.sections)} section(s)."
+    if in_review:
+        # After the row is written, so a regroup that fails discards nothing. The
+        # drafts of the sections that are gone go with them: a later regroup may
+        # give one of their ids to a new section.
+        discard_drafts(
+            _REVIEW_STORE,
+            object_key,
+            set(existing_by_id) - {section.section_id for section in rebuilt},
+        )
+        message = f"{saved} {_REGROUPED_IN_REVIEW_MESSAGE}"
+    else:
+        message = (
+            f"{saved} Extracted values were kept and may no longer match their pages."
+        )
+
     logger.info(
         f"Re-grouped {object_key} into {len(document.sections)} section(s) without "
         "reprocessing; extracted values preserved"
     )
-    return {
-        "success": True,
-        "message": (
-            f"Page grouping saved as {len(document.sections)} section(s). Extracted "
-            "values were kept and may no longer match their pages."
-        ),
-        "processingJobId": None,
-    }
+    return {"success": True, "message": message, "processingJobId": None}
+
+
+def process_changes_plan(event):
+    """Where Process Changes would start for the document as saved, and its steps.
+
+    What ``processChanges`` would queue when it is called with no section or page
+    change: the step the run starts at, every step of the run with its state, and
+    the sections it extracts again. The start is decided by ``_run_plan_for``, as
+    ``processChanges`` decides it.
+
+    A read: it writes no tracking row, deletes no object and queues no message.
+
+    The caller is checked as for ``processChanges``, and before the document is
+    read, as for a re-group. A document that does not exist is a
+    ``ResourceNotFound`` (404). A document in a review queue is refused (400): it
+    is worked from Review Queues, and what finishing its review runs is
+    ``getReviewCompletionPlan``'s to say. A document a run is working on, or one
+    the malware gate holds, is refused (400) as ``processChanges`` refuses it,
+    for every caller: the confirmation shows no plan for a run that cannot be
+    queued.
+    """
+    object_key = (event.get("arguments") or {}).get("objectKey")
+    if not object_key:
+        raise _refusal("objectKey is required")
+
+    # Before the document is read: nothing about a document is said to a caller
+    # it is out of scope for, including whether it exists.
+    _assert_annotator_scope(event, object_key)
+    _assert_production_document_in_profile_scope(event, object_key)
+
+    document = create_document_service(mode="dynamodb").get_document(object_key)
+    if not document:
+        raise ResourceNotFound(f"Document {object_key} not found")
+    if normalize_hitl_status(document.hitl_status).in_review:
+        logger.warning(
+            "Rejecting getProcessChangesPlan on a document in a review queue"
+        )
+        raise _refusal(_QUEUE_MANAGED_MESSAGE)
+    _assert_caller_may_process(event, object_key, document)
+    _assert_no_other_run(object_key, document)
+
+    mode = _processing_mode(document)
+    run_plan = _run_plan_for(object_key, document, [], mode=mode)
+    return _planned_run_for(run_plan, mode).model_dump(by_alias=True)
+
+
+def _assert_operation_group(event, field_name):
+    """Refuse a caller who is in none of the groups the operation admits (403).
+
+    Defense-in-depth RBAC. The schema enforces this via
+    @aws_cognito_user_pools(cognito_groups), but we also gate it server-side so a
+    caller can never reach an operation even if the schema directive is
+    missing/misconfigured.
+    """
+    caller_groups = (
+        event.get("identity", {}).get("claims", {}).get("cognito:groups") or []
+    )
+    if isinstance(caller_groups, str):
+        caller_groups = [caller_groups]
+    required = _OPERATION_GROUPS.get(field_name, {"Admin", "Reviewer"})
+    if not (required.intersection(caller_groups)):
+        logger.warning(
+            f"Forbidden: caller (groups={caller_groups}) attempted {field_name}"
+        )
+        # Raise (not return a 200 dict) so the dispatcher maps to 403.
+        raise PermissionError(
+            f"Unauthorized: {field_name} requires one of "
+            f"{' or '.join(sorted(required))} group"
+        )
 
 
 def handler(event, context):
@@ -788,29 +1026,18 @@ def handler(event, context):
         f"ProcessChanges resolver invoked with event: {json.dumps(sanitize_event_for_logging(event))}"
     )
 
+    if (event.get("info") or {}).get("fieldName") == "getProcessChangesPlan":
+        # Served outside the error handling below, which answers a write that
+        # failed with a 200 `success: false` body. This read answers a planned
+        # run or an error: a refusal (403 or 400), a missing document (404) or
+        # a fault.
+        _assert_operation_group(event, "getProcessChangesPlan")
+        return process_changes_plan(event)
+
     # Add comprehensive error handling
     try:
         field_name = (event.get("info") or {}).get("fieldName") or "processChanges"
-
-        # Defense-in-depth RBAC. The schema enforces this via
-        # @aws_cognito_user_pools(cognito_groups), but we also gate it server-side so a
-        # caller can never reach an operation even if the schema directive is
-        # missing/misconfigured.
-        caller_groups = (
-            event.get("identity", {}).get("claims", {}).get("cognito:groups") or []
-        )
-        if isinstance(caller_groups, str):
-            caller_groups = [caller_groups]
-        required = _OPERATION_GROUPS.get(field_name, {"Admin", "Reviewer"})
-        if not (required.intersection(caller_groups)):
-            logger.warning(
-                f"Forbidden: caller (groups={caller_groups}) attempted {field_name}"
-            )
-            # Raise (not return a 200 dict) so the dispatcher maps to 403.
-            raise PermissionError(
-                f"Unauthorized: {field_name} requires one of "
-                f"{' or '.join(sorted(required))} group"
-            )
+        _assert_operation_group(event, field_name)
 
         if field_name == "updateDocumentSections":
             return update_document_sections(event)
@@ -870,6 +1097,7 @@ def handler(event, context):
             _assert_not_a_bda_structural_edit(
                 document, modified_sections, modified_pages
             )
+            _assert_no_other_run(object_key, document)
 
             # Set bucket names from environment variables (fix for null bucket issue)
             input_bucket = os.environ.get("INPUT_BUCKET")
@@ -1119,6 +1347,21 @@ def handler(event, context):
                         f"Updated page {page_id} classification to {classification}"
                     )
 
+        # Sort sections by starting page ID
+        document.sections.sort(
+            key=lambda s: min([int(pid) for pid in s.page_ids] + [float("inf")])
+        )
+
+        # Where the run starts, decided on the document as edited and before its
+        # status is reset. The steps of that run are returned with the answer.
+        mode = _processing_mode(document)
+        run_plan = _run_plan_for(object_key, document, modified_pages, mode=mode)
+        planned = _planned_run_for(run_plan, mode)
+        logger.info(
+            f"Run plan: start={run_plan.start} sections={run_plan.sections} "
+            f"reviewed={run_plan.reviewed}"
+        )
+
         # Update document status and timing - reset for reprocessing
         current_time = datetime.now(timezone.utc).isoformat()
         document.status = Status.QUEUED
@@ -1127,16 +1370,25 @@ def handler(event, context):
         document.completion_time = None
         document.workflow_execution_arn = None
 
-        # Sort sections by starting page ID
-        document.sections.sort(
-            key=lambda s: min([int(pid) for pid in s.page_ids] + [float("inf")])
-        )
-
-        # Clear rule validation data when sections are modified
-        if modified_sections or modified_pages:
-            clear_rule_validation_data(document.output_bucket, document.input_key)
-            # Reset rule validation result on document
-            document.rule_validation_result = None
+        # What the run produces again is cleared before it is queued. The tracking
+        # row attributes that held it are removed with the status write below.
+        cleared_row_attributes = ()
+        if run_plan.start == POLICY_RULE_VALIDATION:
+            # The run starts here, so its result, the summary and the evaluation
+            # are all produced again.
+            cleared_row_attributes = clear_for_start(
+                document,
+                POLICY_RULE_VALIDATION,
+                s3=s3_client,
+                output_bucket=document.output_bucket,
+            )
+            logger.info("Cleared the results the run produces again")
+        elif modified_sections or modified_pages:
+            # Resets the result on the document and deletes its files in S3.
+            clear_policy_rule_validation(
+                document, s3=s3_client, output_bucket=document.output_bucket
+            )
+            cleared_row_attributes = ROW_POLICY_RULE_VALIDATION
             logger.info("Cleared rule validation data for reprocessing")
 
         logger.info(
@@ -1153,36 +1405,26 @@ def handler(event, context):
         # The processing pipeline will handle document updates via AppSync as it processes.
         # This avoids race conditions and ensures consistent state management.
 
-        # Compress document before sending to SQS for large document optimization
-        working_bucket = os.environ.get("WORKING_BUCKET")
-        if working_bucket:
-            # Use document compression (always compress with 0KB threshold)
-            sqs_message_content = document.serialize_document(
-                working_bucket, "process_changes", logger
-            )
-            logger.info("Document compressed for SQS (always compress)")
-        else:
-            # Fallback to direct document dict if no working bucket
-            sqs_message_content = document.to_dict()
+        # The document is stored in the working bucket, with a reference in the
+        # message, for large document optimization.
+        working_bucket = os.environ.get("WORKING_BUCKET") or None
+        if not working_bucket:
             logger.warning(
                 "No WORKING_BUCKET configured, sending uncompressed document"
             )
-
-        # Log the SQS message for debugging
-        message_body = json.dumps(sqs_message_content, default=str)
-        logger.info(f"SQS message prepared (size: {len(message_body)} chars)")
-        logger.info(f"SQS message content: {message_body}")
         logger.info(f"Modified sections will be reprocessed: {modified_section_ids}")
 
         if QUEUE_URL:
-            response = sqs_client.send_message(
-                QueueUrl=QUEUE_URL, MessageBody=message_body
+            processing_job_id = send_run(
+                sqs_client,
+                QUEUE_URL,
+                document=document,
+                plan=run_plan,
+                event_type=EVENT_DOCUMENT_RUN_REQUESTED,
+                working_bucket=working_bucket,
+                prefix="process_changes",
             )
-
-            logger.info(
-                f"Sent document to SQS queue. MessageId: {response.get('MessageId')}"
-            )
-            processing_job_id = response.get("MessageId")
+            logger.info(f"Sent document to SQS queue. MessageId: {processing_job_id}")
         else:
             logger.warning("QUEUE_URL not configured, skipping SQS message")
             processing_job_id = None
@@ -1192,6 +1434,9 @@ def handler(event, context):
             status_service = create_document_service(mode="dynamodb")
             document.status = Status.QUEUED  # Ensure status is QUEUED for UI
             status_service.update_document(document)
+            if cleared_row_attributes:
+                # update_document sets attributes and removes none.
+                status_service.remove_attributes(object_key, cleared_row_attributes)
             logger.info("Updated document status to QUEUED for immediate UI feedback")
         except Exception as e:
             logger.warning(f"Failed to update document status: {str(e)}")
@@ -1206,6 +1451,9 @@ def handler(event, context):
             "success": True,
             "message": f"Successfully processed changes for {len(modified_sections)} sections",
             "processingJobId": processing_job_id,
+            # The run that was queued, as getProcessChangesPlan lists it.
+            "startStep": planned.start_step,
+            "steps": [step.model_dump(by_alias=True) for step in planned.steps],
         }
 
         logger.info(f"Returning response: {json.dumps(response)}")
@@ -1345,32 +1593,3 @@ def clear_extraction_data(s3_uri):
 
     except Exception as e:
         logger.warning(f"Failed to clear extraction data {s3_uri}: {str(e)}")
-
-
-def clear_rule_validation_data(bucket, input_key):
-    """Clear all rule validation data for a document from S3"""
-    try:
-        prefix = f"{input_key}/rule_validation/"
-
-        # List all objects with the prefix
-        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-
-        if "Contents" not in response:
-            logger.info(f"No rule validation files found at {prefix}")
-            return
-
-        # Delete all objects
-        objects_to_delete = [{"Key": obj["Key"]} for obj in response["Contents"]]
-
-        if objects_to_delete:
-            s3_client.delete_objects(
-                Bucket=bucket, Delete={"Objects": objects_to_delete}
-            )
-            logger.info(
-                f"Cleared {len(objects_to_delete)} rule validation files from {prefix}"
-            )
-
-    except Exception as e:
-        logger.warning(
-            f"Failed to clear rule validation data for {input_key}: {str(e)}"
-        )

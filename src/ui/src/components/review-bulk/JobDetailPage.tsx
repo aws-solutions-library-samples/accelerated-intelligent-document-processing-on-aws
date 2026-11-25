@@ -6,14 +6,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Alert, Box, Button, Container, Header, KeyValuePairs, ProgressBar, SpaceBetween, Spinner } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 
 import usePolling from '../../hooks/use-polling';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
 import type { BulkDocumentOutcome, BulkReviewJob } from '../../graphql/generated/schema-types';
 import { getBulkJob } from './bulk-review-api';
-import { ACTIVE_JOB_STATUSES, JOB_MODE_LABELS, JOB_TYPE_LABELS } from './bulk-outcomes';
+import { ACTIVE_JOB_STATUSES, jobModeLabel, jobTypeLabel } from './bulk-outcomes';
 import BulkResultsTable from './BulkResultsTable';
 import { JobStatus } from './JobsPage';
 import OutcomeCounts from './OutcomeCounts';
@@ -187,13 +188,17 @@ const progressStatus = (status: string): 'error' | 'success' | 'in-progress' =>
 const isNotFound = (e: unknown): boolean =>
   /NOT_FOUND|not found/i.test(String((e as { errors?: { message?: string }[] })?.errors?.[0]?.message ?? e));
 
+/** The page's error, worded at render: a message, or a refused call with its action phrase. */
+type PageError = { message: TypedMessageDescriptor<NoMessageValues> } | { action: TypedMessageDescriptor<NoMessageValues>; cause: unknown };
+
 const JobDetailPage = (): React.JSX.Element => {
   const intl = useIntl();
+  const { locale } = useFormatters();
   const { jobId = '' } = useParams();
   const [job, setJob] = useState<BulkReviewJob | null>(null);
   const [results, setResults] = useState<BulkDocumentOutcome[]>([]);
   const [nextToken, setNextToken] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PageError | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
@@ -204,13 +209,9 @@ const JobDetailPage = (): React.JSX.Element => {
       setNextToken(page.nextToken ?? null);
       setError(null);
     } catch (e) {
-      setError(
-        isNotFound(e) || isAuthorizationError(e)
-          ? intl.formatMessage(messages.notFound)
-          : describeApiError(e, intl.formatMessage(messages.loadJobAction)),
-      );
+      setError(isNotFound(e) || isAuthorizationError(e) ? { message: messages.notFound } : { action: messages.loadJobAction, cause: e });
     }
-  }, [jobId, intl]);
+  }, [jobId]);
 
   useEffect(() => {
     void load();
@@ -225,13 +226,14 @@ const JobDetailPage = (): React.JSX.Element => {
       setResults((prev) => [...prev, ...page.results]);
       setNextToken(page.nextToken ?? null);
     } catch (e) {
-      setError(describeApiError(e, intl.formatMessage(messages.loadMoreAction)));
+      setError({ action: messages.loadMoreAction, cause: e });
     } finally {
       setLoadingMore(false);
     }
   };
 
-  if (error && !job) return <Alert type="error">{error}</Alert>;
+  const errorText = error && ('action' in error ? describeApiError(error.cause, error.action, intl) : intl.formatMessage(error.message));
+  if (error && !job) return <Alert type="error">{errorText}</Alert>;
   if (!job) return <Spinner size="large" />;
   const pct = job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : ACTIVE_JOB_STATUSES.has(job.status) ? 0 : 100;
 
@@ -240,12 +242,12 @@ const JobDetailPage = (): React.JSX.Element => {
       <Container
         header={
           <Header variant="h1" description={job.jobId}>
-            {JOB_TYPE_LABELS[job.jobType] ?? job.jobType}
+            {jobTypeLabel(job.jobType, intl)}
           </Header>
         }
       >
         <SpaceBetween size="m">
-          {error && <Alert type="error">{error}</Alert>}
+          {error && <Alert type="error">{errorText}</Alert>}
           {job.stalled && (
             <Alert type="warning">
               <FormattedMessage {...messages.stalled} />
@@ -265,7 +267,7 @@ const JobDetailPage = (): React.JSX.Element => {
             columns={3}
             items={[
               { label: intl.formatMessage(messages.status), value: <JobStatus job={job} /> },
-              { label: intl.formatMessage(messages.mode), value: JOB_MODE_LABELS[job.mode] ?? job.mode },
+              { label: intl.formatMessage(messages.mode), value: jobModeLabel(job.mode, intl) },
               { label: intl.formatMessage(messages.profile), value: job.profile ?? '-' },
               {
                 label: intl.formatMessage(messages.submittedBetween),
@@ -281,8 +283,8 @@ const JobDetailPage = (): React.JSX.Element => {
                 value: intl.formatMessage(job.resubmit ? messages.yes : messages.no),
               },
               { label: intl.formatMessage(messages.requestedBy), value: job.requestedBy },
-              { label: intl.formatMessage(messages.created), value: formatDateTime(job.createdAt) },
-              { label: intl.formatMessage(messages.finished), value: job.finishedAt ? formatDateTime(job.finishedAt) : '-' },
+              { label: intl.formatMessage(messages.created), value: formatDateTime(job.createdAt, locale) },
+              { label: intl.formatMessage(messages.finished), value: job.finishedAt ? formatDateTime(job.finishedAt, locale) : '-' },
             ]}
           />
           <ProgressBar

@@ -21,7 +21,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from idp_common import bedrock, image, metrics, s3, utils
-from idp_common.assessment.degradation import skip_section_no_confidence
+from idp_common.assessment.degradation import (
+    merge_assessment_issues_into_result,
+    skip_section_no_confidence,
+)
 from idp_common.config import without_prompt_comments
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
@@ -36,6 +39,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_LIST_ITEM_DESCRIPTION,
 )
 from idp_common.config.schema_utils import deref_schema
+from idp_common.decision_model import DecisionModelRefused
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -141,6 +145,19 @@ def _extraction_class_not_configured(extraction_data: Dict[str, Any]) -> bool:
     if not isinstance(metadata, dict):
         return False
     return metadata.get(EMPTY_SCHEMA_REASON_KEY) == EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
+
+
+def _extraction_content_filtered(extraction_data: Dict[str, Any]) -> bool:
+    """True when extraction recorded that a content filter withheld its reply.
+
+    Written by ``ExtractionService._handle_content_filtered`` (#2038). The empty
+    result is then the filter's doing, not an extraction call that returned no
+    fields, and the section already carries the extraction-stage issue saying so.
+    """
+    if not isinstance(extraction_data, dict):
+        return False
+    metadata = extraction_data.get("metadata") or {}
+    return isinstance(metadata, dict) and metadata.get("content_filtered") is True
 
 
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
@@ -368,7 +385,7 @@ class AssessmentService:
             )
             return {
                 "confidence": 0.5,
-                "confidence_reason": f"LLM returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
+                "confidence_reason": f"The confidence pass returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
                 "confidence_threshold": threshold,
             }
 
@@ -428,7 +445,7 @@ class AssessmentService:
             )
             return {
                 "confidence": 0.5,
-                "confidence_reason": f"LLM returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
+                "confidence_reason": f"The confidence pass returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
                 "confidence_threshold": default_threshold,
             }
 
@@ -699,15 +716,13 @@ class AssessmentService:
         Returns:
             List of content items with text and image content properly ordered
         """
-        from idp_common.extraction.prompt_assembly import (
+        from idp_common.document_image_placeholder import (
             DOCUMENT_IMAGE_PLACEHOLDER,
-            document_image_placeholder_error,
+            check_document_image_placeholder,
         )
 
         # The rule validate_config applies to the same prompt.
-        placeholder_error = document_image_placeholder_error(prompt_template)
-        if placeholder_error:
-            raise ValueError(placeholder_error)
+        check_document_image_placeholder(prompt_template)
 
         # Split the prompt at the DOCUMENT_IMAGE placeholder
         parts = prompt_template.split(DOCUMENT_IMAGE_PLACEHOLDER)
@@ -1035,6 +1050,7 @@ class AssessmentService:
         page_images: List[Any],
         ocr_text_confidence: str = "",
         model_id_override: Optional[str] = None,
+        page_texts: Optional[List[str]] = None,
     ) -> AssessmentCoreResult:
         """Run the pure assessment inference over in-memory inputs.
 
@@ -1042,9 +1058,12 @@ class AssessmentService:
         ``process_document_section`` (the standalone Assessment step) and the
         agentic in-shard assessment path. Given a class label, the extracted
         values, and the page text/images/OCR-confidence for the scope being
-        assessed, it builds the assessment prompt, invokes Bedrock, parses the
-        response, and enhances every field with its confidence threshold and
-        alerts — returning the result in memory.
+        assessed, it scores every field and enhances it with its confidence
+        threshold and alerts, returning the result in memory. With
+        ``extraction.confidence.method: llm`` it builds the assessment prompt,
+        invokes Bedrock and parses the response; with ``decision_model`` it asks
+        a decision model one yes/no question per value (``ocr_text_confidence``
+        is not used, and a ``model_id_override`` is refused).
 
         Geometry grounding is NOT applied here; the caller grounds against the
         page-data scope it owns (see ``AssessmentCoreResult``).
@@ -1059,6 +1078,9 @@ class AssessmentService:
                 configured confidence model. Used by the self-healing escalation
                 ladder to re-assess still-missing rows with a stronger model
                 (bigger output cap) WITHOUT mutating config.
+            page_texts: The OCR text of each assessed page, in the order of
+                ``page_images``. Read only by the decision model, which asks
+                about one page at a time; the LLM reads ``document_text``.
 
         Returns:
             An ``AssessmentCoreResult`` with the enhanced per-field assessment,
@@ -1071,6 +1093,25 @@ class AssessmentService:
 
         # Get confidence configuration (v0.6: extraction.confidence.*)
         confidence_cfg = self.config.extraction.confidence
+        if confidence_cfg.method == "decision_model":
+            if model_id_override:
+                # The escalation ladder's override names a Bedrock model, which this
+                # path does not call. Refused rather than ignored, so an escalation
+                # cannot look as though it ran. Not reached in practice: this path
+                # scores every value or raises, so nothing is left to escalate.
+                raise ValueError(
+                    "extraction.confidence.method is 'decision_model', which cannot "
+                    f"run the Bedrock model override {model_id_override!r}"
+                )
+            # ocr_text_confidence is not sent: the decision model reads the page
+            # image by default, and adding text to its state measured worse.
+            return self._assess_with_decision_model(
+                class_label=class_label,
+                extraction_results=extraction_results,
+                document_text=document_text,
+                page_images=page_images,
+                page_texts=page_texts,
+            )
         model_id = model_id_override or confidence_cfg.model
         temperature = confidence_cfg.temperature
         top_k = confidence_cfg.top_k
@@ -1156,6 +1197,12 @@ class AssessmentService:
             model_lambda_hook_arn=confidence_cfg.model_lambda_hook_arn,
             reasoning_effort=reasoning_effort,
         )
+        # A withheld reply (stopReason content_filtered / guardrail_intervened) is
+        # raised here, where a blocked ValidationException is raised, so it
+        # degrades the section the same way instead of being parsed.
+        from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+        raise_if_output_withheld(response_with_metering)
 
         total_duration = time.time() - request_start_time
         logger.info(f"Time taken for assessment: {total_duration:.2f} seconds")
@@ -1264,6 +1311,66 @@ class AssessmentService:
                     }
                 parsing_succeeded = False
 
+        return self._finalize_assessment(
+            assessment_data,
+            class_schema,
+            metering=metering,
+            parsing_succeeded=parsing_succeeded,
+            total_duration=total_duration,
+            truncated=truncated,
+        )
+
+    def _assess_with_decision_model(
+        self,
+        *,
+        class_label: str,
+        extraction_results: Dict[str, Any],
+        document_text: str,
+        page_images: List[Any],
+        page_texts: Optional[List[str]] = None,
+    ) -> AssessmentCoreResult:
+        """``extraction.confidence.method: decision_model``: one yes/no per value."""
+        from idp_common.assessment.decision_model_confidence import (
+            DecisionModelConfidenceScorer,
+        )
+
+        class_schema = self._get_class_schema(class_label)
+        if not class_schema:
+            raise ValueError(f"No schema found for document class: {class_label}")
+        scorer = DecisionModelConfidenceScorer(
+            self.config.extraction.confidence, region=self.region
+        )
+        assessment_data, metering, duration = scorer.score(
+            extraction_results,
+            class_schema,
+            document_text,
+            page_images,
+            page_texts=page_texts,
+        )
+        return self._finalize_assessment(
+            assessment_data,
+            class_schema,
+            metering=metering,
+            parsing_succeeded=True,
+            total_duration=duration,
+            truncated=False,
+        )
+
+    def _finalize_assessment(
+        self,
+        assessment_data: Dict[str, Any],
+        class_schema: Dict[str, Any],
+        *,
+        metering: Optional[Dict[str, Any]],
+        parsing_succeeded: bool,
+        total_duration: float,
+        truncated: bool,
+    ) -> AssessmentCoreResult:
+        """Thresholds, alerts and the result, for a parsed assessment.
+
+        Shared by the LLM confidence call and the decision-model one, so both
+        produce exactly the same ``explainability_info`` shape and alerts.
+        """
         # Convert any model-provided bbox into geometry — only in the LLM-box
         # geometry modes ('llm', 'llm_grounded'). In 'ocr_only' (default) and 'off'
         # we intentionally ignore model boxes (geometry comes solely from OCR
@@ -1383,7 +1490,7 @@ class AssessmentService:
                     )
                     enhanced_assessment_data[attr_name] = {
                         "confidence": 0.5,
-                        "confidence_reason": f"LLM returned list format for non-list attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
+                        "confidence_reason": f"The confidence pass returned list format for non-list attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
                         "confidence_threshold": attr_threshold,
                     }
             else:
@@ -1394,7 +1501,7 @@ class AssessmentService:
                 )
                 enhanced_assessment_data[attr_name] = {
                     "confidence": 0.5,
-                    "confidence_reason": f"LLM returned unexpected type {type(attr_assessment)} for attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
+                    "confidence_reason": f"The confidence pass returned unexpected type {type(attr_assessment)} for attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
                     "confidence_threshold": attr_threshold,
                 }
 
@@ -1597,6 +1704,20 @@ class AssessmentService:
                     )
                     return document
 
+                if _extraction_content_filtered(extraction_data):
+                    skip_section_no_confidence(
+                        document,
+                        section_id,
+                        "Amazon Bedrock's content filter withheld the extraction "
+                        "model's reply for this section, so extraction produced no "
+                        "fields and there were no values to assess.",
+                        remedy=(
+                            "See the extraction_failed issue from the Extraction "
+                            "step, which names the block and the remedy."
+                        ),
+                    )
+                    return document
+
                 skip_section_no_confidence(
                     document,
                     section_id,
@@ -1736,6 +1857,9 @@ class AssessmentService:
                 extraction_results=extraction_results,
                 document_text=document_text,
                 page_images=page_images,
+                # Per page as well as joined: the decision model reads one page
+                # at a time, and the whole section overflows its window.
+                page_texts=document_texts,
                 batch_size=confidence_cfg.list_batch_size,
                 ocr_text_confidence=ocr_text_confidence,
                 confidence_model_id=confidence_cfg.model,
@@ -1874,34 +1998,9 @@ class AssessmentService:
             # owns only the assessment-stage ones. Replacing the list dropped
             # everything extraction had reported — which mattered most for the
             # on-by-default validation issue, because `separate` (the recommended
-            # confidence mode) is exactly the mode where this step runs.
-            _inherited = [
-                pi
-                for pi in (
-                    extraction_data.get("metadata", {}).get("processing_issues") or []
-                )
-                if isinstance(pi, dict) and pi.get("stage") != "assessment"
-            ]
-            _merged = _inherited + [pi.to_dict() for pi in processing_issues]
-            if _merged:
-                extraction_data["metadata"]["processing_issues"] = _merged
-                # Append a Processing Issues block to the (extraction-generated)
-                # processing report so the human-readable report on the simple/
-                # separate path also surfaces the root cause — the extraction
-                # report was written before this assessment step ran, so it
-                # otherwise wouldn't mention assessment issues.
-                existing_report = extraction_data.get("processing_report", "")
-                icons = {"error": "✗", "warning": "⚠", "info": "ℹ"}
-                issue_lines = ["", "Processing Issues (assessment):"]
-                for pi in processing_issues:
-                    issue_lines.append(
-                        f"  {icons.get(pi.severity, '•')} [{pi.code}] {pi.message}"
-                    )
-                    if pi.root_cause:
-                        issue_lines.append(f"      Root cause: {pi.root_cause}")
-                extraction_data["processing_report"] = (
-                    existing_report + "\n" + "\n".join(issue_lines)
-                ).strip()
+            # confidence mode) is exactly the mode where this step runs. Shared
+            # with the degrade path, which writes its issue the same way.
+            merge_assessment_issues_into_result(extraction_data, processing_issues)
 
             # Write the updated result back to S3
             bucket, key = utils.parse_s3_uri(section.extraction_result_uri)
@@ -1977,6 +2076,17 @@ class AssessmentService:
             )
 
         except Exception as e:
+            if isinstance(e, DecisionModelRefused):
+                # Deterministic, so the caller degrades the section rather than
+                # retrying it. The error names the refused pages; this names the
+                # section, so the two are found together.
+                logger.warning(
+                    "The decision model refused confidence requests for section %s "
+                    "of document %s, so the section gets no confidence scores: %s",
+                    section_id,
+                    document.id,
+                    e,
+                )
             error_msg = (
                 f"Error processing assessment for section {section_id}: {str(e)}"
             )

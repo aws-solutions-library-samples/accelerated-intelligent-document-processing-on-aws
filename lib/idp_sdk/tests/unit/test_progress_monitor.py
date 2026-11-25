@@ -7,7 +7,7 @@
 state about the pipeline itself: every answer comes from invoking the stack's
 ``LookupFunction`` Lambda, once per poll, with the list of document keys still
 believed to be in flight. The Lambda's per-document status strings are then
-sorted into four buckets (``completed`` / ``running`` / ``queued`` / ``failed``),
+sorted into buckets (``completed`` / ``running`` / ``queued`` / ``failed`` / ``awaiting_review``),
 and a document whose status is *terminal* is cached in ``finished_docs`` so later
 polls do not ask about it again.
 
@@ -212,7 +212,6 @@ class TestCategorisation:
             "RULE_VALIDATION_POLICY_CLASSIFICATION",
             "CLASSIFYING",
             "EXTRACTING",
-            "HITL_IN_PROGRESS",
             "A_STATUS_THIS_SDK_HAS_NEVER_HEARD_OF",
         ],
     )
@@ -1144,6 +1143,152 @@ def _blank_summary(total: int) -> dict:
         "running": [],
         "queued": [],
         "failed": [],
+        "awaiting_review": [],
         "all_complete": False,
         "total": total,
     }
+
+
+@pytest.mark.unit
+class TestAwaitingReview:
+    """A document held for human review settles the batch without finishing it (#2022).
+
+    `HITL_IN_PROGRESS` is what the workflow writes when it ends phase 1 for a
+    document routed to a review queue. Nothing more happens to it until a
+    reviewer acts, so a monitor that waits for it waits for a person. It used to
+    be bucketed as running, which left `all_complete` False for as long as the
+    review took and made `run-inference --monitor` poll for hours.
+    """
+
+    def test_a_held_document_is_bucketed_as_awaiting_review(self, monitor):
+        summary = _blank_summary(1)
+        monitor._categorize_document(
+            {"document_id": "a.pdf", "status": "HITL_IN_PROGRESS"}, summary
+        )
+        assert [d["document_id"] for d in summary["awaiting_review"]] == ["a.pdf"]
+        assert summary["running"] == summary["completed"] == summary["failed"] == []
+
+    def test_a_summary_without_the_bucket_still_accepts_a_held_document(self, monitor):
+        """A caller-built summary that predates the bucket must not KeyError."""
+        summary = _blank_summary(1)
+        del summary["awaiting_review"]
+        monitor._categorize_document(
+            {"document_id": "a.pdf", "status": "HITL_IN_PROGRESS"}, summary
+        )
+        assert [d["document_id"] for d in summary["awaiting_review"]] == ["a.pdf"]
+
+    def test_a_batch_waiting_only_on_reviewers_is_complete(self, monitor, stubber):
+        _expect_batch(
+            stubber,
+            ["done.pdf", "held.pdf"],
+            [
+                {"object_key": "done.pdf", "status": "COMPLETED"},
+                {"object_key": "held.pdf", "status": "HITL_IN_PROGRESS"},
+            ],
+        )
+
+        summary = monitor.get_batch_status(["done.pdf", "held.pdf"])
+
+        assert summary["all_complete"] is True
+        assert [d["document_id"] for d in summary["awaiting_review"]] == ["held.pdf"]
+        assert summary["running"] == []
+        stubber.assert_no_pending_responses()
+
+    def test_a_held_document_does_not_settle_a_batch_still_running(
+        self, monitor, stubber
+    ):
+        _expect_batch(
+            stubber,
+            ["busy.pdf", "held.pdf"],
+            [
+                {"object_key": "busy.pdf", "status": "EXTRACTING"},
+                {"object_key": "held.pdf", "status": "HITL_IN_PROGRESS"},
+            ],
+        )
+
+        summary = monitor.get_batch_status(["busy.pdf", "held.pdf"])
+
+        assert summary["all_complete"] is False
+
+    def test_a_held_document_is_not_cached_so_its_review_outcome_is_seen(
+        self, monitor, stubber, invocations
+    ):
+        """Awaiting review is settled, not final: the next poll must ask again.
+
+        Caching it as terminal would freeze the document at HITL_IN_PROGRESS for
+        the life of the monitor, so a reviewer's Complete would never show.
+        """
+        _expect_batch(
+            stubber,
+            ["done.pdf", "held.pdf"],
+            [
+                {"object_key": "done.pdf", "status": "COMPLETED"},
+                {"object_key": "held.pdf", "status": "HITL_IN_PROGRESS"},
+            ],
+        )
+        _expect_batch(
+            stubber,
+            ["held.pdf"],
+            [{"object_key": "held.pdf", "status": "COMPLETED"}],
+        )
+
+        monitor.get_batch_status(["done.pdf", "held.pdf"])
+        second = monitor.get_batch_status(["done.pdf", "held.pdf"])
+
+        # The second poll asked about the held document again, and only it.
+        assert json.loads(invocations[1]["Payload"])["object_keys"] == ["held.pdf"]
+        assert sorted(d["document_id"] for d in second["completed"]) == [
+            "done.pdf",
+            "held.pdf",
+        ]
+        assert second["awaiting_review"] == []
+        stubber.assert_no_pending_responses()
+
+    def test_statistics_count_held_documents_apart_from_outcomes(self, monitor):
+        summary = _blank_summary(4)
+        summary["completed"] = [{"document_id": "a", "duration": 1.0}]
+        summary["failed"] = [{"document_id": "b"}]
+        summary["awaiting_review"] = [{"document_id": "c"}, {"document_id": "d"}]
+        summary["all_complete"] = True
+
+        stats = monitor.calculate_statistics(summary)
+
+        assert stats["awaiting_review"] == 2
+        assert (stats["completed"], stats["failed"]) == (1, 1)
+        # Processing has stopped for all four, so the run reads finished...
+        assert stats["completion_percentage"] == 100.0
+        # ...but success is measured over documents with an outcome only.
+        assert stats["success_rate"] == 50.0
+
+
+@pytest.mark.unit
+class TestDocumentAttributes:
+    """Caller-supplied attributes the lookup returns ride along on both paths
+    (#1851), and a document without any gets no ``attributes`` key."""
+
+    def test_the_batch_path_carries_attributes(self, monitor, stubber):
+        _expect_batch(
+            stubber,
+            ["b/a.pdf", "b/c.pdf"],
+            [
+                {
+                    "object_key": "b/a.pdf",
+                    "status": "COMPLETED",
+                    "attributes": {"k": "v"},
+                },
+                {"object_key": "b/c.pdf", "status": "COMPLETED"},
+            ],
+        )
+        with_attrs, without = monitor._batch_query_documents(["b/a.pdf", "b/c.pdf"])
+        assert with_attrs["attributes"] == {"k": "v"}
+        assert "attributes" not in without
+
+    def test_the_single_path_carries_attributes(self, monitor, stubber):
+        _expect_single(
+            stubber, "b/a.pdf", {"status": "COMPLETED", "attributes": {"k": 1}}
+        )
+        assert monitor.get_document_status("b/a.pdf")["attributes"] == {"k": 1}
+
+    def test_the_single_path_omits_an_absent_set(self, monitor, stubber):
+        _expect_single(stubber, "b/a.pdf", {"status": "COMPLETED"})
+        assert "attributes" not in monitor.get_document_status("b/a.pdf")

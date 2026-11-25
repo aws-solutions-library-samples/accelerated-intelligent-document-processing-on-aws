@@ -55,7 +55,10 @@ from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
 from idp_common.config import models as config_models
-from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.merge_utils import (
+    load_system_defaults_file,
+    merge_config_with_defaults,
+)
 from idp_common.config.migrations.v08_to_v09 import (
     SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS,
 )
@@ -96,18 +99,6 @@ DEFAULTS_OMISSION_EXEMPT_SUBTREES: Dict[str, str] = {
         "implemented: section_classification.method refuses 'embeddings'. Computed "
         "by test_the_method_reaching_an_omitted_block_is_refused."
     ),
-    "classification.split_then_classify.section_classification.decision_model": (
-        "Declared for an external classifier endpoint (#1329) and not implemented: "
-        "section_classification.method refuses 'decision_model'. Computed by "
-        "test_the_method_reaching_an_omitted_block_is_refused."
-    ),
-    "classification.split_then_classify.section_classification.low_confidence": (
-        "Applies only when section_classification.method is NOT 'llm' — it decides "
-        "what happens when a non-LLM classifier is unsure — and no such method is "
-        "accepted, so no document can reach it. Its witness is any non-llm value "
-        "('embeddings'), which is why it shares the computation above rather than "
-        "being its own kind of claim."
-    ),
 }
 
 #: Individual fields the defaults omit. One exact path per entry: a field is the
@@ -147,21 +138,13 @@ for _key in sorted(SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS):
 del _key
 
 #: The non-llm `method` value whose acceptance would make each omitted sub-block
-#: reachable. The premise for those four entries, as a per-member table.
+#: reachable. The premise for those entries, as a per-member table.
 _METHOD_REACHING_OMITTED_BLOCK: Dict[str, Tuple[str, str]] = {
     "classification.split_then_classify.splitting.boundary_model": (
         "classification.split_then_classify.splitting.method",
         "boundary_model",
     ),
     "classification.split_then_classify.section_classification.embeddings": (
-        "classification.split_then_classify.section_classification.method",
-        "embeddings",
-    ),
-    "classification.split_then_classify.section_classification.decision_model": (
-        "classification.split_then_classify.section_classification.method",
-        "decision_model",
-    ),
-    "classification.split_then_classify.section_classification.low_confidence": (
         "classification.split_then_classify.section_classification.method",
         "embeddings",
     ),
@@ -174,7 +157,9 @@ _METHOD_REACHING_OMITTED_BLOCK: Dict[str, Tuple[str, str]] = {
 
 
 def _shipped() -> Dict[str, Any]:
-    body = yaml.safe_load(_CLASSIFICATION_DEFAULTS.read_text())
+    # Prompts are `{_file: ...}` references in the YAML (#1652); read the file the
+    # way the defaults loader does so a prompt is a leaf, not a `_file` key.
+    body = load_system_defaults_file(_CLASSIFICATION_DEFAULTS.name)
     assert isinstance(body, dict) and "classification" in body, (
         f"{_CLASSIFICATION_DEFAULTS.name} does not hold a `classification:` block, so "
         "this gate would compare nothing"

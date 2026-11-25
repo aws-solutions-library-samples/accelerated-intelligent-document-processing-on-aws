@@ -13,7 +13,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,15 @@ def coerce_revision(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    """``value`` as an int, or None when it is absent or not a number.
+
+    The normalisation of :func:`coerce_revision`, for a count that arrives as a
+    Decimal (DynamoDB), a str or an int (JSON).
+    """
+    return coerce_revision(value)
 
 
 class Status(Enum):
@@ -77,6 +86,22 @@ class Status(Enum):
     # SSE-C, access denied, internal error) and the configured policy is to fail
     # closed. Deliberately distinct from QUARANTINED: "we found malware" and "we
     # could not look" call for different operator actions.
+
+
+#: Jobs API statuses that share the enum but are never a document's
+#: ``ObjectStatus``: ``PENDING_UPLOAD`` is a job's status before its files arrive and
+#: ``IN_PROGRESS`` a file's status inside a ``job#`` record, which has no
+#: ``ObjectStatus`` at all.
+JOB_LEVEL_STATUSES = frozenset({Status.PENDING_UPLOAD, Status.IN_PROGRESS})
+
+#: Every status a document tracking record can carry, in enum order. Each writer
+#: stores ``document.status.value`` in ``ObjectStatus``, so this is derived from the
+#: enum rather than listed: a hand-written list offered ``PROCESSING``, which no
+#: record ever carries, and none of the step statuses an in-progress document has.
+#: The CLI's status options and the SDK's ``status_filter`` both validate against it.
+DOCUMENT_STATUS_VALUES = tuple(
+    status.value for status in Status if status not in JOB_LEVEL_STATUSES
+)
 
 
 #: Statuses a workflow can end on with SUCCEEDED while the document is not
@@ -303,7 +328,9 @@ class ProcessingIssue:
             ``"extraction_class_not_configured"`` (the section's class is absent
             from the configuration, so there was no schema to extract against),
             ``"extraction_failed"`` (the section's extraction step RAISED — see
-            ``idp_common.extraction.failure``),
+            ``idp_common.extraction.failure`` — or a content filter withheld its
+            model reply, in which case the section has an empty result and the
+            document still completes),
             ``"rule_validation_failed"`` (the section's rule validation raised, so
             it has no compliance verdict),
             ``"rule_validation_not_consolidated"`` (the section was validated but
@@ -315,7 +342,12 @@ class ProcessingIssue:
             are the set the UI renders as "Failed" rather than "Incomplete", or
             ``"classification_failed"`` / ``"classification_page_no_content"`` /
             ``"classification_invalid_class_fallback"`` (classification produced no
-            usable class for one or more of the section's pages).
+            usable class for one or more of the section's pages), or
+            ``"classification_page_assigned_to_neighbour"`` (a packet call's page
+            ranges left pages out, and they were added to this section), or
+            ``"classification_confidence_missing"`` (a class confidence was
+            requested and the reply gave none; one issue per document, on the
+            first unscored section, listing them all in ``details``).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.
@@ -361,7 +393,9 @@ class ProcessingIssue:
     #: it, but every writer composes it from a fixed template plus a page count or
     #: page list — never from an exception — so it is bounded by the section's page
     #: count rather than by document content, which is what makes the other two a
-    #: 400 KB risk and this one not.
+    #: 400 KB risk and this one not. ``classification_confidence_missing`` names
+    #: sections across the whole document instead, so it caps what it names itself
+    #: (``_MAX_SECTIONS_NAMED`` in ``classification/service.py``).
     MAX_ROOT_CAUSE_BYTES: ClassVar[int] = 4096
     ROOT_CAUSE_TAIL_BYTES: ClassVar[int] = 512
 
@@ -476,6 +510,91 @@ class ProcessingIssue:
         )
 
 
+def attributes_dropped_issue(dropped: List[Tuple[str, str]]) -> ProcessingIssue:
+    """The document-level warning for caller-supplied attributes intake dropped.
+
+    ``dropped`` is ``idp_common.document_attributes.AttributeIntake.dropped``:
+    ``(key, reason)`` pairs. Names keys and reasons only, never values (a value
+    can be personal data). ``details["dropped"]`` lists the first
+    ``MAX_DROPPED_NAMED``; ``details["dropped_count"]`` is the total. The code is
+    ``document_attributes.ISSUE_ATTRIBUTES_DROPPED``, spelled out here so the
+    construction site states it.
+    """
+    from idp_common.document_attributes import MAX_DROPPED_NAMED
+
+    count = len(dropped)
+    return ProcessingIssue(
+        stage="ingest",
+        severity="warning",
+        code="ingest_attributes_dropped",
+        message=(
+            f"{count} document attribute(s) supplied with this upload were not "
+            "accepted and were dropped. The document was processed with the "
+            "attributes that were valid."
+        ),
+        details={
+            "dropped_count": count,
+            "dropped": [
+                {"key": key, "reason": reason}
+                for key, reason in dropped[:MAX_DROPPED_NAMED]
+            ],
+        },
+    )
+
+
+def serialize_issue_list(issues: List[ProcessingIssue]) -> List[Dict[str, Any]]:
+    """A list of issues in the tracking table's camelCase item shape.
+
+    The shape ``idp_common.dynamodb.service.serialize_processing_issues`` writes
+    for a section, mirroring the GraphQL ``ProcessingIssue`` type.
+
+    Also used for the *document-level* list (``Document.processing_issues``), which
+    is persisted as the item's top-level ``ProcessingIssues``. That list exists for
+    the one stage with no section to hang an issue on -- ingest, where
+    ``queue_sender`` records that the prefix-mapping read failed (#597).
+    """
+    issues_data: List[Dict[str, Any]] = []
+    for issue in issues:
+        issue_item: Dict[str, Any] = {
+            "stage": issue.stage,
+            "severity": issue.severity,
+            "code": issue.code,
+            "message": issue.message,
+        }
+        if issue.root_cause:
+            issue_item["rootCause"] = issue.root_cause
+        if issue.details:
+            issue_item["details"] = json.dumps(issue.details, default=str)
+        issues_data.append(issue_item)
+    return issues_data
+
+
+def deserialize_issue_list(
+    issues_data: Any, section_id: Optional[str] = None
+) -> List[ProcessingIssue]:
+    """The inverse of :func:`serialize_issue_list`."""
+    issues: List[ProcessingIssue] = []
+    for iss in issues_data or []:
+        details = iss.get("details")
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+        issues.append(
+            ProcessingIssue(
+                stage=iss.get("stage", ""),
+                severity=iss.get("severity", "info"),
+                code=iss.get("code", ""),
+                message=iss.get("message", ""),
+                root_cause=iss.get("rootCause", ""),
+                section_id=section_id,
+                details=details or {},
+            )
+        )
+    return issues
+
+
 @dataclass
 class Section:
     """Represents a section of pages with the same classification."""
@@ -505,6 +624,13 @@ class Section:
     extracted value is absent never appears here (#1527): its score stays in
     ``explainability_info``, and if the class schema requires it, it is listed in
     :attr:`missing_required_fields` instead."""
+    confidence_alert_total: Optional[int] = None
+    """How many confidence alerts this section really has, when the list above
+    holds fewer. The tracking row caps the stored list and records the true
+    figure beside it (``ConfidenceThresholdAlertsTotal``); the row reader puts
+    it here, so a document reloaded from the row still knows the exact count and
+    writes it back unchanged. ``None`` means the list is complete. Review
+    routing counts ``max(len(list), total)``. Serialized only when set."""
     missing_required_fields: List[Dict[str, Any]] = field(default_factory=list)
     """Required fields (JSON Schema ``required`` in this section's class schema)
     that extraction left absent, in the same shape as a confidence alert:
@@ -575,6 +701,7 @@ class Section:
             extraction_result_uri=data.get("extraction_result_uri"),
             attributes=data.get("attributes"),
             confidence_threshold_alerts=data.get("confidence_threshold_alerts", []),
+            confidence_alert_total=_optional_int(data.get("confidence_alert_total")),
             missing_required_fields=list(data.get("missing_required_fields") or []),
             processing_issues=[
                 ProcessingIssue.from_dict(pi)
@@ -603,6 +730,9 @@ class Section:
         # rather than as a presumed 1.0 (see the `confidence` docstring).
         if self.confidence is not None:
             result["confidence"] = self.confidence
+        # Only when the alert list above is known to be incomplete.
+        if self.confidence_alert_total is not None:
+            result["confidence_alert_total"] = self.confidence_alert_total
         # Only emit when non-empty to keep output compact / back-compatible.
         if self.missing_required_fields:
             result["missing_required_fields"] = self.missing_required_fields
@@ -734,6 +864,20 @@ class HitlMetadata:
         )
 
 
+def _directory_id_order(entry: Tuple[str, str]) -> Tuple[int, int, str]:
+    """Sort key for an ``(id, prefix)`` pair listed under ``pages/`` or ``sections/``.
+
+    Numeric IDs sort numerically, so page 10 follows page 9 rather than page 1;
+    any other ID sorts after every numeric one, by string. The ID itself is the
+    last element, so two IDs with the same number (``"1"`` and ``"01"``) still
+    have a fixed order and the result never depends on the input order.
+    """
+    entry_id = entry[0]
+    if entry_id.isdecimal():
+        return (0, int(entry_id), entry_id)
+    return (1, 0, entry_id)
+
+
 @dataclass
 class Document:
     """
@@ -837,6 +981,13 @@ class Document:
     # pages and class, and the corrected section gets the new one. Takes
     # precedence over forced_document_class (apply_forced_document_class).
     forced_sections: Optional[str] = None
+    # Caller-supplied key-value attributes (account id, claim number, ...), read
+    # once at intake and carried unchanged to the results. Untrusted caller input,
+    # validated by idp_common.document_attributes; separate from `metadata`, which
+    # holds internal processing data. Empty for a document uploaded without any,
+    # and then omitted from to_dict() and the tracking item, so such a document
+    # serialises exactly as it did before the field existed.
+    attributes: Dict[str, Any] = field(default_factory=dict)
     evaluation_status: Optional[str] = None
     evaluation_report_uri: Optional[str] = None
     evaluation_results_uri: Optional[str] = None
@@ -1004,6 +1155,11 @@ class Document:
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
 
+        # Caller-supplied attributes. Omitted when empty so a document uploaded
+        # without any serialises exactly as before.
+        if self.attributes:
+            result["attributes"] = dict(self.attributes)
+
         # Earlier runs' usage. Omitted when empty so payloads of documents that
         # were never reprocessed are unchanged.
         if self.metering_baseline:
@@ -1083,6 +1239,8 @@ class Document:
                 "extraction_result_uri": section.extraction_result_uri,
                 "confidence_threshold_alerts": section.confidence_threshold_alerts,
             }
+            if section.confidence_alert_total is not None:
+                section_dict["confidence_alert_total"] = section.confidence_alert_total
             if section.missing_required_fields:
                 section_dict["missing_required_fields"] = (
                     section.missing_required_fields
@@ -1191,6 +1349,7 @@ class Document:
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
             forced_sections=data.get("forced_sections"),
+            attributes=dict(data.get("attributes") or {}),
             errors=data.get("errors", []),
         )
 
@@ -1235,6 +1394,9 @@ class Document:
                     attributes=section_data.get("attributes"),
                     confidence_threshold_alerts=section_data.get(
                         "confidence_threshold_alerts", []
+                    ),
+                    confidence_alert_total=_optional_int(
+                        section_data.get("confidence_alert_total")
                     ),
                     missing_required_fields=list(
                         section_data.get("missing_required_fields") or []
@@ -1316,9 +1478,25 @@ class Document:
         return document
 
     @classmethod
-    def from_s3_event(cls, event: Dict[str, Any], output_bucket: str) -> "Document":
-        """Create a Document from an S3 event."""
+    def from_s3_event(
+        cls,
+        event: Dict[str, Any],
+        output_bucket: str,
+        *,
+        read_attributes: bool = True,
+    ) -> "Document":
+        """Create a Document from an S3 event.
+
+        Reads the object's user metadata, including caller-supplied attributes
+        (``idp-attr-*`` and the ``idp-attributes-uri`` sidecar; see
+        :mod:`idp_common.document_attributes`). An attribute that breaks a rule is
+        dropped and a ``ingest_attributes_dropped`` warning is recorded on the
+        document. ``read_attributes=False`` skips them, for a caller that already
+        holds the snapshot taken at the original intake.
+        """
         import logging
+
+        from idp_common import document_attributes
 
         logger = logging.getLogger(__name__)
 
@@ -1333,13 +1511,19 @@ class Document:
         test_set_id = None
         forced_document_class = None
         forced_sections = None
+        attribute_intake = None
         try:
             import boto3
 
             s3_client = boto3.client("s3")
             response = s3_client.head_object(Bucket=input_bucket, Key=input_key)
             metadata = response.get("Metadata", {})
-            logger.info(f"S3 metadata for {input_key}: {metadata}")
+            # Attribute VALUES are never logged: an account or claim number can be
+            # personal data. Their names stay visible so a missing one is debuggable.
+            logger.info(
+                f"S3 metadata for {input_key}: "
+                f"{document_attributes.loggable_metadata(metadata)}"
+            )
             config_version = metadata.get("config-version")
             config_revision = coerce_revision(metadata.get("config-revision"))
             if config_version:
@@ -1370,10 +1554,17 @@ class Document:
                     f"Document {input_key} submitted by {submission_source}"
                     + (f" for test set {test_set_id}" if test_set_id else "")
                 )
+            # Last, after every control key has been read, so nothing a caller put
+            # in its attributes can cost the document its configuration pin.
+            # read_object_attributes does not raise for bad input.
+            if read_attributes:
+                attribute_intake = document_attributes.read_object_attributes(
+                    metadata, input_bucket, s3_client, document_key=input_key
+                )
         except Exception as e:
             logger.warning(f"Could not read S3 metadata for {input_key}: {e}")
 
-        return cls(
+        document = cls(
             id=input_key,
             input_bucket=input_bucket,
             input_key=input_key,
@@ -1387,6 +1578,18 @@ class Document:
             forced_document_class=forced_document_class,
             forced_sections=forced_sections,
         )
+        if attribute_intake is not None:
+            document.attributes = attribute_intake.attributes
+            if attribute_intake.dropped:
+                logger.warning(
+                    f"Dropped {len(attribute_intake.dropped)} invalid document "
+                    f"attribute(s) for {input_key}: "
+                    + "; ".join(f"{k}: {why}" for k, why in attribute_intake.dropped)
+                )
+                document.processing_issues.append(
+                    attributes_dropped_issue(attribute_intake.dropped)
+                )
+        return document
 
     def to_json(self) -> str:
         """Convert document to JSON string."""
@@ -1419,6 +1622,7 @@ class Document:
 
         from idp_common.s3 import get_json_content
         from idp_common.utils import build_s3_uri
+        from idp_common.utils.transient_errors import reraise_if_transient
 
         logger = logging.getLogger(__name__)
         s3_client = boto3.client("s3")
@@ -1450,8 +1654,13 @@ class Document:
                     page_id = page_dir.split("/")[-2]  # Extract page ID from path
                     page_dirs.add((page_id, page_dir))
 
-            # Process each page directory
-            for page_id, page_dir in page_dirs:
+            # Process each page directory in page-ID order. ``page_dirs`` is a
+            # set, and string hashing is randomised per process, so iterating
+            # it directly gave a different page and section order in each
+            # Lambda process - and with it a different order of the per-packet
+            # section details and of the sums behind the grouping scores
+            # (#2133).
+            for page_id, page_dir in sorted(page_dirs, key=_directory_id_order):
                 result_key = f"{page_dir}result.json"
 
                 try:
@@ -1480,6 +1689,12 @@ class Document:
                     )
 
                 except Exception as e:
+                    # A missing or malformed result.json drops this entry, but a
+                    # throttled, 5xx or timed-out read must not: a baseline with a
+                    # section silently missing scores that section's fields as
+                    # misses, and one with every section missing reads as "no
+                    # baseline". Let the evaluation retry instead (#2129).
+                    reraise_if_transient(e, where="evaluation")
                     logger.warning(f"Error loading page {page_id}: {str(e)}")
 
             # Update document with number of pages
@@ -1500,8 +1715,10 @@ class Document:
                     ]  # Extract section ID from path
                     section_dirs.add((section_id, section_dir))
 
-            # Process each section directory
-            for section_id, section_dir in section_dirs:
+            # Process each section directory in section-ID order (see pages).
+            for section_id, section_dir in sorted(
+                section_dirs, key=_directory_id_order
+            ):
                 result_key = f"{section_dir}result.json"
 
                 try:
@@ -1544,6 +1761,8 @@ class Document:
                     )
 
                 except Exception as e:
+                    # Transient reads propagate; see the page loop above (#2129).
+                    reraise_if_transient(e, where="evaluation")
                     logger.warning(f"Error loading section {section_id}: {str(e)}")
 
             return document

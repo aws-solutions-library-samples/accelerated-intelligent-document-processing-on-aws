@@ -27,8 +27,8 @@ from __future__ import annotations
 import pathlib
 
 import pytest
-import yaml
 
+from idp_common.config.merge_utils import load_system_defaults_file
 from idp_common.prompt_comments import strip_prompt_comments
 
 DEFAULTS = (
@@ -44,7 +44,9 @@ DEFAULTS = (
 def task_prompt() -> str:
     if not DEFAULTS.exists():  # pragma: no cover - packaged install
         pytest.skip(f"{DEFAULTS} not present")
-    cfg = yaml.safe_load(DEFAULTS.read_text())
+    # Through the loader: the YAML holds a `{_file: ...}` reference where the
+    # prompt is, and the prompt text lives in its own file (#1652).
+    cfg = load_system_defaults_file(DEFAULTS.name)
     # The prompt as it is sent: the default documents its contract in
     # {# ... #} comments, which are removed before any request.
     return strip_prompt_comments(

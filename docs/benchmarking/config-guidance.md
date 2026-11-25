@@ -6,8 +6,10 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
 > **This is the evergreen "which configuration should I pick?" paper** — a cross-config
-> comparison at the current release. For **release-over-release** comparisons (is the
-> upgrade safe / cheaper / faster?), see the [Release Benchmark Audit Trail](releases/).
+> comparison measured on the release named below. Releases after that one were not
+> re-measured for this paper, so its figures describe that release. For
+> **release-over-release** comparisons (is the upgrade safe / cheaper / faster?), see
+> the [Release Benchmark Audit Trail](releases/).
 
 # GenAIIDP Configuration Guidance — Empirical Guidance for Document Extraction at Scale
 

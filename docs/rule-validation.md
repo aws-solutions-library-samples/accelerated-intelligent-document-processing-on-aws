@@ -13,12 +13,12 @@ Rule Validation automatically checks if your documents meet specific business ru
 
 **Common Uses:**
 - Healthcare: Checking prior authorizations, validating medical coding rules
-- Financial Services: Verifying loan applications, checking compliance
+- Financial Services: Reviewing bank statements, verifying loan applications, checking compliance
 - Legal: Reviewing contract clauses, ensuring regulatory compliance
 - Insurance: Validating claims, checking policy compliance
 - Manufacturing: Quality control checks, specification compliance
 
-The healthcare examples we provide show what's possible, but you can customize this for any industry.
+The bank statement example we provide shows what's possible, but you can customize this for any industry.
 
 > **See it as a packaged vertical:** the
 > [Health Insurance Review sample feature](extensions/sample-health-insurance-review.md) wraps this
@@ -33,7 +33,11 @@ https://github.com/user-attachments/assets/bac617ec-edb0-4719-827f-175571a4b9f5
 
 ### How to Enable Rule Validation
 
-Rule Validation is available in **Pipeline mode** (the default processing mode). You can enable it in two ways:
+Policy rule validation runs in **both processing modes**, Pipeline mode and BDA mode: it is a step of the shared part of the workflow, after extraction and before Review Routing. In either mode it runs when **Enabled** is on (`rule_validation.enabled`) and the profile has at least one policy class.
+
+In BDA mode, check that the profile holds the step's settings (`rule_validation.fact_extraction` with a model, and `rule_validation.rule_validation_orchestrator`). A profile that was switched to BDA mode in the web UI keeps the ones it had. A configuration supplied to the stack with `use_bda: true` is completed from the BDA system defaults, which hold no `rule_validation` section, so it has to carry those settings itself; without `rule_validation.fact_extraction` the step fails for a document that matches a policy class. The settings are listed under [Configuration](#configuration).
+
+You can enable it in two ways:
 
 **Option 1: During Stack Deployment**
 - When deploying the CloudFormation stack, select the **rule-validation** configuration preset
@@ -44,7 +48,7 @@ Rule Validation is available in **Pipeline mode** (the default processing mode).
 - Open the IDP-ACC Web UI
 - Navigate to Configuration → Import
 - Select **rule-validation** from the Config Library
-- Toggle on Rule Validation
+- In **Processing Settings → Policy Rule Validation (Optional)**, check that **Enabled** is on
 
 ### Two-Step Process for Any Industry
 
@@ -82,8 +86,8 @@ Rule validation works for any industry using this two-step process:
    - Specify what attributes to extract from each section
    - These extracted attributes provide context to the AI for better validation
 
-3. **Configure Rule Schema**
-   - Go to Configuration → **Rule Schema** tab
+3. **Configure the Policy Schema**
+   - Go to Configuration → **Policy Schema** tab
    - Paste the rules from Step 1 (or your own rules)
    - Organize into rule types
    - Add detailed descriptions for each rule
@@ -93,15 +97,15 @@ Rule validation works for any industry using this two-step process:
    - System automatically processes and validates against your rules
    - View results showing Pass/Fail for each rule with detailed reasoning
 
-### Quick Start with Healthcare Example
+### Quick Start with the Bank Statement Example
 
-Want to see it in action first? We provide a complete healthcare example with sample documents and pre-configured rules. See the [Healthcare Example](#healthcare-prior-authorization-example) section below for step-by-step instructions using:
-- **Sample prior authorization document**: `samples/rule-validation/respiratory_pa_packet.pdf`
-  - Synthetic multi-page respiratory therapy prior authorization request
-  - Contains multiple sections: patient information, clinical information, evidence documents, operative logs, and claims data
-- **Sample NCCI policy manual**: `samples/rule-validation/NCCI Medicare Policy Manual.pdf`
-  - Source: [CMS NCCI Policy Manual Chapter 5 (2024)](https://www.cms.gov/files/document/medicare-ncci-policy-manual-2024-chapter-5.pdf)
-  - Contains medical coding rules and guidelines
+Want to see it in action first? We provide a complete bank statement example with sample documents and pre-configured rules. See the [Bank Statement Example](#bank-statement-review-example) section below for step-by-step instructions using:
+- **Sample bank statement**: `samples/bank-statement-multipage.pdf`
+  - Synthetic multi-page consolidated bank statement
+  - Contains multiple parts: a summary of accounts, a checking account summary, and a list of transactions
+- **Sample review policy**: `samples/rule-validation/bank-statement-review-policy.pdf`
+  - "Bank Statement Review Policy" of the fictitious AnyCompany Financial Services, written by `scripts/generate_bank_statement_review_policy.py`
+  - Contains the policy rules a bank statement must meet before it is accepted
 - Pre-configured Policy Discovery and rule validation configs
 
 ## Key Features
@@ -140,20 +144,58 @@ Want to see it in action first? We provide a complete healthcare example with sa
 
 ### State Machine Integration
 
-Rule validation is integrated into the pipeline mode workflow after extraction:
+Policy rule validation is a step of the processing workflow, after extraction and
+assessment and before Review Routing. The steps from policy rule validation on are
+the same in Pipeline mode and BDA mode:
 
 ```
-OCR → Classification → Extraction → Policy Classification → Rule Validation (Map) → Orchestration
+OCR → Classification → Extraction → Assessment → Policy Rule Validation → Review Routing → Summarization → Evaluation
 ```
 
-The workflow includes:
-1. **Policy Classification Step**: Determines which policy types apply to the document
-2. **Rule Validation Map State**: Processes sections in parallel for matched policy types only
-3. **Orchestration Step**: Consolidates results and makes final compliance decisions
+The step has three states:
+1. **Policy classification** (`PolicyClassificationStep`): determines which policy types apply to the document
+2. **Validation by section** (the `ValidatePolicyRulesBySection` Map state, running `PolicyRuleValidationStep`): processes sections in parallel for matched policy types only
+3. **Consolidation** (`PolicyRuleConsolidationStep`): consolidates the results and gives every policy rule its verdict
 
-## Human-in-the-Loop (HITL)
+In the web UI the step is called **Policy Rule Validation**. Its policy rules are
+edited on the **Policy Schema** tab, its settings are the **Policy Rule Validation
+(Optional)** section of **Processing Settings** (before **Review Routing
+(Optional)**, as in the pipeline), and its report is the **Policy Rule Validation
+Summary**.
 
-HITL review of rule validation results is not supported. When HITL is enabled for extraction, rule validation automatically skips on the second execution and reuses results from the first run.
+### When the step runs
+
+- On a document's first run, when `rule_validation.enabled` is on and the profile
+  has at least one policy.
+- Again on the run after a **completed review**, on the corrected values (see
+  [Human review](#human-review)).
+- On a reprocess that starts at policy rule validation or at an earlier step.
+  **Reprocess** can also start at a later step, or skip policy rule validation; the
+  document then keeps the result it has.
+- After **Process Changes** on a document whose field values were edited, which starts
+  at this step.
+
+## Human review
+
+Policy rule validation runs **before** [Review Routing](./review-routing.md), so a
+routing rule can send a document to a review queue because of a policy rule's verdict
+(`policy_rule_verdict`, `failed_policy_rule_count`). A document that is held is
+reviewed with its policy rule validation results available, and its review record
+lists the policy rules it failed, with the explanation given for each, whichever
+routing rule placed it (see
+[Failed policy rules](./review-routing.md#failed-policy-rules)). The reviewer reads
+them in the queue item's **Review Reason** panel, and opens the whole report with
+**Reports › Policy Rule Validation Summary** on the edit page.
+
+A routing rule that reads a policy rule result has nothing to read while policy rule
+validation does not run for the profile. Saving a profile in that state is accepted
+with a warning that names each such routing rule (see
+[Warnings](./review-routing.md#warnings)).
+
+When the review is completed, policy rule validation runs again on the corrected
+values, and the summary is replaced. A document that is reviewed therefore runs the
+step twice. Reviewers correct extracted values; the verdicts themselves are not
+edited.
 
 ### No-Policy-Match Behavior
 
@@ -181,7 +223,9 @@ This separation provides several benefits:
 
 ### Basic Configuration
 
-Configure rule validation in your pattern configuration file:
+Configure policy rule validation in the `rule_validation` section of the
+configuration. In the Web UI it is the **Policy Rule Validation (Optional)** section
+of **Configuration → Processing Settings**:
 
 ```yaml
 rule_validation:
@@ -200,8 +244,8 @@ rule_validation:
     model: us.anthropic.claude-sonnet-4-6
     temperature: 0.0
     top_k: 20
-    top_p: 0.01
-    max_tokens: 4096
+    top_p: 0
+    max_tokens: ""  # empty uses the selected model's maximum output
     system_prompt: |
       You are a specialized fact extraction assistant...
     task_prompt: |
@@ -215,8 +259,8 @@ rule_validation:
     model: us.anthropic.claude-sonnet-4-6
     temperature: 0.0
     top_k: 20
-    top_p: 0.01
-    max_tokens: 4096
+    top_p: 0
+    max_tokens: ""  # empty uses the selected model's maximum output
     system_prompt: |
       You are a compliance decision orchestrator...
     task_prompt: |
@@ -285,19 +329,60 @@ rule_validation:
 
 ### Policy Classes
 
-Define policy types and specific rules to evaluate:
+Define policy types and specific rules to evaluate. These policy classes are from the **rule-validation** preset:
 
 ```yaml
 policy_classes:
-  - policy_type: "global_periods"
-    questions:
-      - "If a procedure has a global period of 000 or 010 days, it is defined as a minor surgical procedure..."
-      - "If a procedure has a global period of 090 days, it is defined as a major surgical procedure..."
-  
-  - policy_type: "same_day_service_rules"
-    questions:
-      - "Since National Correct Coding Initiative (NCCI) Procedure-to-Procedure (PTP) edits are applied..."
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    x-aws-idp-policy-type: statement_period
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
+    type: object
+    rule_properties:
+      statement_date_shown:
+        type: string
+        description: >-
+          The statement must show the date it was issued or the period
+          it covers. The rule fails when the statement prints neither.
+      balance_dates_in_order:
+        type: string
+        description: >-
+          The date printed for the new balance of an account must be
+          the same as or later than the date printed for its previous
+          balance. The rule fails when the new balance is dated before
+          the previous balance.
+      transactions_within_period:
+        type: string
+        description: >-
+          Every transaction listed on the statement must be dated
+          within the period the statement covers and no later than the
+          statement date. The rule fails when a transaction is dated
+          outside that period.
+    $id: statement_period
+
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    x-aws-idp-policy-type: balance_reconciliation
+    x-aws-idp-document-name-regex: "(?i).*bank[_ -]?statement.*"
+    type: object
+    rule_properties:
+      new_balance_reconciles:
+        type: string
+        description: >-
+          For each account, the new balance must equal the previous
+          balance, minus checks and other withdrawals, plus deposits
+          and credits, using the amounts printed in the account
+          summary. The rule fails when the printed amounts do not add
+          up to the printed new balance.
+      summary_total_matches_accounts:
+        type: string
+        description: >-
+          The total printed for a group of accounts in the summary of
+          accounts must equal the sum of the balances of the accounts
+          in that group. The rule fails when the total differs from
+          that sum.
+    $id: balance_reconciliation
 ```
+
+Each key of `rule_properties` is one policy rule, and `x-aws-idp-document-name-regex` is the pattern that says which documents the policy class applies to (see [Required: Add a Document Matching Regex](./policy-discovery.md#required-add-a-document-matching-regex)).
 
 ### Document Classes
 
@@ -305,20 +390,27 @@ Specify which document types should be validated:
 
 ```yaml
 classes:
-  - name: "PA-Administrative"
-    description: "Prior Authorization administrative information"
-    attributes:
-      - name: "patient_name"
-        description: "Full name of the patient"
-      - name: "insurance_policy_number"
-        description: "Insurance policy or member ID"
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Bank-Statement
+    type: object
+    x-aws-idp-document-type: Bank-Statement
+    description: >-
+      A periodic financial document issued by banks detailing account activity,
+      balances, and transactions over a specific time period.
+    properties:
+      bank_name:
+        type: string
+      account_holder_name:
+        type: string
+      account_number:
+        type: string
 ```
 
 ## Customizing Recommendation Options
 
 The default recommendation options are Pass/Fail/Information Not Found, but you can customize these for your specific use case:
 
-### Healthcare Compliance Example
+### Compliance Review Example
 
 ```yaml
 rule_validation:
@@ -368,26 +460,32 @@ The statistics in the final summary will automatically use your custom options:
 
 1. **Be Specific**: Include clear criteria and conditions
    ```yaml
-   questions:
-     - "If a procedure has a global period of 090 days AND an E&M service is performed on the same date..."
+   rule_properties:
+     balance_dates_in_order:
+       type: string
+       description: "The date printed for the new balance of an account must be the same as or later than the date printed for its previous balance..."
    ```
 
 2. **Provide Context**: Include relevant definitions and examples
    ```yaml
-   questions:
-     - "CPT code 31500 describes an emergency endotracheal intubation. For example, if intubation is performed in a rapidly deteriorating patient..."
+   rule_properties:
+     large_withdrawals_identified:
+       type: string
+       description: "Every withdrawal of 10,000.00 or more must have a description that identifies the payee. The rule fails when such a withdrawal has no description, or a description that names no payee."
    ```
 
 3. **Structure Complex Rules**: Use JSON format for rules with multiple components
    ```yaml
-   questions:
-     - |
-       {
-         "cpt_codes_affected": ["31500"],
-         "rule_text": "If laryngoscopy is required...",
-         "bundled_services": ["laryngoscopy for elective or emergency placement"],
-         "separately_reportable_conditions": ["intubation in rapidly deteriorating patient"]
-       }
+   rule_properties:
+     new_balance_reconciles:
+       type: string
+       description: |
+         {
+           "rule_text": "For each account, the new balance must equal the previous balance, minus checks and other withdrawals, plus deposits and credits...",
+           "amounts_subtracted": ["checks", "other withdrawals"],
+           "amounts_added": ["deposits", "credits"],
+           "fails_when": ["the printed amounts do not add up to the printed new balance"]
+         }
    ```
 
 ### Organizing Policy Types
@@ -396,15 +494,27 @@ Group related rules into logical policy types:
 
 ```yaml
 policy_classes:
-  - policy_type: "eligibility_rules"
-    questions:
-      - "Patient must be enrolled in insurance plan..."
-      - "Coverage must be active on date of service..."
-  
-  - policy_type: "medical_necessity"
-    questions:
-      - "Procedure must be medically necessary..."
-      - "Documentation must support diagnosis..."
+  - x-aws-idp-policy-type: statement_identity
+    type: object
+    rule_properties:
+      institution_named:
+        type: string
+        description: "The statement must name the financial institution that issued it..."
+      account_holder_named:
+        type: string
+        description: "The statement must show the full name and the mailing address of the account holder..."
+    $id: statement_identity
+
+  - x-aws-idp-policy-type: transaction_review
+    type: object
+    rule_properties:
+      transactions_in_date_order:
+        type: string
+        description: "Transactions must be listed in date order, oldest first, within each account..."
+      no_duplicate_transactions:
+        type: string
+        description: "A transaction must be listed once..."
+    $id: transaction_review
 ```
 
 ## Output Formats
@@ -419,24 +529,58 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
   "overall_status": "COMPLETE",
   "total_policy_types": 4,
   "overall_statistics": {
-    "total_rules": 15,
+    "total_rules": 11,
     "recommendation_counts": {
-      "Pass": 12,
+      "Pass": 8,
       "Fail": 2,
       "Information Not Found": 1
     }
   },
   "rule_summary": {
-    "global_periods": {
+    "statement_identity": {
       "status": "COMPLETE",
-      "total_rules": 2,
-      "Pass": 2,
+      "total_rules": 3,
+      "Pass": 3,
       "Fail": 0
     }
   },
   "supporting_pages": ["1", "2", "3", "5"]
 }
 ```
+
+Each policy type's rules are under `rule_details`:
+
+```json
+"rule_details": {
+  "statement_period": {
+    "verdict_counts": {"pass": 2, "fail": 1, "not_found": 0, "unknown": 0},
+    "rules": [
+      {
+        "rule_id": "statement_period.balance_dates_in_order",
+        "z3_rule_id": null,
+        "rule": "The date printed for the new balance of an account must be the same as or later than the date printed for its previous balance. The rule fails when the new balance is dated before the previous balance.",
+        "recommendation": "Fail",
+        "verdict": "fail",
+        "supporting_pages": ["1"],
+        "reasoning": "…"
+      }
+    ]
+  }
+}
+```
+
+- **`rule_id`** is `policy_type.rule_key`: the policy type and the rule's key in the
+  Policy Schema. It is stable across runs and is what a
+  [routing rule](./review-routing.md#policy-rule-verdicts-in-routing-rules) names. The
+  Markdown report shows it beside the rule text. A rule that has an
+  `x-aws-idp-rule-id` (see [Z3 Symbolic Rule Validation Engine](./rule-validation-z3.md))
+  also carries it, as `z3_rule_id`.
+- **`verdict`** is the recommendation as one of four fixed values: `pass`, `fail`,
+  `not_found` (for **Information Not Found**) or `unknown` (any other label, and a rule
+  that got no recommendation). `recommendation` keeps the label as configured.
+  `overall_statistics` and each policy type also carry `verdict_counts`. With
+  [customized recommendation options](#customizing-recommendation-options), the counts
+  by label work as before and every custom label reads as `unknown` in `verdict`.
 
 Two things to know if you read this file programmatically.
 
@@ -462,7 +606,7 @@ failed is a different case and is reported per section — see
 Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidated_summary.md`:
 
 ```markdown
-# Rule Validation Summary
+# Policy Rule Validation Summary: doc_123
 
 **Document ID:** doc_123
 **Status:** COMPLETE
@@ -470,21 +614,21 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
 
 ## Overall Statistics
 
-**Total Rules:** 15
-**Pass:** 12
+**Total Rules:** 11
+**Pass:** 8
 **Fail:** 2
 **Information Not Found:** 1
 
-## Rule Type: global_periods
+## Rule Type: statement_identity
 
-**Total Rules:** 2
-**Pass:** 2
+**Total Rules:** 3
+**Pass:** 3
 
 ### Rules
 
 | Rule | Recommendation | Reasoning | Supporting Pages |
 |------|----------------|-----------|------------------|
-| Minor surgery rule | Pass | Evidence found on page 1... | 1, 3 |
+| The statement must name the financial institution that issued it... | Pass | Evidence found on page 1... | 1, 3 |
 ```
 
 ## Performance Optimization
@@ -504,7 +648,7 @@ Place static content before the `<<CACHEPOINT>>` marker and dynamic content afte
 
 ```yaml
 task_prompt: |
-  You are an insurance evaluator...
+  You are a bank statement reviewer...
   
   <<CACHEPOINT>>
   
@@ -691,6 +835,11 @@ Rule validation costs depend on:
 - Document size and chunking
 - Model selection
 - Prompt caching effectiveness
+- Whether the document is reviewed: a document held in a review queue runs the step
+  again after its review is completed
+
+The verdict pass makes one model call per policy rule the symbolic engine did not
+decide, for every document, including a document with one section.
 
 **Cost Optimization Tips**:
 1. Use prompt caching on busy stacks: a cached prefix that is read again within five minutes is billed at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but one that is never read again is billed at about 25% more than uncached, and a prefix below the model's minimum is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
@@ -704,35 +853,46 @@ For detailed API documentation, see the [Rule Validation Module README](../lib/i
 
 ## Examples
 
-### Healthcare Prior Authorization Example
+### Bank Statement Review Example
 
-We provide a complete healthcare example demonstrating prior authorization validation against NCCI medical coding rules.
+We provide a complete bank statement example demonstrating the validation of a bank statement against the policy rules of a review policy.
 
 **Sample Documents:**
-- **Prior Authorization Document**: `samples/rule-validation/respiratory_pa_packet.pdf`
-  - Synthetic multi-page respiratory therapy prior authorization request
-  - Contains multiple sections:
-    - Patient Information (demographics, insurance details)
-    - Clinical Information (diagnoses, medical history)
-    - Evidence Documents (supporting clinical documentation)
-    - Operative Logs (procedure details, CPT codes)
-    - Claims Data (billing information, service dates)
-  
-- **NCCI Policy Manual**: `samples/rule-validation/NCCI Medicare Policy Manual.pdf`
-  - National Correct Coding Initiative policy reference
-  - Source: [CMS NCCI Policy Manual Chapter 5 (2024)](https://www.cms.gov/files/document/medicare-ncci-policy-manual-2024-chapter-5.pdf)
-  - Contains medical coding rules, bundling guidelines, and compliance requirements
+- **Bank Statement**: `samples/bank-statement-multipage.pdf`
+  - Synthetic multi-page consolidated statement of "Example Inc. Credit Union", with the statement date 04/04/2022
+  - Contains multiple parts:
+    - Summary of Accounts (a checking account and a savings account, with account numbers and balances)
+    - Checking Account Summary (previous balance, checks, withdrawals, deposits, new balance)
+    - Transactions (date, description, amount)
+
+- **Review Policy**: `samples/rule-validation/bank-statement-review-policy.pdf`
+  - "Bank Statement Review Policy" of the fictitious AnyCompany Financial Services
+  - Written by `scripts/generate_bank_statement_review_policy.py`
+  - Contains the policy rules a bank statement must meet before it is accepted
 
 **Configuration Files:**
 - **Step 1 - Policy Discovery**: extracted rules are written into `policy_classes` on the active configuration profile (see [docs/policy-discovery.md](./policy-discovery.md))
 - **Step 2 - Rule Validation**: `config_library/unified/rule-validation/config.yaml`
 
 This example includes:
-- NCCI coding rules
-- Global period validation
-- Same-day service rules
-- Bundling and component service rules
-- Prior authorization document classes
+- Statement identity policy rules (`statement_identity`)
+- Statement period policy rules (`statement_period`)
+- Balance reconciliation policy rules (`balance_reconciliation`)
+- Transaction review policy rules (`transaction_review`)
+- The `Bank-Statement` document class
+
+Every policy class of the preset applies to a document whose file name says it is a bank statement (`x-aws-idp-document-name-regex`), so keep the sample's file name when you upload it.
+
+The statement is meant to show failed policy rules beside passed ones:
+
+| Policy rule | What the statement prints | What the policy rule tests |
+|---|---|---|
+| `statement_period.balance_dates_in_order` | The checking account summary gives a previous balance "as of 04/04/2022" and a new balance "as of 06/17/2020" | The new balance is dated the same as or later than the previous balance |
+| `statement_period.transactions_within_period` | The statement date is 04/04/2022, and the transactions are dated throughout 2020 | Every transaction is dated within the period the statement covers and no later than the statement date |
+| `transaction_review.transactions_in_date_order` | Pages 2 to 5 list the transactions out of date order | Transactions are listed oldest first |
+| `transaction_review.no_duplicate_transactions` | Pages 4 and 5 repeat transactions that pages 2 and 3 list | A transaction is listed once |
+
+A verdict comes from a model and can differ between runs, so the table says what each policy rule reads, and not the verdict it gets.
 
 **Note**: This is a reference implementation. You can replace these rules with your own domain-specific requirements.
 

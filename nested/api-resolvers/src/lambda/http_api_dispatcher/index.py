@@ -294,6 +294,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "generateDraftLabels": "addDocumentsToTestSet",
     "getDraftLabelJob": "addDocumentsToTestSet",
     "updateDocumentSections": "processChanges",
+    "getProcessChangesPlan": "processChanges",
     "updateTestSetDocumentSections": "addDocumentsToTestSet",
     "getTestSetDocuments": "addDocumentsToTestSet",
     "getTestSets": "addDocumentsToTestSet",
@@ -318,6 +319,7 @@ FIELD_ALIASES: Dict[str, str] = {
     # Config prefix mappings (S3 prefix -> Configuration Profile), served by the
     # same configuration resolver.
     "listConfigPrefixMappings": "deleteConfigVersion",
+    "listConfigPrefixMappingHistory": "deleteConfigVersion",
     "putConfigPrefixMapping": "deleteConfigVersion",
     "deleteConfigPrefixMapping": "deleteConfigVersion",
     "resolveConfigPrefixMapping": "deleteConfigVersion",
@@ -338,6 +340,9 @@ FIELD_ALIASES: Dict[str, str] = {
     "updateModelConfigLimits": "deleteConfigVersion",
     "updatePricing": "deleteConfigVersion",
     "generateRuleJson": "deleteConfigVersion",
+    # Review routing, served by the same configuration resolver.
+    "getReviewQueueReferences": "deleteConfigVersion",
+    "convertRoutingDmn": "deleteConfigVersion",
     # compareTestRuns (TestResultsResolverFunction)
     "getTestRun": "compareTestRuns",
     "getTestRunStatus": "compareTestRuns",
@@ -369,6 +374,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "listUsers": "createUser",
     "getMyProfile": "createUser",
     "setUserTenant": "createUser",
+    "selectActiveTenant": "createUser",
     # createFinetuningJob (FinetuningJobsResolverFunctionArn)
     "deleteFinetuningJob": "createFinetuningJob",
     "getFinetuningJob": "createFinetuningJob",
@@ -387,6 +393,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "listReviewQueueItems": "getMyReviewQueues",
     "listMyReviewWork": "getMyReviewQueues",
     "getReviewItem": "getMyReviewQueues",
+    "getReviewCompletionPlan": "getMyReviewQueues",
     "claimReviewItem": "getMyReviewQueues",
     "claimNextReviewItem": "getMyReviewQueues",
     "renewReviewLease": "getMyReviewQueues",
@@ -405,6 +412,10 @@ FIELD_ALIASES: Dict[str, str] = {
     "createReviewQueue": "getMyReviewQueues",
     "updateReviewQueue": "getMyReviewQueues",
     "deleteReviewQueue": "getMyReviewQueues",
+    "sendBackReviewItem": "getMyReviewQueues",
+    "testRoutingTable": "getMyReviewQueues",
+    # reprocessDocument (ReprocessDocumentResolverFunction)
+    "getReprocessOptions": "reprocessDocument",
 }
 
 

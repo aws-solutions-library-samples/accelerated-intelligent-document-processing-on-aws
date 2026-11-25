@@ -16,6 +16,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,6 +35,12 @@ const SECTIONS: ReviewSectionRef[] = [
   { sectionId: '3', documentClass: null, resultUri: 's3://b/3', pageIds: [] },
 ];
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderWidget = async (props: Partial<React.ComponentProps<typeof SectionEditor>> = {}) => {
   // Each section's result carries its own class, as a loaded result does.
   const loadSection = vi.fn(async (id: string) => {
@@ -51,6 +58,7 @@ const renderWidget = async (props: Partial<React.ComponentProps<typeof SectionEd
       onSave={async () => undefined}
       {...props}
     />,
+    { wrapper: English },
   );
   await waitFor(() => expect(loadSection).toHaveBeenCalled());
   return { loadSection };

@@ -19,6 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from .keys import queue_partition
 from .statuses import ReviewStatus
 
+#: The top-level key of a section result that holds its review record, written
+#: when a completed review is applied (``apply_review``).
+REVIEW_KEY = "review"
+
 
 def _pascal(name: str) -> str:
     return "".join(part[:1].upper() + part[1:] for part in name.split("_"))
@@ -85,7 +89,12 @@ class QueueRef(BaseModel):
 
 
 class ReviewReason(BaseModel):
-    kind: Literal["low_confidence", "blueprint_confidence", "missing_required"]
+    kind: Literal[
+        "low_confidence",
+        "blueprint_confidence",
+        "missing_required",
+        "extraction_failed",
+    ]
     section_id: str
     field: Optional[str] = None
     label: Optional[str] = None
@@ -124,6 +133,61 @@ class ManualRequest(_Record):
     prior_hitl_status: Optional[str] = None
     #: The tracking row's ``HITLCompleted`` before the send (restored on abandon).
     prior_hitl_completed: Optional[bool] = None
+
+
+class PolicyFailure(_Record):
+    """A policy rule the document failed, as the reviewer is shown it.
+
+    Stored as the map ``{RuleId, Policy, Name, Reason, Pages}``.
+    """
+
+    #: ``<policy type>.<rule key>``.
+    rule_id: str = ""
+    policy: str = ""
+    #: The rule's key: the id without its policy type.
+    name: str = ""
+    #: The explanation policy rule validation stored for the rule, shortened.
+    reason: str = ""
+    #: The page numbers the explanation cites.
+    pages: list[int] = Field(default_factory=list)
+
+
+class RoutedBy(_Record):
+    """The routing rule that placed a document in its queue, and what it read.
+
+    ``inputs``, ``reason`` and ``policy_failures`` are bounded when the record is
+    built (``routing_step``), not by a validator, so an item that was stored
+    always loads.
+    """
+
+    table_id: str = ""
+    #: The matched rule; empty when the table's default outcome applied.
+    rule_id: str = ""
+    rule_label: str = ""
+    profile: str = ""
+    config_revision: Optional[int] = None
+    #: The queue the outcome named, and the queue the document was placed in.
+    #: They differ when the named queue is missing or disabled.
+    outcome_queue: str = ""
+    placed_queue: str = ""
+    #: ``""``, ``queue_missing``, ``queue_disabled`` or ``evaluation_error``.
+    fallback_reason: str = ""
+    #: The input values the decision read, by expression text.
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    evaluated_at: str = ""
+    #: What the reviewer reads: the reason with the document's values filled in.
+    #: Empty on an item written before routing rules had a reason.
+    reason: str = ""
+    #: The reason as the Admin wrote it, placeholders unfilled; empty when the
+    #: routing rule has none.
+    reason_template: str = ""
+    #: ``admin`` (the Admin's text), ``fallback`` (generated), or ``""`` on an
+    #: item written before routing rules had a reason.
+    reason_source: str = ""
+    #: The policy rules the document failed, whichever routing rule placed it:
+    #: the first of them, and how many there are in all.
+    policy_failures: list[PolicyFailure] = Field(default_factory=list)
+    policy_failure_count: int = 0
 
 
 class ReviewItemRecord(_Record):
@@ -198,6 +262,34 @@ class ReviewItemRecord(_Record):
     manual_request: Optional[ManualRequest] = None
     #: The bulk Skip All Reviews job that skipped the item, if any.
     skip_job_id: Optional[str] = None
+    # Routing
+    #: The rule that placed the document; ``None`` on an item written before
+    #: routing rules existed.
+    routed_by: Optional[RoutedBy] = None
+    #: 1 for a first placement; one more for each placement that follows a
+    #: completed review of the same document without a new upload in between.
+    placement_count: int = 1
+    #: The processing mode of the run that placed the document (``pipeline`` or
+    #: ``bda``): the mode a send-back of this review runs in, so the steps it can
+    #: start at. ``None`` on an item placed by hand (Send to review) or written
+    #: before the mode was recorded.
+    processing_mode: Optional[str] = None
+    #: The usage of the runs before this placement, when it follows a completed
+    #: review: the tracker adds it to the baseline at activation.
+    carried_metering_json: Optional[str] = None
+    #: The document's sections when it was placed: section id to a digest of the
+    #: section's pages (``run_plan.restart.layout_of``). A section the reviewer
+    #: regrouped is told apart against it when the review is completed. Empty on
+    #: an item written before the layout was recorded, and for a document with
+    #: more sections than a layout records.
+    placed_layout: dict[str, str] = Field(default_factory=dict)
+    #: Where the run after this review starts, decided when the review is
+    #: completed: ``apply_review_changes`` or ``extraction``. ``None`` until
+    #: then, and on an item completed before the start was recorded.
+    restart_step: Optional[str] = None
+    #: The sections that run extracts again, for an extraction start. Empty means
+    #: every processed section.
+    restart_sections: list[str] = Field(default_factory=list)
     # Other
     withdrawn_reason: Optional[str] = None
     withdrawn_at: Optional[str] = None
@@ -252,7 +344,12 @@ class RunRef(BaseModel):
 
 
 class StatusReason(BaseModel):
-    kind: Literal["low_confidence", "blueprint_confidence", "missing_required"]
+    kind: Literal[
+        "low_confidence",
+        "blueprint_confidence",
+        "missing_required",
+        "extraction_failed",
+    ]
     section_id: str
     field: Optional[str] = None
     label: Optional[str] = None
@@ -267,12 +364,39 @@ class StatusTimestamps(BaseModel):
     updated_at: str
 
 
+class StatusPolicyFailure(BaseModel):
+    """A policy rule the document failed, as a consumer sees it."""
+
+    rule_id: str = ""
+    policy: str = ""
+    name: str = ""
+    reason: str = ""
+    pages: list[int] = Field(default_factory=list)
+
+
+class StatusRoutedBy(BaseModel):
+    """The routing rule that placed the document, as a consumer sees it."""
+
+    table_id: str = ""
+    rule_id: str = ""
+    rule_label: str = ""
+    placed_queue: str = ""
+    fallback_reason: str = ""
+    #: What the reviewer reads, and where it came from: ``admin``, ``fallback``,
+    #: or ``""`` for a placement made before routing rules had a reason.
+    reason: str = ""
+    reason_source: str = ""
+    #: The first failed policy rules, and how many the document failed in all.
+    policy_failures: list[StatusPolicyFailure] = Field(default_factory=list)
+    policy_failure_count: int = 0
+
+
 class StatusObject(BaseModel):
     """``<docKey>/review/status.json`` (schema ``status_object.schema.json``)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     document_key: str
     status: ReviewStatus
     sequence: int
@@ -290,6 +414,7 @@ class StatusObject(BaseModel):
     reviewer: Optional[str] = None
     reject_reason: Optional[str] = None
     reject_note: Optional[str] = None
+    routed_by: Optional[StatusRoutedBy] = None
     timestamps: StatusTimestamps
 
 
@@ -315,6 +440,10 @@ class ReviewReportingInfo(BaseModel):
     escalated: bool = False
     machine_run_id: Optional[str] = None
     final_run_id: Optional[str] = None
+    #: The routing rule's reason as written, placeholders unfilled: reporting is
+    #: read across profiles, so it gets no document values. ``None`` when the
+    #: routing rule has no reason, or no routing rule placed the document.
+    routing_reason: Optional[str] = None
 
 
 class SweepReport(BaseModel):

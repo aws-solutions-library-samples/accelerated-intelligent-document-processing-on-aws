@@ -7,11 +7,36 @@
 // extracted again. If the reprocess fails, the editor stays open with Retry reprocess and
 // Restore original text, so the text is never left changed without saying so.
 import React from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import { submitProcessChanges } from '../common/process-changes';
 import PageTextEditorModal from '../pages-panel/PageTextEditorModal';
 import { documentName } from '../review-queues/review-api';
+
+const messages = defineMessages<{
+  save: NoMessageValues;
+  notice: NoMessageValues;
+  saved: { readonly pageId: string; readonly name: string };
+}>({
+  save: {
+    id: 'documentActions.editPageText.save',
+    defaultMessage: 'Save and Reprocess',
+    description: "Button of the document page's page text editor: saves the page's text, then reprocesses the document.",
+  },
+  notice: {
+    id: 'documentActions.editPageText.notice',
+    defaultMessage:
+      "Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its policy rule validation results are cleared.",
+    description: "Notice in the document page's page text editor: what Save and Reprocess, the label of its save button, replaces.",
+  },
+  saved: {
+    id: 'documentActions.editPageText.saved',
+    defaultMessage: "Saved page {pageId}'s text of {name}. The sections that hold it are being extracted again.",
+    description:
+      "Success notification after Save and Reprocess saved a page's edited text and reprocessed the document. {pageId} is the page's number; {name} is the document name.",
+  },
+});
 
 interface EditPageTextDialogProps {
   objectKey: string;
@@ -38,6 +63,7 @@ const EditPageTextDialog = ({
   onUnfinished,
   onDismiss,
 }: EditPageTextDialogProps): React.JSX.Element => {
+  const intl = useIntl();
   const { setSuccessMessage } = useAppContext();
   const name = documentName(objectKey);
   return (
@@ -46,12 +72,12 @@ const EditPageTextDialog = ({
       pages={pages}
       initialPageId={initialPageId}
       isReadOnly={false}
-      saveLabel="Save and Reprocess"
+      saveLabel={intl.formatMessage(messages.save)}
       saveDisabledReason={disabledReason}
-      saveNotice="Save and Reprocess saves this page's text, then extracts again the sections that hold the page, replacing their values, including any corrected by hand. If the document is waiting for review, its review is marked as completed, and its rule validation results are cleared."
+      saveNotice={intl.formatMessage(messages.notice)}
       onSave={async (page) => {
         await reprocessPageText(objectKey, page);
-        setSuccessMessage(`Saved page ${page.pageId}'s text of ${name}. The sections that hold it are being extracted again.`);
+        setSuccessMessage(intl.formatMessage(messages.saved, { pageId: page.pageId, name }));
         onDone();
       }}
       onUnfinished={onUnfinished}

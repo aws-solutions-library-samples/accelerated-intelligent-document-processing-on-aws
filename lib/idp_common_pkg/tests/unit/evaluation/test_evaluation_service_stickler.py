@@ -460,6 +460,28 @@ class TestSticklerEvaluationService:
         )
         assert "0.80" not in list_attr.evaluation_method
 
+    def test_missed_field_confidence_is_recorded_for_calibration(self, service):
+        """A field the extractor returned as null keeps its confidence (#2052).
+
+        The service removes ``None`` before building the models, so Stickler's
+        ``prediction_confidences`` has no entry for the missed field; without the
+        separate record the aggregation Lambda could never count its 0.95 against
+        the scorer.
+        """
+        section = Section(section_id="1", classification="Invoice", page_ids=["1"])
+        result = service.evaluate_section(
+            section,
+            {"invoice_number": "INV-1", "invoice_date": "2024-01-01"},
+            {"invoice_number": None, "invoice_date": "2024-01-01"},
+            {
+                "invoice_number": {"confidence": 0.95},
+                "invoice_date": {"confidence": 0.6},
+            },
+        )
+        blob = result.stickler_comparison_result
+        assert "invoice_number" not in blob["prediction_confidences"]
+        assert blob["empty_prediction_confidences"] == {"invoice_number": 0.95}
+
     def test_stickler_model_not_found(self, service):
         """Test error when Stickler model not found for class."""
         with pytest.raises(ValueError, match="No schema configuration"):
@@ -2530,3 +2552,45 @@ def test_no_rows_fallback_verdict_reports_false_below_threshold(monkeypatch):
     result = svc.evaluate_section(section, {"a": "x"}, {"a": "y"})
     a = next(attr for attr in result.attributes if attr.name == "a")
     assert a.matched is False
+
+
+@pytest.mark.unit
+def test_no_rows_fallback_verdict_tolerates_rounding_below_threshold(monkeypatch):
+    """A score that floating-point rounding leaves within 1e-10 below the field's
+    threshold matches, as Stickler's own ``ThresholdHelper`` counts it, so the
+    fallback verdict agrees with the metrics Stickler reports."""
+    config = {
+        "classes": [
+            {
+                "$id": "d",
+                "x-aws-idp-document-type": "D",
+                "x-aws-idp-evaluation-model-name": "D",
+                "type": "object",
+                "properties": {
+                    "a": {
+                        "type": "string",
+                        "x-aws-idp-evaluation-method": "FUZZY",
+                        "x-aws-idp-evaluation-threshold": 0.8,
+                    }
+                },
+            }
+        ]
+    }
+    svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+    section = Section(section_id="s", classification="D", page_ids=["1"])
+
+    from stickler import StructuredModel
+
+    orig = StructuredModel.compare_with
+
+    def _no_rows_rounded_score(self, other, **kwargs):
+        r = orig(self, other, **kwargs)
+        r["field_comparisons"] = []
+        threshold = 0.8  # the field's x-aws-idp-evaluation-threshold
+        r.setdefault("field_scores", {})["a"] = threshold - 1e-12
+        return r
+
+    monkeypatch.setattr(StructuredModel, "compare_with", _no_rows_rounded_score)
+    result = svc.evaluate_section(section, {"a": "x"}, {"a": "y"})
+    a = next(attr for attr in result.attributes if attr.name == "a")
+    assert a.matched is True

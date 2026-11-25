@@ -13,11 +13,13 @@ import pypdfium2 as pdfium
 from botocore.exceptions import ClientError
 from idp_common import metrics
 from idp_common.config import get_config
+from idp_common.config.feature_flags import policy_rule_validation_enabled
 from idp_common.docs_service import create_document_service
 from idp_common.image.pdf_pages import load_page_for_render
 from idp_common.models import Document, HitlMetadata, Page, Section, Status
 from idp_common.review_queues.routing import (
     bda_segment_triggers,
+    recognize_finalize,
     review_mode,
     route_for_review,
 )
@@ -87,9 +89,35 @@ def legacy_hitl_enabled(config, document=None):
     return hitl_enabled and review_mode(config, _REVIEW_STORE, document) == "legacy"
 
 
-def _apply_review(response, document, config, execution_arn, document_service=None):
-    """Review-queue routing for every return path (no keys added when it is off)."""
+def _apply_review(
+    response,
+    document,
+    config,
+    execution_arn,
+    document_service=None,
+    routing_step=False,
+):
+    """Review-queue routing for every return path (no keys added when it is off).
+
+    ``routing_step`` says the state machine has a routing step of its own
+    (RoutingStep), which decides where the document goes, so this step adds no
+    review key. What stays here is the finalize run of a completed review that
+    started without a run plan (queued before the upgrade): the reviewer's
+    corrections are written to the section results before policy rule validation
+    reads them. A run that started under the definition before the routing step
+    does not send it, and gets the review decision here as it always did.
+    """
     if review_mode(config, _REVIEW_STORE, document) != "queues":
+        return response
+    if routing_step:
+        recognize_finalize(
+            document,
+            _REVIEW_STORE,
+            execution_arn or "",
+            apply=True,
+            output_bucket=document.output_bucket or os.environ.get("OUTPUT_BUCKET"),
+        )
+        response["hitl_triggered"] = False
         return response
     decision = route_for_review(
         document,
@@ -118,16 +146,9 @@ def is_rule_validation_enabled(config_version=None, config_revision=None):
         config = get_config(
             as_model=True, version=config_version, revision=config_revision
         )
-        if hasattr(config, 'rule_validation') and config.rule_validation:
-            enabled = config.rule_validation.enabled
-            if enabled:
-                policy_classes = getattr(config, 'policy_classes', None) or []
-                if len(policy_classes) == 0:
-                    logger.info("Rule validation enabled but no policy_classes configured - skipping")
-                    return False
-            logger.info(f"Rule validation enabled: {enabled}")
-            return enabled
-        return False
+        enabled = policy_rule_validation_enabled(config)
+        logger.info(f"Rule validation enabled: {enabled}")
+        return enabled
     except Exception as e:
         logger.warning(f"Failed to get rule validation config: {e}", exc_info=True)
         return False
@@ -1575,7 +1596,12 @@ def handle_skip_bda(event):
     }
     
     response = _apply_review(
-        response, document, config, event.get("execution_arn"), document_service
+        response,
+        document,
+        config,
+        event.get("execution_arn"),
+        document_service,
+        routing_step=bool(event.get("routing_step")),
     )
     logger.info(f"Skip BDA response: {json.dumps(response, default=str)}")
     return response
@@ -1614,37 +1640,6 @@ def handler(event, context):
 
     # Extract required information from the first response
     first_response = bda_responses[0]
-    
-    # Handle skipped BDA case (HITL reprocessing)
-    if first_response.get("metadata", {}).get("skipped"):
-        logger.info("BDA was skipped - document already has extraction data (HITL reprocessing)")
-        working_bucket = first_response["metadata"]["working_bucket"]
-        document = Document.load_document(first_response.get("document", {}), working_bucket, logger)
-        
-        # Check if HITL review is needed
-        config_version = getattr(document, 'config_version', None)
-        config_revision = getattr(document, 'config_revision', None)
-        try:
-            skip_config = get_config(
-                as_model=True, version=config_version, revision=config_revision
-            )
-        except Exception as e:
-            logger.warning(f"Failed to get HITL config: {e}", exc_info=True)
-            skip_config = None  # HITL disabled if config unavailable
-        hitl_triggered = legacy_hitl_enabled(skip_config, document) and any(
-            section.confidence_threshold_alerts for section in document.sections
-        )
-        
-        response = {
-            "document": document.serialize_document(working_bucket, "processresults_skip", logger),
-            "hitl_triggered": hitl_triggered,
-            "rule_validation_enabled": is_rule_validation_enabled(
-                config_version, config_revision
-            ),
-        }
-        return _apply_review(
-            response, document, skip_config, first_response.get("execution_arn")
-        )
     
     output_bucket = first_response.get("output_bucket")
 
@@ -1691,6 +1686,14 @@ def handler(event, context):
     # Set config version on the new document object
     document.config_version = input_config_version
     document.config_revision = input_config_revision
+    # Carry the document-level processing issues the row already holds (ingest
+    # records one when the prefix mappings could not be read). This document is
+    # built fresh rather than from the workflow's state, and the whole-document
+    # write that follows recomputes ProcessingIssueCount from it, so without this
+    # the list badge would drop the ingest issue while its text stayed on the row.
+    document.processing_issues = list(
+        getattr(existing_document, "processing_issues", None) or []
+    ) if existing_document else []
 
     # Load configuration using the input document's version
     config = get_config(
@@ -1939,6 +1942,8 @@ def handler(event, context):
         config,
         first_response.get("execution_arn") or document.workflow_execution_arn,
         document_service,
+        # An array of BDA responses comes from no state of this definition.
+        routing_step=bool(isinstance(event, dict) and event.get("routing_step")),
     )
     logger.info(f"Response: {json.dumps(response, default=str)}")
     return response

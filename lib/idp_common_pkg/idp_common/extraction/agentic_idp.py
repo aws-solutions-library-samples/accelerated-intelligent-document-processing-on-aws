@@ -27,7 +27,6 @@ from botocore.config import Config
 from PIL import Image
 from pydantic import BaseModel, Field
 from strands import Agent, tool
-from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models import BedrockModel
 from strands.types.agent import AgentInput
 from strands.types.content import (
@@ -43,6 +42,9 @@ from strands.types.media import (
 )
 
 from idp_common.agents.common.strands_bedrock_model import strands_guardrail_kwargs
+from idp_common.agents.utils.conversation_manager import (
+    MeteredSummarizingConversationManager,
+)
 from idp_common.bedrock.client import (
     ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
@@ -67,8 +69,10 @@ from idp_common.timeout_budget import (
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
 )
 from idp_common.utils.bedrock_utils import (
+    ModelOutputWithheld,
     async_exponential_backoff_retry,
     is_max_tokens_agent_error,
+    withheld_stop_reason,
 )
 from idp_common.utils.metering import attach_failure_metering
 from idp_common.utils.strands_agent_tools.todo_list import (
@@ -1057,6 +1061,23 @@ table tools, or there was no large table, do not add this note.
 # extraction.task_prompt_extraction_with_confidence — not hardcoded here.
 
 
+#: Step 2 of TABLE_PARSING_PROMPT_ADDENDUM, in the two forms the tool supports. The
+#: tool holds the section text only when the caller passed ``table_source_text``
+#: (every ExtractionService path does; agentic rules discovery and outside callers
+#: do not), and an agent told "pass nothing" to a tool holding nothing spends a turn
+#: on the error that follows. structured_output_async swaps the line accordingly.
+PARSE_TABLE_STEP_HOLDS_TEXT = (
+    "2. Call parse_table with NO table_text — it already holds the document text and\n"
+    "   parses ALL its tables instantly. Do not copy the document into the call.\n"
+    "   When several tables are found, the result lists each one (index, columns,\n"
+    "   row_count); pass table_indices to choose exactly which ones are mapped.\n"
+)
+PARSE_TABLE_STEP_NEEDS_TEXT = (
+    "2. Call parse_table with the table's Markdown as table_text — parses ALL tables\n"
+    "   in it instantly. When several are found, the result lists each one; pass\n"
+    "   table_indices to choose exactly which ones are mapped.\n"
+)
+
 TABLE_PARSING_PROMPT_ADDENDUM = """
 TABLE EXTRACTION OPTIMIZATION:
 When you encounter tables in the document text (Markdown tables with | delimiters),
@@ -1064,7 +1085,10 @@ use the EFFICIENT two-tool workflow instead of generating JSON row-by-row:
 
 PREFERRED WORKFLOW (fast — use for tables with 50+ rows):
 1. Extract non-table scalar fields first (e.g. account_number, statement_period)
-2. Call parse_table with the full document text — parses ALL tables instantly
+2. Call parse_table with NO table_text — it already holds the document text and
+   parses ALL its tables instantly. Do not copy the document into the call.
+   When several tables are found, the result lists each one (index, columns,
+   row_count); pass table_indices to choose exactly which ones are mapped.
 3. Review the columns and row_count returned
 4. Call map_table_to_schema with:
    - column_mapping: maps each table column to the corresponding schema field
@@ -2047,6 +2071,15 @@ async def _invoke_agent_for_extraction(
                 "No extraction found in agent state",
                 extra={"attempt": attempt + 1, "max_retries": max_extraction_retries},
             )
+            # The turn ended because Bedrock withheld the reply (stopReason
+            # content_filtered / guardrail_intervened), not because the model
+            # chose prose. The rounds below regenerate it, as the retry decorator
+            # does for a blocked ValidationException; when the last one is
+            # withheld too it is raised as the same block, so the service fails
+            # this section rather than the document (#2038).
+            withheld = withheld_stop_reason(response)
+            if withheld is not None and attempt == max_extraction_retries - 1:
+                raise ModelOutputWithheld(withheld)
             if attempt < max_extraction_retries - 1:
                 # Ask agent to provide extraction
                 prompt_content = [
@@ -2082,6 +2115,7 @@ async def _run_shard_agent(
     base_custom_instruction: str | None = None,
     emit_field_assessment: bool = False,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
+    table_source_text: str | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """Run one extraction agent over a single shard.
 
@@ -2118,6 +2152,7 @@ async def _run_shard_agent(
         schema_validator=schema_validator,
         # Shards exist only on the extraction path.
         strands_throttle_retries=False,
+        table_source_text=table_source_text,
     )
 
 
@@ -2166,6 +2201,9 @@ async def default_shard_runner(
         # service when extraction.confidence.mode == "integrated").
         emit_field_assessment=bool(payload.get("emit_field_assessment")),
         schema_validator=schema_validator,
+        # The shard's own page text, built by the service with its markers and
+        # the page-1 header block a later shard carries (_build_shard_payloads).
+        table_source_text=payload.get("assess_document_text"),
     )
 
 
@@ -2292,6 +2330,7 @@ async def structured_output_async(
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
     strands_throttle_retries: bool = True,
+    table_source_text: str | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Extract structured data using Strands agents with tool-based validation.
@@ -2346,6 +2385,12 @@ async def structured_output_async(
                      approaches it. Raising it eats into the time the retry ladder
                      and the work itself have inside one shard invocation — see the
                      budget in ``idp_common.timeout_budget`` before changing it.
+        table_source_text: The section's OCR text, with its ``--- PAGE N ---``
+            markers, for the ``parse_table`` tool to parse when table parsing is
+            enabled. With it the tool ignores any ``table_text`` the model sends and
+            the prompt tells the model to pass none; without it the tool parses the
+            ``table_text`` it is given. Pass the section's OCR text, the same text
+            ``{DOCUMENT_TEXT}`` is built from.
         strands_throttle_retries: Keep Strands' default ``ModelRetryStrategy``,
                      which retries a throttle inside each model call (default
                      True). Agentic extraction passes False: its calls sit inside
@@ -2388,10 +2433,15 @@ async def structured_output_async(
     # Append table parsing guidance to system prompt if enabled
     table_parsing_config = config.extraction.agentic.table_parsing
     if table_parsing_config.enabled:
-        system_prompt += TABLE_PARSING_PROMPT_ADDENDUM.format(
+        addendum = TABLE_PARSING_PROMPT_ADDENDUM.format(
             min_parse_success_rate=table_parsing_config.min_parse_success_rate,
             min_confidence_threshold=table_parsing_config.min_confidence_threshold,
         )
+        if not table_source_text:
+            addendum = addendum.replace(
+                PARSE_TABLE_STEP_HOLDS_TEXT, PARSE_TABLE_STEP_NEEDS_TEXT
+            )
+        system_prompt += addendum
         logger.info(
             "Table parsing tool enabled for agentic extraction",
             extra={
@@ -2485,6 +2535,11 @@ async def structured_output_async(
             confidence_data_by_page=_active_confidence_data_var.get(),
             max_empty_line_gap=table_parsing_config.max_empty_line_gap,
             auto_merge_adjacent_tables=table_parsing_config.auto_merge_adjacent_tables,
+            # The section's OCR text, as the caller holds it, so the tool
+            # parses the OCR itself rather than a copy the model retypes. Passed
+            # explicitly, not through a ContextVar: structured_output can run this
+            # on a fresh thread, which starts with an empty context.
+            source_text=table_source_text,
         )
         tools.append(parse_table_tool)
 
@@ -2593,7 +2648,10 @@ async def structured_output_async(
             ),
             "extraction_schema_json": schema_json,  # Store for schema reminder tool
         },
-        conversation_manager=SummarizingConversationManager(
+        # Metered: Strands' own manager summarizes with a direct model call that
+        # the agent loop never records, so its tokens would be missing from the
+        # usage read below on both the success and the failure path (#1952).
+        conversation_manager=MeteredSummarizingConversationManager(
             summary_ratio=summary_ratio, preserve_recent_messages=preserve_recent
         ),
         # With ``strands_throttle_retries=False`` (agentic extraction, the caller that
@@ -2781,6 +2839,7 @@ def structured_output(
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
     strands_throttle_retries: bool = True,
+    table_source_text: str | None = None,
 ) -> tuple[BaseModel, BedrockInvokeModelResponse]:
     """
     Synchronous version of structured_output_async.
@@ -2806,6 +2865,9 @@ def structured_output(
         custom_instruction: **RECOMMENDED** - Additional task-specific instructions
                            appended to the system prompt. Use this for domain-specific
                            guidance, field clarifications, or extraction rules.
+        table_source_text: The section's OCR text for the ``parse_table`` tool; see
+                           structured_output_async. Forwarded on both the direct and
+                           the fresh-thread path.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)
@@ -2873,6 +2935,7 @@ def structured_output(
                         emit_field_assessment=emit_field_assessment,
                         attach_page_images=attach_page_images,
                         strands_throttle_retries=strands_throttle_retries,
+                        table_source_text=table_source_text,
                     )
                 )
             except Exception as e:
@@ -2911,6 +2974,7 @@ def structured_output(
                 emit_field_assessment=emit_field_assessment,
                 attach_page_images=attach_page_images,
                 strands_throttle_retries=strands_throttle_retries,
+                table_source_text=table_source_text,
             )
         )
 

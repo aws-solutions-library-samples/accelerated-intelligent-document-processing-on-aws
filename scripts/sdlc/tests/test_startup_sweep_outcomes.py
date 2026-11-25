@@ -197,15 +197,30 @@ class _FakeAws:
         self._check("list_buckets")
         return {"Buckets": self.contents.get("buckets", [])}
 
+    def describe_key(self, KeyId):  # noqa: N803 - boto3 casing
+        """KMS's answer for one key, from `contents["kms_keys"]` ({id: metadata})."""
+        self._check("describe_key")
+        meta = self.contents.get("kms_keys", {}).get(KeyId)
+        if meta is None:
+            raise _client_error("NotFoundException", KeyId, "DescribeKey")
+        return {"KeyMetadata": meta}
+
     def describe_stacks(self, StackName):  # noqa: N803 - boto3 casing
         """CloudFormation's answer BY NAME, recorded for the cases that expect none.
 
-        A deleted stack is not described by name: CloudFormation raises the
-        error a stack that never existed raises.
+        A name with an entry in `stacks` answers with it, first. Otherwise a
+        stack this run issued delete_stack for answers DELETE_IN_PROGRESS, since
+        a delete_stack call only starts the delete. A name with neither (or
+        whose entry is DELETE_COMPLETE) is not described: CloudFormation
+        raises the error a stack that never existed raises.
         """
         self._check("describe_stacks")
         self.described.append(StackName)
-        status = (self.stacks or {}).get(StackName, "DELETE_COMPLETE")
+        listed_here = bool(self.stacks) and StackName in self.stacks
+        if StackName in self.deleted and not listed_here:
+            status = "DELETE_IN_PROGRESS"
+        else:
+            status = (self.stacks or {}).get(StackName, "DELETE_COMPLETE")
         if status == "DELETE_COMPLETE":
             raise _client_error(
                 STACK_GONE[0],
@@ -239,6 +254,10 @@ class _FakeAws:
     def delete_object(self, Bucket, Key):  # noqa: N803
         self._delete("delete_object", Key)
 
+    def schedule_key_deletion(self, KeyId, PendingWindowInDays):  # noqa: N803
+        assert PendingWindowInDays == 7, PendingWindowInDays
+        self._delete("schedule_key_deletion", KeyId)
+
 
 class _FakeS3Resource:
     """`boto3.resource("s3")`, for the bucket sweep's empty-then-delete."""
@@ -259,6 +278,34 @@ class _FakeS3Resource:
                 return _Versions()
 
         return _Bucket()
+
+
+def _kms_key_of(stack):
+    """The fake key id of `stack`'s retained KMS key, as `aws.deleted` records it.
+
+    A real id is a UUID that says nothing about its stack; this one opens with
+    the stack's name so `_undated_for` can tell whose key it is, and the sweep
+    reads the stack only from the description `_kms_listing` writes.
+    """
+    return f"{stack}:key"
+
+
+def _kms_listing(key_ids, created, state="Enabled"):
+    """`list_keys` pages and `describe_key` answers for `key_ids`, each described
+    the way template.yaml describes the key of the stack its id opens with."""
+    return {
+        "list_keys": [{"Keys": [{"KeyId": k} for k in key_ids]}],
+        "kms_keys": {
+            k: {
+                "KeyId": k,
+                "Description": f"Encrypts the data of IDP stack "
+                f"{k.rsplit(':', 1)[0]}; kept when the stack is deleted",
+                "KeyState": state,
+                "CreationDate": created,
+            }
+            for k in key_ids
+        },
+    }
 
 
 def _contents(cbd, sweep, with_target):
@@ -386,6 +433,13 @@ def _contents(cbd, sweep, with_target):
         )
         return {"list_objects_v2": [{"Contents": objects}]}
 
+    if sweep == "cleanup_stale_idp_kms_keys":
+        # No stacks at all, so nothing protects the key's run prefix.
+        return {
+            "list_stacks": [{"StackSummaries": []}],
+            **_kms_listing([_kms_key_of(DEAD_RUN)] if with_target else [], old),
+        }
+
     if sweep == "cleanup_stale_ci_diagnostics":
         objects = (
             # Keyed by build AND stack, the shape persist_diagnostics_bundle writes.
@@ -486,6 +540,15 @@ _SWEEP_SPECS = {
         "per_item": None,  # _delete_managed_policy reports (False, detail)
         "quiet_line": "✅ No orphaned idp- IAM managed policies to reap",
         "age_gate": {"field": "CreateDate", "young_line": "younger than the age gate"},
+    },
+    "cleanup_stale_idp_kms_keys": {
+        "enumerations": ("list_stacks", "list_keys", "describe_key"),
+        "per_item": "schedule_key_deletion",
+        "quiet_line": "✅ No KMS keys retained by dead idp- runs",
+        "age_gate": {
+            "field": "CreationDate",
+            "young_line": "younger than the age gate",
+        },
     },
     "cleanup_stale_ci_diagnostics": {
         "enumerations": ("list_objects_v2",),
@@ -2005,6 +2068,8 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch, name):
 #: Spelled out rather than read off the module, so a change to the module's set
 #: fails the pin below instead of re-pointing every case in this section.
 LONG_LIVED_STACK = "idp-ux-nightly"
+#: The weekly load probe's long-lived stack (codebuild_deployment.LOAD_PROBE_STACK_NAME).
+LOAD_PROBE_STACK = "idp-loadprobe"
 
 #: An ordinary run listed beside it, whose leftovers every sweep should take.
 OLD_RUN_STACK = "idp-1013-131553"
@@ -2046,6 +2111,11 @@ def _sweeps_that_never_read_the_set():
             "deletes only managed policies whose leading idp-MMDD-HHMMSS has no "
             "surviving stack, which neither a long-lived stack's boundary nor "
             "its pre-stack's PassRole policy carries"
+        ),
+        "cleanup_stale_idp_kms_keys": (
+            "schedules only keys whose description names a stack whose leading "
+            "idp-MMDD-HHMMSS has no surviving stack, and no long-lived stack's "
+            "name carries one"
         ),
         "cleanup_stale_ci_diagnostics": (
             "expires evidence bundles in the source bucket after their 30-day "
@@ -2186,6 +2256,8 @@ def _resources_of(sweep, owner):
             f"arn:fake:policy/{owner}-PermissionsBoundary",
             f"arn:fake:policy/{owner}-iam-PassRolePolicy",
         ]
+    if sweep == "cleanup_stale_idp_kms_keys":
+        return [_kms_key_of(owner)]
     if sweep == "cleanup_stale_bda_blueprints":
         return [
             f"arn:fake:project/{owner}-default",
@@ -2193,6 +2265,18 @@ def _resources_of(sweep, owner):
             f"arn:fake:blueprint/{owner}-invoice",
         ]
     raise AssertionError(f"no resources written for {sweep}")
+
+
+def _reaped_of(sweep, owner):
+    """What `sweep` deletes this run of the `_resources_of` listed for `owner`.
+
+    Everything listed, except that the stack sweep leaves a run's `-iam`
+    pre-stack for a later run: the main stack's delete has only been started,
+    and it runs through the pre-stack's service role.
+    """
+    if sweep == "cleanup_stale_idp_stacks":
+        return [owner]
+    return _resources_of(sweep, owner)
 
 
 def _listing(sweep, owners):
@@ -2213,6 +2297,8 @@ def _as_listed(sweep, name):
         return [f"arn:fake:policy/{name}"]
     if sweep == "cleanup_stale_bda_blueprints":
         return [f"arn:fake:blueprint/{name}", f"arn:fake:project/{name}"]
+    if sweep == "cleanup_stale_idp_kms_keys":
+        return [_kms_key_of(name)]
     return [name]
 
 
@@ -2252,6 +2338,8 @@ def _listing_of(sweep, found):
                 {"Roles": [{"RoleName": n, "CreateDate": old} for n in found]}
             ],
         }
+    if sweep == "cleanup_stale_idp_kms_keys":
+        return {"list_stacks": [{"StackSummaries": up}], **_kms_listing(found, old)}
     if sweep == "cleanup_stale_idp_policies":
         return {
             "list_stacks": [{"StackSummaries": up}],
@@ -2374,21 +2462,22 @@ def _counted_as_undecided(finding):
 
 
 def test_the_long_lived_stack_set_is_pinned(cbd):
-    """Count-pinned: exactly the one stack it was registered with.
+    """Count-pinned: exactly the two stacks registered for it.
 
     A name added here takes a stack and its `-iam` pre-stack out of the stack
     sweep, which exists because leaked runs exhausted the account's role quota,
     and every bucket named for it out of the bucket sweep. The BDA, IAM-role and
     IAM-policy sweeps reap nothing of that stack's either, since none of its
     names carries a run prefix, so whatever it leaks is left for somebody to
-    remove by hand. The expected count is therefore one, the member is the one
-    registered in scripts/tests/gate_exemptions.json, and adding a second is an
-    edit to this assertion and to that entry rather than a one-word change in
-    the harness.
+    remove by hand. The expected members are therefore exactly the review stack
+    and the load-probe stack, both registered in scripts/tests/gate_exemptions.json,
+    and adding a third is an edit to this assertion and to that entry rather than a
+    one-word change in the harness.
     """
-    assert cbd.SWEEP_EXEMPT_STACK_NAMES == frozenset({LONG_LIVED_STACK}), (
+    pinned = frozenset({LONG_LIVED_STACK, LOAD_PROBE_STACK})
+    assert cbd.SWEEP_EXEMPT_STACK_NAMES == pinned, (
         f"SWEEP_EXEMPT_STACK_NAMES is {sorted(cbd.SWEEP_EXEMPT_STACK_NAMES)}, not "
-        f"the pinned [{LONG_LIVED_STACK!r}]. Each member holds a stack's IAM roles "
+        f"the pinned {sorted(pinned)}. Each member holds a stack's IAM roles "
         f"for as long as it stands and nothing reaps what it leaks: change this "
         f"pin and its entry in scripts/tests/gate_exemptions.json together, with "
         f"the reason the new stack has to outlive every run"
@@ -2724,9 +2813,9 @@ def test_the_long_lived_stack_stands_while_an_old_run_beside_it_is_reaped(
     findings = _run(cbd, sweep)
 
     assert findings == [], findings
-    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+    assert sorted(aws.deleted) == sorted(_reaped_of(sweep, OLD_RUN_STACK)), (
         f"{sweep} deleted {aws.deleted}. Expected exactly the old run's "
-        f"{_resources_of(sweep, OLD_RUN_STACK)}: anything of {LONG_LIVED_STACK} "
+        f"{_reaped_of(sweep, OLD_RUN_STACK)}: anything of {LONG_LIVED_STACK} "
         f"is the long-lived stack lost, and anything short of the old run is a "
         f"sweep that stopped reaping"
     )
@@ -2758,7 +2847,7 @@ def test_a_lookalike_of_the_long_lived_stack_gets_no_such_protection(
     findings = _run(cbd, sweep)
 
     assert findings == [], findings
-    reaped = _resources_of(sweep, lookalike)
+    reaped = _reaped_of(sweep, lookalike)
     assert sorted(aws.deleted) == sorted(reaped), (
         f"{sweep} deleted {aws.deleted} with {lookalike} beside {LONG_LIVED_STACK}; "
         f"expected {reaped}"
@@ -2876,9 +2965,9 @@ def test_the_long_lived_count_keeps_its_own_line_beside_every_other_count(
     findings = _run(cbd, sweep)
 
     assert findings == [], findings
-    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+    assert sorted(aws.deleted) == sorted(_reaped_of(sweep, OLD_RUN_STACK)), (
         f"{sweep} deleted {aws.deleted}; expected exactly the old run's "
-        f"{_resources_of(sweep, OLD_RUN_STACK)}"
+        f"{_reaped_of(sweep, OLD_RUN_STACK)}"
     )
     if sweep == "cleanup_stale_idp_buckets":
         assert s3.emptied == _resources_of(sweep, OLD_RUN_STACK), s3.emptied
@@ -3316,9 +3405,9 @@ def test_the_long_lived_stack_is_set_aside_before_the_fail_closed_age_gate(
     findings = _run(cbd, sweep)
 
     assert findings == [], findings
-    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+    assert sorted(aws.deleted) == sorted(_reaped_of(sweep, OLD_RUN_STACK)), (
         f"{sweep} deleted {aws.deleted}; expected exactly the old run's "
-        f"{_resources_of(sweep, OLD_RUN_STACK)}"
+        f"{_reaped_of(sweep, OLD_RUN_STACK)}"
     )
     if sweep == "cleanup_stale_idp_buckets":
         assert s3.emptied == _resources_of(sweep, OLD_RUN_STACK), s3.emptied
@@ -3367,9 +3456,7 @@ def test_the_stack_sweep_does_not_count_the_long_lived_stacks_nested_stacks(
     findings = cbd.cleanup_stale_idp_stacks()
 
     assert findings == [], findings
-    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
-        aws.deleted
-    )
+    assert sorted(aws.deleted) == sorted(_reaped_of(sweep, OLD_RUN_STACK)), aws.deleted
     assert _printed_long_lived_count(capsys.readouterr().out) == len(
         _resources_of(sweep, LONG_LIVED_STACK)
     ), "the long-lived stack's nested stacks were counted as set aside for it"
@@ -3378,11 +3465,12 @@ def test_the_stack_sweep_does_not_count_the_long_lived_stacks_nested_stacks(
 def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
     cbd, monkeypatch, capsys
 ):
-    """`idp-ux-nightly-test` and its pre-stack go; the long-lived pair stands.
+    """`idp-ux-nightly-test` goes (its pre-stack on a later run); the long-lived
+    pair stands.
 
     All of them are top-level and older than the age gate. The long-lived stack
-    and `idp-ux-nightly-iam` are counted as set aside for it, and the throwaway pair
-    is reaped with the old run, so a sweep that spared every `idp-ux-nightly-<x>`
+    and `idp-ux-nightly-iam` are counted as set aside for it, and the throwaway is
+    reaped with the old run, so a sweep that spared every `idp-ux-nightly-<x>`
     fails here, and so does one that stopped sparing either of the two names it
     keeps.
     """
@@ -3401,7 +3489,8 @@ def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
     findings = cbd.cleanup_stale_idp_stacks()
 
     assert findings == [], findings
-    reaped = [*_resources_of(sweep, OLD_RUN_STACK), *throwaway]
+    # The throwaway's -iam pre-stack waits for its main stack's delete to finish.
+    reaped = [*_reaped_of(sweep, OLD_RUN_STACK), throwaway[0]]
     assert sorted(aws.deleted) == sorted(reaped), (
         f"the stack sweep deleted {aws.deleted}; expected exactly {reaped}. "
         f"{throwaway[0]} is a top-level stack of its own, and anything of "
@@ -3452,7 +3541,7 @@ def test_the_long_lived_stack_is_set_aside_before_its_retention_marker_is_read(
     assert findings == [], findings
     dropped = [d for d in aws.deleted if d.startswith(f"{cbd.RETENTION_S3_PREFIX}/")]
     reaped = [d for d in aws.deleted if d not in dropped]
-    assert sorted(reaped) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+    assert sorted(reaped) == sorted(_reaped_of(sweep, OLD_RUN_STACK)), (
         f"with a {marker} marker for {LONG_LIVED_STACK} the sweep deleted {aws.deleted}"
     )
     assert dropped == ([key] if marker == "expired" else []), dropped
@@ -3629,6 +3718,7 @@ CLIENT_SITES_FLOOR = frozenset(
         ("cleanup_stale_ci_diagnostics", "client", "s3"),
         ("cleanup_stale_idp_buckets", "client", "s3"),
         ("cleanup_stale_idp_buckets", "resource", "s3"),
+        ("cleanup_stale_idp_kms_keys", "client", "kms"),
         ("cleanup_stale_idp_policies", "client", "iam"),
         ("cleanup_stale_idp_stacks", "client", "cloudformation"),
         ("delete_apigw_test_vpc", "client", "cloudformation"),

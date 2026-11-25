@@ -1,0 +1,36 @@
+# Decision Model: Strands Decider — a Feature Platform extension that deploys a
+# decision model for the pipeline to call. It builds the Strands Decider's AWS Lambda
+# image in the installing account, with CodeBuild, from a pinned upstream source
+# commit and a pinned Hugging Face model commit, deploys it as the GENAIIDP-decider
+# function, and installs a configuration profile that selects it for section
+# classification. Nothing in the host changes until an admin activates that profile.
+#
+# Listed in config_library/extensions-oss.yaml so it appears in the catalog. See
+# docs/extensions/decision-model-decider.md.
+featureId: decision-model-decider
+displayName: "Decision Model: Strands Decider"
+version: 0.1.0
+description: |
+  Deploy the Strands Decider, a small decision model that picks between options and
+  returns a probability for each, as a Lambda function in your account. Section
+  classification (split-then-classify) and extraction confidence can call it in
+  place of an LLM. The image is built at install from pinned source and model
+  commits; installing adds a configuration profile that selects it and leaves the
+  active configuration unchanged.
+docsUrl: extensions/decision-model-decider
+# Nothing to show in the nav until installed: the catalog page lists it.
+showInNav: false
+template:
+  path: template.yaml
+  requiresMainStackName: true
+ui:
+  bundlePath: feature-ui/dist/ui-bundle.js
+  build:
+    - cwd: feature-ui
+      argv: ["npm", "ci"]
+    - cwd: feature-ui
+      argv: ["npm", "run", "build"]
+configPreset:
+  path: config-preset/section-classification.yaml
+capabilities:
+  - applies-config-preset

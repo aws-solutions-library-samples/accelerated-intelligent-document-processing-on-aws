@@ -137,8 +137,12 @@ Textract's synchronous `Bytes` limits are 5 MB and 10,000×10,000 pixels. A
   three settings are consistent.) An **empty** value is not an error: it means "not
   configured", which is how the web UI and the YAML presets express it, so the
   defaults above apply.
-- A partial configuration (only width **or** only height) disables the ceiling
-  entirely, preserving legacy behavior.
+- A partial configuration (only width **or** only height) behaves differently by
+  input type. For **PDF pages** it disables the ceiling entirely: the page is
+  rendered at the configured DPI with no size limit. For **image files** (JPEG, PNG,
+  TIFF and so on) the one given dimension is the ceiling: an image larger than it
+  is scaled down to that width or height, with the other dimension following the
+  aspect ratio.
 - Resizing always preserves aspect ratio and never upscales.
 
 ## Logging

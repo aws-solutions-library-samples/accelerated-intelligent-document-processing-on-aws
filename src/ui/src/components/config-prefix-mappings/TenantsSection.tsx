@@ -20,6 +20,7 @@ import {
 } from '@cloudscape-design/components';
 
 import useTenants, { Tenant } from '../../hooks/use-tenants';
+import { useFormatters } from '../../i18n/format';
 
 /**
  * Tenant declarations, shown above the prefix mappings they constrain.
@@ -78,6 +79,7 @@ const patternError = (value: string): string | null =>
 
 const TenantsSection = (): React.JSX.Element => {
   const { tenants, isolationMode, grantSource, loading, error, setError, loadTenants, saveTenant, removeTenant } = useTenants();
+  const { formatDateTime } = useFormatters();
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -199,7 +201,7 @@ const TenantsSection = (): React.JSX.Element => {
       header: 'Last changed',
       cell: (t: Tenant) => (
         <SpaceBetween size="xxs">
-          <Box fontSize="body-s">{t.updatedAt ? new Date(t.updatedAt).toLocaleString() : '—'}</Box>
+          <Box fontSize="body-s">{t.updatedAt ? formatDateTime(new Date(t.updatedAt)) : '—'}</Box>
           <Box fontSize="body-s" color="text-body-secondary">
             {t.updatedBy ?? ''}
           </Box>

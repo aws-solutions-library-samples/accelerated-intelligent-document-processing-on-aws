@@ -20,12 +20,19 @@ import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 import PageGroupingEditor from '../PageGroupingEditor';
 import type { GroupedSection } from '../section-grouping';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const PAGES = [1, 2, 3, 4].map((id) => ({ id, imageUri: `blob:page-${id}` }));
 
@@ -51,6 +58,7 @@ const renderEditor = (overrides: Partial<React.ComponentProps<typeof PageGroupin
       onCancel={onCancel}
       {...overrides}
     />,
+    { wrapper: English },
   );
   return { onSave, onCancel, ...result };
 };

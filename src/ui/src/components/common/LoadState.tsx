@@ -7,6 +7,16 @@
 import React from 'react';
 import { Alert, Box, Button, Spinner } from '@cloudscape-design/components';
 import type { AlertProps } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
+
+const messages = defineMessages<{ retry: NoMessageValues }>({
+  retry: {
+    id: 'common.loadState.retry',
+    defaultMessage: 'Retry',
+    description:
+      'Button of the error the edit page or the document page shows when its document, or the review item, could not be read: it tries the read again.',
+  },
+});
 
 export type LoadStateValue =
   | { kind: 'loading'; text: string }
@@ -22,7 +32,17 @@ const LoadState = ({ state }: { state: LoadStateValue }): React.JSX.Element => {
   }
   const { type, header, body, retry } = state;
   return (
-    <Alert type={type} header={header} action={retry && <Button onClick={retry}>Retry</Button>}>
+    <Alert
+      type={type}
+      header={header}
+      action={
+        retry && (
+          <Button onClick={retry}>
+            <FormattedMessage {...messages.retry} />
+          </Button>
+        )
+      }
+    >
       {body}
     </Alert>
   );

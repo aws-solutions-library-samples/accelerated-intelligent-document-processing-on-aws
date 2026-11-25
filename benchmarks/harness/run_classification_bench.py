@@ -40,6 +40,10 @@ Usage:
   # Is split-then-classify cheaper on this corpus?
   ... --models nova2lite --variants page-both,split-then-classify-packet
 
+  # Label the sections with a decision model instead of the LLM (#1656):
+  ... --models nova2lite --decision-model-endpoint <GENAIIDP- function ARN> \
+      --variants page-both,split-then-classify-page,split-then-classify-page-decider
+
   ... --estimate      # print the plan (and the document count) and exit
   ... --score-only benchmarks/results/clsconf-<stamp>/runmap.json
 
@@ -128,7 +132,32 @@ VARIANTS = {
         "images": True,
         "strategy": "split_then_classify",
     },
+    # Section classification by a decision model (GitHub #1656): the model axis
+    # still names the splitting call's LLM, and each section is one choice
+    # question to the function --decision-model-endpoint names. Read against the
+    # split-then-classify cell of the same granularity, which differs from it only
+    # in who labels the sections.
+    "split-then-classify-page-decider": {
+        "granularity": "page",
+        "text": True,
+        "images": True,
+        "strategy": "split_then_classify",
+        "section_method": "decision_model",
+        "decision_model_input": "images",
+    },
+    "split-then-classify-packet-decider": {
+        "granularity": "packet",
+        "text": True,
+        "images": True,
+        "strategy": "split_then_classify",
+        "section_method": "decision_model",
+        "decision_model_input": "images",
+    },
 }
+
+
+def _uses_decision_model(variant):
+    return bool(variant) and VARIANTS[variant].get("section_method") == "decision_model"
 
 
 #: Every model call a classification config can make, under ``classification``.
@@ -175,7 +204,9 @@ def _class_assigning(cls):
     return _get(cls, *path) or {}
 
 
-def build_config(base_path, model_id, mode, top_k, variant=None):
+def build_config(
+    base_path, model_id, mode, top_k, variant=None, decision_model_endpoint=None
+):
     """Merge the test set's class config with system defaults + our overrides.
 
     Merging with the system defaults keeps the stored config self-contained (the
@@ -193,6 +224,8 @@ def build_config(base_path, model_id, mode, top_k, variant=None):
     Args:
         variant: A key of :data:`VARIANTS`, or None for the stored config's own
             settings (which is what this driver did before the axis existed).
+        decision_model_endpoint: The decision model's function ARN, written into
+            the config of a variant whose sections a decision model labels.
     """
     from idp_common.config.merge_utils import merge_config_with_defaults
     from idp_common.config.migrations import migrate_config
@@ -226,6 +259,18 @@ def build_config(base_path, model_id, mode, top_k, variant=None):
                 "text": bool(spec["text"]),
                 "images": bool(spec["images"]),
             }
+        if spec.get("section_method"):
+            section = _node(
+                classification, ("split_then_classify", "section_classification")
+            )
+            section["method"] = spec["section_method"]
+            if spec["section_method"] == "decision_model":
+                section.setdefault("decision_model", {}).update(
+                    {
+                        "endpoint": decision_model_endpoint,
+                        "input": spec.get("decision_model_input", "images"),
+                    }
+                )
     # Summarization is an unscored late step here; turning it off keeps the cost
     # figures attributable to OCR + classification + extraction.
     cfg.setdefault("summarization", {})["enabled"] = False
@@ -338,6 +383,30 @@ def variant_merge_problems(cfg, variant, mode):
                 "classification.split_then_classify.section_classification.llm.task_prompt "
                 "is empty after merge"
             )
+
+    if spec.get("section_method"):
+        section = _get(cls, "split_then_classify", "section_classification") or {}
+        if section.get("method") != spec["section_method"]:
+            problems.append(
+                f"section_classification.method is {section.get('method')!r}, "
+                f"expected {spec['section_method']!r}"
+            )
+        if spec["section_method"] == "decision_model":
+            decision = section.get("decision_model") or {}
+            if not decision.get("endpoint"):
+                problems.append(
+                    "section_classification.decision_model.endpoint is empty: pass "
+                    "--decision-model-endpoint"
+                )
+            if decision.get("input") != spec.get("decision_model_input", "images"):
+                problems.append(
+                    f"section_classification.decision_model.input is "
+                    f"{decision.get('input')!r}, expected "
+                    f"{spec.get('decision_model_input', 'images')!r}"
+                )
+        # A decision-model cell asks for no LLM confidence block: its sections are
+        # scored by the decision model's probabilities.
+        return problems
 
     problems.extend(confidence_block_problems(cls, mode))
     return problems
@@ -839,6 +908,15 @@ def main():
             "no baseline beside it measures a number rather than a difference."
         ),
     )
+    ap.add_argument(
+        "--decision-model-endpoint",
+        default=os.environ.get("DECISION_MODEL_FUNCTION_ARN", ""),
+        help=(
+            "Function ARN of the decision model the *-decider variants label "
+            "sections with (GENAIIDP- name prefix). Defaults to "
+            "$DECISION_MODEL_FUNCTION_ARN."
+        ),
+    )
     ap.add_argument("--mode", default="topk", choices=["off", "topk", "verbalized"])
     ap.add_argument("--top-k", type=int, default=3)
     ap.add_argument("--estimate", action="store_true")
@@ -872,6 +950,11 @@ def main():
     unknown_variants = [v for v in variants if v not in VARIANTS]
     if unknown_variants:
         sys.exit(f"unknown variant(s) {unknown_variants}; known: {list(VARIANTS)}")
+    if any(_uses_decision_model(v) for v in variants) and not a.decision_model_endpoint:
+        sys.exit(
+            "a *-decider variant needs --decision-model-endpoint (or "
+            "$DECISION_MODEL_FUNCTION_ARN): the function ARN of the decision model"
+        )
     if variants and "page-both" not in variants:
         # A warning, not an error: comparing two packet variants against each
         # other is a legitimate question. But a run with no baseline cannot say
@@ -919,7 +1002,12 @@ def main():
         cell_id = f"{name}-{variant}" if variant else name
         version = f"bench-clsconf-{cell_id}-{a.mode}"
         cfg = build_config(
-            TESTSETS[a.testset], MODELS[name], a.mode, a.top_k, variant=variant
+            TESTSETS[a.testset],
+            MODELS[name],
+            a.mode,
+            a.top_k,
+            variant=variant,
+            decision_model_endpoint=a.decision_model_endpoint,
         )
         if variant:
             problems = variant_merge_problems(cfg, variant, a.mode)
@@ -943,7 +1031,12 @@ def main():
         cell_id = f"{name}-{variant}" if variant else name
         version = f"bench-clsconf-{cell_id}-{a.mode}"
         cfg = build_config(
-            TESTSETS[a.testset], MODELS[name], a.mode, a.top_k, variant=variant
+            TESTSETS[a.testset],
+            MODELS[name],
+            a.mode,
+            a.top_k,
+            variant=variant,
+            decision_model_endpoint=a.decision_model_endpoint,
         )
         path = os.path.join(outdir, f"{version}.yaml")
         yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)

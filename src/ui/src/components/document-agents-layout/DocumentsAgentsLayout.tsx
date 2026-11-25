@@ -4,9 +4,11 @@ import React, { useEffect } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Container, Header, SpaceBetween, Spinner, Box } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import { submitAgentQuery, getAgentJobStatus, onAgentJobComplete } from '../../graphql/generated';
 import { useAnalyticsContext } from '../../contexts/analytics';
+import type { AnalyticsError } from '../../types/analytics';
 
 import AgentQueryInput from './AgentQueryInput';
 import AgentJobStatus from './AgentJobStatus';
@@ -17,7 +19,82 @@ const client = generateClient();
 
 const logger = new ConsoleLogger('DocumentsAgentsLayout');
 
+const messages = defineMessages<{
+  title: NoMessageValues;
+  submitting: NoMessageValues;
+  jobFailed: NoMessageValues;
+  fetchAfterCompletionFailed: NoMessageValues;
+  fetchFailed: { readonly error: string };
+  invalidNotification: NoMessageValues;
+  subscriptionError: { readonly error: string };
+  subscriptionSetupFailed: { readonly error: string };
+  submitFailed: NoMessageValues;
+  unknownError: NoMessageValues;
+}>({
+  title: {
+    id: 'agents.page.title',
+    defaultMessage: 'Agent Analysis',
+    description: 'Heading of the agents page, where the user puts a question about the documents to the selected agents.',
+  },
+  submitting: {
+    id: 'agents.page.submitting',
+    defaultMessage: 'Submitting your query...',
+    description: 'Shown under a spinner on the agents page while the question is being sent.',
+  },
+  jobFailed: {
+    id: 'agents.page.jobFailed',
+    defaultMessage: 'Job processing failed',
+    description: "Error on the agents page when the agents' job failed and the server sent no reason.",
+  },
+  fetchAfterCompletionFailed: {
+    id: 'agents.page.fetchAfterCompletionFailed',
+    defaultMessage: 'Failed to fetch job details after completion',
+    description: "Error on the agents page when the agents' job finished but its result could not be read.",
+  },
+  fetchFailed: {
+    id: 'agents.page.fetchFailed',
+    defaultMessage: 'Failed to fetch job details: {error}',
+    description:
+      "Error on the agents page when reading the finished job's result failed. {error} is the error's own text, as it arrives, or the unknown-error text.",
+  },
+  invalidNotification: {
+    id: 'agents.page.invalidNotification',
+    defaultMessage: 'Received invalid completion notification. Check console logs for details.',
+    description: "Error on the agents page when the notice that the agents' job finished could not be read.",
+  },
+  subscriptionError: {
+    id: 'agents.page.subscriptionError',
+    defaultMessage: 'Subscription error: {error}',
+    description:
+      "Error on the agents page when following the agents' job failed. {error} is the error's own text, as it arrives, or the unknown-error text.",
+  },
+  subscriptionSetupFailed: {
+    id: 'agents.page.subscriptionSetupFailed',
+    defaultMessage: 'Failed to set up job status subscription: {error}',
+    description:
+      "Error on the agents page when following the agents' job could not start. {error} is the error's own text, as it arrives, or the unknown-error text.",
+  },
+  submitFailed: {
+    id: 'agents.page.submitFailed',
+    defaultMessage: 'Failed to submit query',
+    description: 'Error on the agents page when the question could not be sent and the server sent no reason.',
+  },
+  unknownError: {
+    id: 'agents.page.unknownError',
+    defaultMessage: 'Unknown error',
+    description: "Shown in the errors of the agents page in place of an error's own text when the error has none.",
+  },
+});
+
+/** The page's error in the UI language. A thrown error without text of its own reads as the unknown-error text. */
+const errorText = (error: AnalyticsError | null, intl: IntlShape): string | null => {
+  if (error === null || typeof error === 'string') return error;
+  if ('detail' in error) return intl.formatMessage(error.message, { error: error.detail || intl.formatMessage(messages.unknownError) });
+  return intl.formatMessage(error.message);
+};
+
 const DocumentsAgentsLayout = (): React.JSX.Element => {
+  const intl = useIntl();
   const { analyticsState, updateAnalyticsState } = useAnalyticsContext();
   const { queryText, jobId, jobStatus, jobResult, agentMessages, error, isSubmitting, subscription } = analyticsState;
 
@@ -57,29 +134,27 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
                 if (job.status === 'COMPLETED') {
                   updateAnalyticsState({ jobResult: job.result as string });
                 } else if (job.status === 'FAILED') {
-                  updateAnalyticsState({ error: (job.error as string) || 'Job processing failed' });
+                  updateAnalyticsState({ error: (job.error as string) || { message: messages.jobFailed } });
                 }
               } else {
                 logger.error('Failed to fetch job details after completion notification');
-                updateAnalyticsState({ error: 'Failed to fetch job details after completion' });
+                updateAnalyticsState({ error: { message: messages.fetchAfterCompletionFailed } });
               }
             } catch (fetchError) {
               logger.error('Error fetching job details:', fetchError);
-              updateAnalyticsState({
-                error: `Failed to fetch job details: ${(fetchError as Error).message || 'Unknown error'}`,
-              });
+              updateAnalyticsState({ error: { message: messages.fetchFailed, detail: (fetchError as Error).message } });
             }
           } else {
             logger.error('Received invalid completion notification. Full response:', JSON.stringify(subscriptionData, null, 2));
             updateAnalyticsState({
-              error: 'Received invalid completion notification. Check console logs for details.',
+              error: { message: messages.invalidNotification },
             });
           }
         },
         error: (err: Record<string, unknown>) => {
           logger.error('Subscription error:', err);
           logger.error('Error details:', JSON.stringify(err, null, 2));
-          updateAnalyticsState({ error: `Subscription error: ${(err as unknown as Error).message || 'Unknown error'}` });
+          updateAnalyticsState({ error: { message: messages.subscriptionError, detail: (err as unknown as Error).message } });
         },
       });
 
@@ -87,7 +162,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
       return sub;
     } catch (err) {
       logger.error('Error setting up subscription:', err);
-      updateAnalyticsState({ error: `Failed to set up job status subscription: ${(err as Error).message || 'Unknown error'}` });
+      updateAnalyticsState({ error: { message: messages.subscriptionSetupFailed, detail: (err as Error).message } });
       return null;
     }
   };
@@ -130,7 +205,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
           if (job.status === 'COMPLETED') {
             updateAnalyticsState({ jobResult: job.result as string });
           } else if (job.status === 'FAILED') {
-            updateAnalyticsState({ error: (job.error as string) || 'Job processing failed' });
+            updateAnalyticsState({ error: (job.error as string) || { message: messages.jobFailed } });
           } else {
             // If job is still processing, subscribe to updates
             subscribeToJobCompletion(existingJobId);
@@ -196,7 +271,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
             if (polledJob.status === 'COMPLETED') {
               updateAnalyticsState({ jobResult: polledJob.result as string });
             } else if (polledJob.status === 'FAILED') {
-              updateAnalyticsState({ error: (polledJob.error as string) || 'Job processing failed' });
+              updateAnalyticsState({ error: (polledJob.error as string) || { message: messages.jobFailed } });
             }
           }
         } catch (pollErr) {
@@ -208,7 +283,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
       logger.error('Error submitting query:', err);
       logger.error('Error structure:', JSON.stringify(err, null, 2));
 
-      let errorMessage = 'Failed to submit query';
+      let errorMessage: AnalyticsError = { message: messages.submitFailed };
 
       const typedErr = err as Record<string, unknown>;
       // Extract error message from GraphQL error structure
@@ -266,7 +341,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
                 updateAnalyticsState({ jobResult: job.result as string });
                 clearInterval(intervalId);
               } else if (job.status === 'FAILED') {
-                updateAnalyticsState({ error: (job.error as string) || 'Job processing failed' });
+                updateAnalyticsState({ error: (job.error as string) || { message: messages.jobFailed } });
                 clearInterval(intervalId);
               }
             }
@@ -286,18 +361,26 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
   }, [jobId, jobStatus, updateAnalyticsState]);
 
   return (
-    <Container header={<Header variant="h2">Agent Analysis</Header>}>
+    <Container
+      header={
+        <Header variant="h2">
+          <FormattedMessage {...messages.title} />
+        </Header>
+      }
+    >
       <SpaceBetween size="l">
         <AgentQueryInput onSubmit={handleSubmitQuery} isSubmitting={isSubmitting} selectedResult={null} />
 
         {isSubmitting && (
           <Box textAlign="center" padding={{ vertical: 'l' }}>
             <Spinner size="large" />
-            <Box padding={{ top: 's' }}>Submitting your query...</Box>
+            <Box padding={{ top: 's' }}>
+              <FormattedMessage {...messages.submitting} />
+            </Box>
           </Box>
         )}
 
-        <AgentJobStatus jobId={jobId} status={jobStatus} error={error} />
+        <AgentJobStatus jobId={jobId} status={jobStatus} error={errorText(error, intl)} />
 
         {jobResult != null && <AgentResultDisplay result={jobResult as string | Record<string, unknown>} query={queryText as string} />}
 

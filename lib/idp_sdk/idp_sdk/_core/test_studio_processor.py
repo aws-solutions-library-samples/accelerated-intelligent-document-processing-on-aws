@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 import boto3
 
+from idp_sdk._core.resolver_invoke import api_resolver_stack_output
 from idp_sdk._core.stack_info import StackInfo
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
 
@@ -159,16 +160,7 @@ class TestStudioProcessor:
         Raises:
             ValueError: If neither nested stack (or the output) is found.
         """
-        try:
-            return self.stack_info.get_nested_stack_output(
-                nested_stack_pattern="apiresolver",
-                output_key=output_key,
-            )
-        except ValueError:
-            return self.stack_info.get_nested_stack_output(
-                nested_stack_pattern="appsync",
-                output_key=output_key,
-            )
+        return api_resolver_stack_output(self.stack_info, output_key)
 
     def _get_resolver_function_arn(self) -> str:
         """Get TestResultsResolverFunction ARN from nested AppSync stack outputs.

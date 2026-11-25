@@ -22,6 +22,7 @@ import {
   Modal,
 } from '@cloudscape-design/components';
 import CreateConfigVersionModal from './CreateConfigVersionModal';
+import { useFormatters } from '../../i18n/format';
 
 // Types
 interface FinetuningJob {
@@ -115,6 +116,7 @@ const getStatusIndicatorType = (status: string): 'success' | 'error' | 'in-progr
 const FinetuningJobDetail = (): React.JSX.Element => {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
+  const { formatDateTime } = useFormatters();
   const [job, setJob] = useState<FinetuningJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -236,7 +238,7 @@ const FinetuningJobDetail = (): React.JSX.Element => {
   // Format date
   const formatDate = (dateString?: string) => {
     if (!dateString) return '-';
-    return new Date(dateString).toLocaleString();
+    return formatDateTime(new Date(dateString));
   };
 
   // Get model display name

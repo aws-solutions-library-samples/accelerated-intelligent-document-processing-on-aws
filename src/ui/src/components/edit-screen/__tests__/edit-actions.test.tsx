@@ -3,26 +3,41 @@
 
 /**
  * The edit screen's action bar and title. What has to hold: the bar is one row, Edit |
- * View (where the mode offers it), the Reports menu (History, Summary, Processing
- * Report), the More Actions menu (Edit Page Grouping, Use As Evaluation Baseline), then Skip,
+ * View (where the mode offers it), the Reports menu (History, Summary, Policy Rule
+ * Validation Summary, Processing Report), the More Actions menu (Edit Page Grouping, Use As Evaluation Baseline), then Skip,
  * Cancel, Save and Process Changes, the primary action, last; a button that does not
  * apply is left out, while a menu item the mode offers but that does not apply now is
  * disabled with its reason; Claim mode shows the view switch, Reports and Claim only;
  * while an action runs every button and menu is disabled; each button and item reports
- * its own action; and the title reads "<document> (<status>)" in plain text over the
- * object key.
+ * its own action; the Policy Rule Validation Summary opens the document's policy report
+ * in the dialog the document page uses; and the title reads "<document> (<status>)" in
+ * plain text over the object key.
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { fireEvent, render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+// The report dialog's content reads the report from the server; here it shows what it was given.
+vi.mock('../../document-viewer/MarkdownViewer', () => ({
+  MarkdownReport: ({ reportUri, documentId, report }: { reportUri: string; documentId: string; report: string }) => (
+    <div data-testid="markdown-report">{[report, documentId, reportUri].join('|')}</div>
+  ),
+}));
+
 import EditScreen, { CANCEL_ACCESSIBLE_NAME } from '../EditScreen';
 import type { EditActionsProps } from '../EditScreen';
 import { barButtonLabels, barButtons, buttonLabel, chooseMenuItem, findMenu, menuItems, menuNames } from './edit-bar';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | undefined = undefined) => {
   const onAction = vi.fn();
@@ -31,6 +46,7 @@ const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | 
     <EditScreen title="doc.pdf" status={status} objectKey="in/doc.pdf" actions={{ busy: null, onAction, onShowHistory, ...actions }}>
       <div />
     </EditScreen>,
+    { wrapper: English },
   );
   return { onAction, onShowHistory };
 };
@@ -94,6 +110,7 @@ describe('the edit screen action bar', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({
       disabled: true,
@@ -166,13 +183,136 @@ describe('the edit screen action bar', () => {
 
   it.each([
     ['Skip', 'skip'],
+    ['Reject', 'reject'],
     ['Cancel', 'cancel'],
     ['Save', 'save'],
     ['Process Changes', 'process'],
   ])('%s reports %s', (name, action) => {
-    const { onAction } = renderScreen(ALL);
+    const { onAction } = renderScreen({ ...ALL, showReject: true });
     fireEvent.click(button(name));
     expect(onAction).toHaveBeenCalledWith(action);
+  });
+
+  it('offers Reject only where the mode asks for it, between Skip and Cancel', () => {
+    renderScreen(ALL);
+    expect(barButtonLabels()).not.toContain('Reject');
+
+    document.body.innerHTML = '';
+    renderScreen({ ...ALL, showReject: true });
+    expect(barButtonLabels()).toEqual(['Skip', 'Reject', 'Cancel', 'Save', 'Process Changes']);
+  });
+
+  it('says what Reject does on hover, and why it is unavailable when it is', () => {
+    renderScreen({ ...ALL, showReject: true });
+    expect(isDisabled(button('Reject'))).toBe(false);
+    expect(button('Reject').closest('[title]')?.getAttribute('title')).toBe(
+      'End the review and reject this document. A reason is asked for first.',
+    );
+
+    document.body.innerHTML = '';
+    renderScreen({ ...ALL, showReject: true, rejectDisabledReason: 'This queue lists no reject reasons' });
+    expect(isDisabled(button('Reject'))).toBe(true);
+    const reject = createWrapper(document.body)
+      .findAllButtons()
+      .find((b) => buttonLabel(b.getElement()) === 'Reject')!;
+    reject.focus();
+    expect(reject.findDisabledReason()?.getElement().textContent).toBe('This queue lists no reject reasons');
+    expect(button('Reject').closest('[title]')).toBeNull();
+  });
+
+  it('shows Reject working while a document is rejected, and Process Changes while one is sent back', () => {
+    const loading = (name: string) =>
+      createWrapper(document.body)
+        .findAllButtons()
+        .find((b) => buttonLabel(b.getElement()) === name)!
+        .findLoadingIndicator() !== null;
+
+    renderScreen({ ...ALL, showReject: true, busy: 'reject' });
+    expect([loading('Reject'), loading('Process Changes'), loading('Skip')]).toEqual([true, false, false]);
+    for (const b of barButtons()) expect(isDisabled(b), buttonLabel(b) ?? '').toBe(true);
+
+    document.body.innerHTML = '';
+    renderScreen({ ...ALL, showReject: true, busy: 'send-back' });
+    expect([loading('Reject'), loading('Process Changes')]).toEqual([false, true]);
+  });
+});
+
+describe('the Policy Rule Validation Summary in Reports', () => {
+  const POLICY_REPORT = 's3://out/in/doc.pdf/rule_validation/consolidated/consolidated_summary.md';
+  const renderWithReports = (props: Partial<React.ComponentProps<typeof EditScreen>>) =>
+    render(
+      <EditScreen
+        title="doc.pdf"
+        objectKey="in/doc.pdf"
+        summaryUnavailableReason="Available once the review is complete"
+        reportSectionData={{}}
+        actions={{ busy: null, onAction: vi.fn(), onShowHistory: vi.fn() }}
+        {...props}
+      >
+        <div />
+      </EditScreen>,
+      { wrapper: English },
+    );
+  const item = () => menuItems('Reports').find((i) => i.text === 'Policy Rule Validation Summary');
+  const reportModal = () =>
+    createWrapper(document.body)
+      .findAllModals()
+      .find((m) => m.isVisible() && m.findHeader().getElement().textContent === 'Policy Rule Validation Summary');
+
+  it('is offered after Summary and before Processing Report when the document has the report', () => {
+    renderWithReports({ ruleValidationReportUri: POLICY_REPORT });
+
+    expect(menuItems('Reports')).toEqual([
+      { text: 'History', disabled: false, disabledReason: null },
+      { text: 'Summary', disabled: true, disabledReason: 'Available once the review is complete' },
+      { text: 'Policy Rule Validation Summary', disabled: false, disabledReason: null },
+      { text: 'Processing Report', disabled: false, disabledReason: null },
+    ]);
+    // The label the menu shows is the one the document page uses.
+    const menu = findMenu('Reports')!;
+    menu.openDropdown();
+    expect(menu.findItemById('rule-validation')!.getElement().textContent).toBe('Policy Rule Validation Summary');
+  });
+
+  it("opens the document's policy report in the report dialog, and closes again", () => {
+    renderWithReports({ ruleValidationReportUri: POLICY_REPORT });
+    // Mounted only while open.
+    expect(reportModal()).toBeUndefined();
+
+    chooseMenuItem('Reports', 'Policy Rule Validation Summary');
+
+    // The dialog is titled as the menu item is; its content is the document's policy rule validation report.
+    const modal = reportModal()!;
+    expect(modal.findContent().getElement().querySelector('[data-testid="markdown-report"]')!.textContent).toBe(
+      `ruleValidation|in/doc.pdf|${POLICY_REPORT}`,
+    );
+    modal.findDismissButton().click();
+    expect(reportModal()).toBeUndefined();
+  });
+
+  it('stays in the menu, disabled with the reason, for a document with no policy report', () => {
+    renderWithReports({ ruleValidationUnavailableReason: 'This document has no policy rule validation summary' });
+
+    expect(item()).toEqual({
+      text: 'Policy Rule Validation Summary',
+      disabled: true,
+      disabledReason: 'This document has no policy rule validation summary',
+    });
+  });
+
+  it('is left out where the mode offers no policy report', () => {
+    renderWithReports({});
+
+    expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
+  });
+
+  it('is disabled with the rest of the menu while an action runs', () => {
+    renderWithReports({
+      ruleValidationReportUri: POLICY_REPORT,
+      actions: { busy: 'save', onAction: vi.fn(), onShowHistory: vi.fn() },
+    });
+
+    expect(isDisabled(findMenu('Reports')!.findNativeButton().getElement())).toBe(true);
   });
 });
 

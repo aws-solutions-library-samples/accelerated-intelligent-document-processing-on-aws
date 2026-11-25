@@ -109,7 +109,7 @@ const messages = defineMessages<{
   },
   headerSelected: {
     id: 'reviewBulk.bulkSkipModal.headerSelected',
-    defaultMessage: 'Skip All Reviews ({count} selected)',
+    defaultMessage: 'Skip All Reviews ({count, plural, one {# selected} other {# selected}})',
     description:
       'Title of the bulk Skip All Reviews dialog for selected documents. {count} is the number of selected documents it applies to.',
   },

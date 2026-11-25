@@ -13,11 +13,11 @@ causes; or ``States.Timeout`` for a state-level timeout). None of those is trans
 the work is deterministic and CPU/IO-bound, so attempt two takes the same wall clock and
 ends the same way. Sharing the transient retrier — 8 attempts from 10 s at 2.5x — spent
 ~5.2 hours of a concurrency slot per document before failing. ``EvaluationStep`` was
-given a dedicated single-attempt retrier for exactly this; the other eleven Lambda tasks
+given a dedicated single-attempt retrier for exactly this; every other Lambda task
 kept the shared ladder for another release because the fix was written as a list of
 states rather than as a property of the file.
 
-So these tests **enumerate from the definition** rather than naming states. A twelfth
+So these tests **enumerate from the definition** rather than naming states. A
 Lambda task added tomorrow with a timeout code on an 8-attempt ladder fails
 ``test_timeout_retrier_is_single_attempt`` without anyone editing this file — which is
 the only version of this gate worth having.
@@ -31,12 +31,12 @@ faults DO succeed on retry and must keep their ladders.
 ⚠️ ``test_transient_ladder_is_not_weakened`` therefore establishes a **new repo-wide
 requirement**, and says so rather than smuggling it in: every Lambda task state in
 ``workflow.asl.json`` must retry a throttling / service error at least 3 times, so a
-state added later with no ``Retry`` block fails. All 24 current states already comply.
+state added later with no ``Retry`` block fails. Every current state complies.
 The reasoning for keeping it repo-wide instead of narrowing it to the states #917
 touched is in that test's own docstring, and the requirement is written up for authors
 under "Step Functions Retry Configuration" in ``docs/configuration.md``.
 
-**#918 — a Catch that discards the envelope.** ``RecordEvaluationFailure`` caught with
+**#918 — a Catch that discards the envelope.** ``RecordEvaluationFailureStep`` caught with
 ``ResultPath: null`` and routed to ``PostprocessingHook``, whose ``Parameters`` read
 ``$.document``. ``ResultPath: null`` means "output is the input unchanged", and the input
 on that path is the *bare document dict* — ``$`` IS the document there, which is why the
@@ -67,11 +67,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
+from state_input_shapes import Shape, analyze, param_keys
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ASL_PATH = REPO_ROOT / "patterns/unified/statemachine/workflow.asl.json"
@@ -150,18 +150,17 @@ LAMBDA_TASKS = _task_names(_DEFINITION)
 def test_enumeration_is_not_vacuous(definition):
     """A parsing bug must not turn the gates below into no-ops.
 
-    The floor is 22 against 24 actually found today (55 states in the definition:
-    24 Task, 16 Pass, 7 Choice, 5 Fail, 3 Map, no Parallel). Two states of
-    headroom, deliberately: retiring a genuinely obsolete task should not require
-    editing this number, and a floor pinned exactly at the current count turns
-    every legitimate deletion into a spurious failure. It is still far above what
-    the failure this guards would leave — losing a nesting level drops the count
-    to 16, losing only ``ProcessSections`` drops it to 17 — so 22 catches every
-    way the walk can silently stop descending.
+    The floor is below what the definition holds, deliberately: retiring a
+    genuinely obsolete task should not require editing this number, and a floor
+    pinned exactly at the current count turns every legitimate deletion into a
+    spurious failure. It is still above what the failure this guards would leave
+    — a walk that loses a nesting level, or loses only ``ProcessSections``, finds
+    fewer tasks than the floor — so it catches every way the walk can silently
+    stop descending.
 
     The named states pin the three depths independently, because a count alone
     cannot: ``ExtractionShardMap/ShardExtractionStep`` is the only task two Map
-    levels deep, so a walk that recurses exactly once would still find 23 of 24
+    levels deep, so a walk that recurses exactly once would miss only that one
     and clear the floor while quietly exempting it.
     """
     tasks = _lambda_tasks(definition)
@@ -303,13 +302,13 @@ def test_transient_ladder_is_not_weakened(definition, task):
     this PR onward **every** Lambda task state in ``workflow.asl.json`` must retry
     at least one of ``ThrottlingException``, ``Lambda.TooManyRequestsException``,
     ``Lambda.ServiceException`` or ``ServiceUnavailableException``, at least 3
-    times. All 24 states satisfy it today; a 25th added tomorrow with no ``Retry``
+    times. Every state satisfies it today; one added tomorrow with no ``Retry``
     block fails this test.
 
     That is deliberate rather than incidental, and it was kept repo-wide rather
     than softened to the states #917 touched. Softening it to a name list is the
     exact defect this file exists to prevent: #917 shipped as a list of states,
-    which is why eleven of the twelve then-existing tasks kept the wrong ladder
+    which is why every then-existing task but one kept the wrong ladder
     for a release. A new Lambda task with no transient retrier is also a real
     defect in its own right — one Bedrock throttle and the document is lost — so
     there is no state for which the requirement is wrong.
@@ -369,222 +368,15 @@ def test_no_wildcard_retriers(definition):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Shape:
-    """What is provably known about a state input's TOP-LEVEL keys.
-
-    ``present`` are keys that are certainly there; ``absent`` keys that are certainly
-    not; ``closed`` means ``present`` is the complete set (the object was built by a
-    ``Parameters`` or ``ItemSelector`` block, so its keys are exactly those). Anything
-    else is unknown — a Lambda's return value, for instance — and unknown never
-    produces a finding.
-    """
-
-    present: frozenset[str] = frozenset()
-    absent: frozenset[str] = frozenset()
-    closed: bool = False
-
-    def lacks(self, key: str) -> bool:
-        return key in self.absent or (self.closed and key not in self.present)
-
-    def with_key(self, key: str) -> "Shape":
-        return Shape(self.present | {key}, self.absent - {key}, self.closed)
-
-
-UNKNOWN = Shape()
-
-
-def _first_segment(path: str) -> str | None:
-    """``$.HookResults.postOcr.error`` -> ``HookResults``; ``$``/``$$...`` -> None."""
-    if not isinstance(path, str) or not path.startswith("$.") or path.startswith("$$"):
-        return None
-    return path[2:].split(".")[0].split("[")[0] or None
-
-
-def _leaf(path: str) -> str:
-    return str(path).split(".")[-1].split("[")[0]
-
-
-def _shape_of_path(path: str) -> Shape:
-    """The shape of the value a path selects, where that is knowable.
-
-    The only inference: a ``...document`` path yields a serialized document, and a
-    serialized document has no ``document`` key (asserted separately below). That is
-    what makes an alternating ``{document: ...}`` / bare-document envelope checkable.
-    """
-    return Shape(absent=frozenset({"document"})) if _leaf(path) == "document" else UNKNOWN
-
-
-def _param_keys(block: dict[str, Any]) -> frozenset[str]:
-    return frozenset(k[:-2] if k.endswith(".$") else k for k in block)
-
-
-def _referenced_keys(state: dict[str, Any]) -> set[str]:
-    """Top-level input keys this state reads, from every JSONPath it evaluates."""
-    keys: set[str] = set()
-
-    def scan(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "Variable" and isinstance(value, str):
-                    keys.add(_first_segment(value) or "")
-                scan(value)
-        elif isinstance(node, list):
-            for item in node:
-                scan(item)
-        elif isinstance(node, str) and node.startswith("$."):
-            keys.add(_first_segment(node) or "")
-
-    # ``Parameters`` / ``ItemSelector`` / ``Choices`` resolve against the EFFECTIVE
-    # input, i.e. after ``InputPath`` has narrowed it. No state in this definition
-    # sets both, and rather than model the narrowing, a state that does is skipped:
-    # a checker that guesses here would report keys that do exist.
-    if "InputPath" not in state:
-        for field in ("Parameters", "ItemSelector", "Choices"):
-            if field in state:
-                scan(state[field])
-    for field in ("InputPath", "ItemsPath"):
-        value = state.get(field)
-        if isinstance(value, str):
-            keys.add(_first_segment(value) or "")
-    # A ``Fail`` state's ``CausePath``/``ErrorPath`` are evaluated against its input
-    # too, and an unresolvable one there is the worst place for it: the state exists
-    # to report a failure, and Step Functions replaces the reported error with
-    # ``States.Runtime``, masking whatever actually broke. They hold either a bare
-    # JSONPath or an intrinsic-function call, so the paths are matched by pattern
-    # rather than by parsing the intrinsic.
-    #
-    # The ``(?<!\$)`` is load-bearing. Without it the pattern matches the ``$.Xxx``
-    # SUBSTRING inside a ``$$.Xxx`` context-object reference — ``$$.Execution.Name``
-    # would be read as a reference to an input key ``Execution`` — so a Fail state
-    # naming the execution in its cause, which is a natural thing to do, would be
-    # reported as reading a key nothing produces. It also makes
-    # ``_first_segment``'s own ``$$`` guard reachable rather than dead.
-    for field in ("CausePath", "ErrorPath"):
-        value = state.get(field)
-        if isinstance(value, str):
-            for match in re.finditer(r"(?<!\$)\$\.[A-Za-z0-9_\[\]]+", value):
-                keys.add(_first_segment(match.group(0)) or "")
-    # ``OutputPath`` is deliberately absent: it filters the state's RESULT (after
-    # ResultPath), not its input, so ``"OutputPath": "$.Payload"`` refers to a
-    # Lambda's return envelope rather than to anything the input must carry.
-    keys.discard("")
-    return keys
-
-
-def _result_shape(state: dict[str, Any], incoming: Shape) -> Shape:
-    """The shape of the state's RESULT, before ResultPath places it."""
-    kind = state.get("Type")
-    if kind == "Pass":
-        if "Parameters" in state:
-            return Shape(_param_keys(state["Parameters"]), closed=True)
-        if "Result" in state:
-            result = state["Result"]
-            return Shape(frozenset(result), closed=True) if isinstance(result, dict) else UNKNOWN
-        if "InputPath" in state:
-            return _shape_of_path(state["InputPath"])
-        return incoming
-    # A Task's or Map's result is whatever the Lambda / iteration returns: unknown.
-    return UNKNOWN
-
-
-def _output_shape(state: dict[str, Any], incoming: Shape) -> Shape:
-    """The shape a state passes to its ``Next``."""
-    if state.get("Type") in ("Choice", "Wait", "Succeed", "Fail"):
-        return incoming
-    shape = _result_shape(state, incoming)
-    # ResultPath is applied to the RAW input, so InputPath does not narrow it.
-    result_path = state.get("ResultPath", "$")
-    if result_path is None:
-        shape = incoming
-    elif result_path != "$":
-        segment = _first_segment(result_path)
-        shape = incoming.with_key(segment) if segment else incoming
-    output_path = state.get("OutputPath", "$")
-    if output_path != "$":
-        shape = _shape_of_path(output_path)
-    return shape
-
-
-def _catch_shape(catcher: dict[str, Any], incoming: Shape) -> Shape:
-    """The shape a Catch passes to its target: the raw input plus the error."""
-    result_path = catcher.get("ResultPath", "$")
-    if result_path is None:
-        return incoming
-    if result_path == "$":
-        return UNKNOWN  # the error object replaces the input entirely
-    segment = _first_segment(result_path)
-    return incoming.with_key(segment) if segment else incoming
-
-
-def _edges(state: dict[str, Any]) -> list[tuple[str, str, Shape | None]]:
-    """``(kind, target, override_shape)`` for every outgoing edge."""
-    out: list[tuple[str, str, Shape | None]] = []
-    for choice in state.get("Choices", []):
-        if "Next" in choice:
-            out.append(("choice", choice["Next"], None))
-    for field in ("Default", "Next"):
-        if field in state:
-            out.append((field.lower(), state[field], None))
-    return out
-
-
-def _analyze(states: dict[str, Any], seed: Shape, scope: str, findings: list[str]) -> None:
-    """Propagate shapes to a fixed point, checking every edge as it is taken."""
-    start = states["StartAt"] if "StartAt" in states else None
-    scope_states: dict[str, Any] = states["States"] if "States" in states else states
-    arrivals: dict[str, set[Shape]] = {start: {seed}} if start else {}
-    work = [(start, seed)] if start else []
-    seen: set[tuple[str, Shape]] = set(work)
-    while work:
-        name, incoming = work.pop()
-        state = scope_states[name]
-        # 1. does this state's own input satisfy what it reads?
-        for key in _referenced_keys(state):
-            if incoming.lacks(key):
-                findings.append(
-                    f"{scope}{name} reads $.{key}, which is provably absent on an "
-                    f"incoming path (shape: present={sorted(incoming.present)} "
-                    f"absent={sorted(incoming.absent)} closed={incoming.closed})"
-                )
-        # 2. nested Map / Parallel scopes, seeded from their ItemSelector
-        nested_seed = (
-            Shape(_param_keys(state["ItemSelector"]), closed=True)
-            if "ItemSelector" in state
-            else incoming
-        )
-        for nested in ("ItemProcessor", "Iterator"):
-            if nested in state:
-                _analyze(state[nested], nested_seed, f"{scope}{name}/", findings)
-        for branch in state.get("Branches", []):
-            _analyze(branch, nested_seed, f"{scope}{name}/", findings)
-        # 3. successors
-        successors: list[tuple[str, Shape]] = [
-            (target, _output_shape(state, incoming)) for _, target, _ in _edges(state)
-        ]
-        for catcher in state.get("Catch", []):
-            successors.append((catcher["Next"], _catch_shape(catcher, incoming)))
-        for target, shape in successors:
-            arrivals.setdefault(target, set()).add(shape)
-            if (target, shape) not in seen:
-                seen.add((target, shape))
-                work.append((target, shape))
-    # 4. the workflow's output is read as $.document by the tracker
-    for name, state in scope_states.items():
-        if scope == "" and state.get("End") and state.get("Type") == "Pass":
-            for shape in arrivals.get(name, set()):
-                if shape.lacks("document"):
-                    findings.append(
-                        f"{name} ends the workflow with no $.document on one path "
-                        f"(present={sorted(shape.present)})"
-                    )
+# The shape analysis lives in ``state_input_shapes.py``, which the run-plan gate in
+# ``patterns/unified/tests/test_state_machine_run_plan.py`` uses too.
 
 
 def test_state_input_keys_are_producible(definition):
     """Every state's referenced top-level keys survive the path that reaches it.
 
     This is the general form of #918: it does not know the name
-    ``RecordEvaluationFailure``, only that a Catch with ``ResultPath: null`` hands its
+    ``RecordEvaluationFailureStep``, only that a Catch with ``ResultPath: null`` hands its
     target the input it received, and that a bare document has no ``document`` key.
 
     ⚠️ It also covers a ``Fail`` state's ``CausePath``/``ErrorPath``, and that half
@@ -599,13 +391,13 @@ def test_state_input_keys_are_producible(definition):
     """
     findings: list[str] = []
     # The execution starts as {"document": ...}; more keys may be present, so open.
-    _analyze(definition, Shape(frozenset({"document"})), "", findings)
+    analyze(definition, Shape(frozenset({"document"})), "", findings)
     assert not findings, "unsatisfiable input paths:\n  " + "\n  ".join(findings)
 
 
 def test_record_evaluation_failure_catch_preserves_the_document(definition):
     """The specific #918 regression, named, so the fix cannot be quietly reverted."""
-    state = definition["States"]["RecordEvaluationFailure"]
+    state = definition["States"]["RecordEvaluationFailureStep"]
     catchers = state["Catch"]
     assert len(catchers) == 1
     catcher = catchers[0]
@@ -618,7 +410,7 @@ def test_record_evaluation_failure_catch_preserves_the_document(definition):
         f"ResultPath {result_path!r} clobbers the document instead of parking the error"
     )
     target = definition["States"][catcher["Next"]]
-    assert _param_keys(target.get("Parameters", {})) == {"document"}, (
+    assert param_keys(target.get("Parameters", {})) == {"document"}, (
         f"{catcher['Next']} must rebuild the {{document: ...}} envelope that "
         "PostprocessingHook and the workflow tracker read"
     )
@@ -627,12 +419,12 @@ def test_record_evaluation_failure_catch_preserves_the_document(definition):
     timeout_retriers = [
         r for r in state["Retry"] if frozenset(r["ErrorEquals"]) & TIMEOUT_ERRORS
     ]
-    assert timeout_retriers, "RecordEvaluationFailure does not name its timeout codes"
+    assert timeout_retriers, "RecordEvaluationFailureStep does not name its timeout codes"
     assert all(r["MaxAttempts"] <= 1 for r in timeout_retriers)
 
 
 def test_a_serialized_document_has_no_document_key():
-    """Corroborates the one inference ``_shape_of_path`` makes.
+    """Corroborates the one inference ``shape_of_path`` makes.
 
     Skipped rather than failed when ``idp_common`` is not importable: the shape check
     above is a JSON-only gate and must not depend on the library being installed.

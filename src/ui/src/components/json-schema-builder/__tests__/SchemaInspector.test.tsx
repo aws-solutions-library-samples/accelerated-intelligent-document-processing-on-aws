@@ -10,9 +10,11 @@
  * existing values, and overwrites invalid values with "llm".
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import type { ComponentProps } from 'react';
+import { IntlProvider } from 'react-intl';
 import SchemaInspector from '../SchemaInspector';
 import {
   X_AWS_IDP_VALIDATION_ENGINE,
@@ -521,6 +523,24 @@ describe('SchemaInspector "Records per section"', () => {
   it('is not rendered for a policy/rule class', () => {
     render(<SchemaInspector selectedClass={docClass()} onUpdate={vi.fn()} isRuleSchema={true} />);
     expect(screen.queryByText('Records per section')).not.toBeInTheDocument();
+  });
+
+  it('shows the Policy Discovery upload record of a policy class that has one (#608)', () => {
+    const uploads = [
+      { uploadId: 'u1', document: 'ch1.pdf', savedAt: '2026-11-20T10:00:00+00:00', mode: 'append', rules: ['limit'], superseded: [] },
+    ];
+    render(
+      <IntlProvider locale="en" defaultLocale="en">
+        <SchemaInspector selectedClass={docClass({ 'x-aws-idp-policy-uploads': uploads })} onUpdate={vi.fn()} isRuleSchema={true} />
+      </IntlProvider>,
+    );
+    expect(screen.getByText('Policy Discovery uploads')).toBeInTheDocument();
+    expect(screen.getByText('ch1.pdf')).toBeInTheDocument();
+  });
+
+  it('shows no upload record for a document class, even one carrying the key', () => {
+    render(<SchemaInspector selectedClass={docClass({ 'x-aws-idp-policy-uploads': [{ rules: ['x'] }] })} onUpdate={vi.fn()} />);
+    expect(screen.queryByText('Policy Discovery uploads')).not.toBeInTheDocument();
   });
 });
 

@@ -16,6 +16,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { stripPromptCommentsInConfig } from './promptComments';
+import { useFormatters } from '../../i18n/format';
 import {
   Box,
   SpaceBetween,
@@ -245,10 +246,14 @@ export function applyModalityToPrompt(prompt: string, modality: Record<string, u
     if (on && !present) {
       out = `${out.replace(/\s+$/, '')}\n\n<${element}>\n${placeholder}\n</${element}>\n`;
     } else if (!on && present) {
-      // Takes the wrapping element with it when that element held nothing else,
-      // so an empty tag pair announcing a switched-off modality is not left in.
-      const wrapped = new RegExp(`[ \\t]*<${element}>\\s*${placeholder.replace(/[{}]/g, '\\$&')}\\s*</${element}>[ \\t]*\\n?`, 'i');
-      out = wrapped.test(out) ? out.replace(wrapped, '') : out.split(placeholder).join('');
+      // Removes every occurrence, as `strip_placeholder` does: each wrapped one
+      // with its element when that element held nothing else (so an empty tag pair
+      // announcing a switched-off modality is not left in), then any bare ones.
+      const wrapped = new RegExp(
+        `[ \\t]*<${element}>\\s*${placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*</${element}>[ \\t]*\\n?`,
+        'gi',
+      );
+      out = out.replace(wrapped, '').split(placeholder).join('');
     }
   }
   return out;
@@ -1063,6 +1068,7 @@ const PromptStats = ({
   toolSpec: string;
   model: string;
 }): React.JSX.Element => {
+  const { formatNumber } = useFormatters();
   const systemTokens = estimateTokens(systemPrompt);
   const taskTokens = estimateTokens(taskPrompt);
   const toolTokens = estimateTokens(toolSpec);
@@ -1076,21 +1082,21 @@ const PromptStats = ({
       </div>
       <div className="prompt-stat-item">
         <Badge color="grey">System</Badge>
-        <span>~{systemTokens.toLocaleString()} tokens</span>
+        <span>~{formatNumber(systemTokens)} tokens</span>
       </div>
       <div className="prompt-stat-item">
         <Badge color="grey">Task</Badge>
-        <span>~{taskTokens.toLocaleString()} tokens</span>
+        <span>~{formatNumber(taskTokens)} tokens</span>
       </div>
       {toolTokens > 0 && (
         <div className="prompt-stat-item">
           <Badge color="grey">Tool schema</Badge>
-          <span>~{toolTokens.toLocaleString()} tokens</span>
+          <span>~{formatNumber(toolTokens)} tokens</span>
         </div>
       )}
       <div className="prompt-stat-item">
         <Badge color="green">Total (est.)</Badge>
-        <span>~{totalTokens.toLocaleString()} tokens</span>
+        <span>~{formatNumber(totalTokens)} tokens</span>
       </div>
       <div className="prompt-stat-item" style={{ marginLeft: 'auto', fontSize: '12px', color: '#888' }}>
         Covers the system prompt, task prompt{toolTokens > 0 ? ' and tool schema' : ''}. Excludes document text and page images, few-shot
@@ -1103,6 +1109,7 @@ const PromptStats = ({
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element => {
+  const { formatNumber } = useFormatters();
   const [selectedStep, setSelectedStep] = useState<StepName>('classification');
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
 
@@ -1501,7 +1508,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         tabs={[
           {
             id: 'task',
-            label: `Task Prompt (~${estimateTokens(renderedTaskPrompt).toLocaleString()} tokens)`,
+            label: `Task Prompt (~${formatNumber(estimateTokens(renderedTaskPrompt))} tokens)`,
             content: (
               <SpaceBetween size="s">
                 <Box float="right">
@@ -1519,7 +1526,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
           },
           {
             id: 'system',
-            label: `System Prompt (~${estimateTokens(renderedSystemPrompt).toLocaleString()} tokens)`,
+            label: `System Prompt (~${formatNumber(estimateTokens(renderedSystemPrompt))} tokens)`,
             content: (
               <SpaceBetween size="s">
                 <Box float="right">
@@ -1551,7 +1558,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             ? [
                 {
                   id: 'tool-schema',
-                  label: `Tool Schema (~${estimateTokens(toolSpecWire).toLocaleString()} tokens)`,
+                  label: `Tool Schema (~${formatNumber(estimateTokens(toolSpecWire))} tokens)`,
                   content: (
                     <SpaceBetween size="s">
                       <Box float="right">

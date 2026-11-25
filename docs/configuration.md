@@ -40,6 +40,8 @@ Key capabilities:
 - **Track** which profile (and revision) was used for each processed document and test run
 - **Select** a specific profile when uploading documents, running tests, or using the CLI (`--config-profile`, with `--config-revision` to pin a revision)
 
+A pinned revision is filled from the current `default` profile exactly as the profile itself is: every setting the revision holds is used as saved (an empty one included), and a setting it lacks, such as one added by a later release, takes `default`'s value. The stored revision is not changed. See [Selecting a revision for processing or testing](configuration-profiles.md#selecting-a-revision-for-processing-or-testing).
+
 #### Managed Configuration Profiles
 
 The stack automatically deploys **managed configuration profiles** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
@@ -168,9 +170,10 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape` |
+| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape`; its default prompts are files under `prompts/classification/` ([Default prompts](./classification.md#default-prompts)) |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
+| `base-routing.yaml` | Review Routing: the routing table and its built-in routing rules (see [Review Routing](./review-routing.md)) |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
 | `pattern-1.yaml` / `pattern-2.yaml` | which of the above compose for BDA vs Pipeline mode |
 
@@ -226,9 +229,11 @@ Two places to look for it:
 
 - **Before you upload.** `idp-cli config-validate --config-file <file>` lists them
   as warnings, with the path. This is the cheap moment — the file is in front of
-  you. Note that `idp-cli config-upload` does **not** print them: it checks only
-  whether the configuration is valid, and an ignored key does not make it invalid.
-  `--strict` turns a **top-level** extra into a non-zero exit; a nested one is
+  you. `idp-cli config-upload` prints the same warnings under a `Warnings:`
+  heading and still stores the configuration, because an ignored key does not make
+  it invalid; the SDK's `config.upload()` returns them in
+  `ConfigUploadResult.warnings`. See [config-upload](./idp-cli.md#config-upload).
+  `config-validate --strict` turns a **top-level** extra into a non-zero exit; a nested one is
   reported but does not fail, so adding this flag to a pipeline cannot break a
   configuration that passes today.
 - **On load, in CloudWatch.** The same finding appears at `WARNING` from the Lambda
@@ -449,6 +454,14 @@ summarization:
 - No LLM API calls or S3 operations are performed
 - Document processing continues to completion
 
+**When a summary cannot be produced:** if Bedrock refuses the prompt as too long
+for the summarization model's input window, or Bedrock's content filter withholds
+the model's reply, the document still completes, with its extraction results intact.
+The affected summary (one section's, or the whole document's when it has no
+sections) is replaced by a *Summary Unavailable* note saying which of the two
+happened; the other sections are summarized normally. Any other summarization model
+error fails the document.
+
 **Note:** Prior to v0.4.0, this feature was controlled by the `IsSummarizationEnabled` CloudFormation parameter. The configuration-based approach provides runtime control without requiring stack redeployment.
 
 ## Confidence (Assessment) Configuration
@@ -596,7 +609,7 @@ For detailed information, see [Extraction & Confidence](extraction-and-confidenc
 The [Inbox](web-ui.md#inbox) keeps each user's messages for a limited time and up to
 a per-user cap. Both are configuration settings under `hitl.notifications`, shown in
 the Web UI configuration editor as **Inbox messages** inside the
-**Human-in-the-Loop (HITL) Review (Optional)** section:
+**Review Routing (Optional)** section of **Processing Settings**:
 
 ```yaml
 hitl:
@@ -619,7 +632,7 @@ How the settings apply:
 - They apply to messages written after the change. Existing messages keep the
   expiry they were written with, and the cap is enforced the next time a message is
   written for that user.
-- They apply whether or not `hitl.enabled` is set.
+- They apply whether or not Review Routing (`hitl.enabled`) is on.
 - If the configuration cannot be read, the defaults apply.
 
 For how platform components post messages, see the
@@ -630,7 +643,7 @@ For how platform components post messages, see the
 [Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
 once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
 Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
-limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+limit** in the **Review Routing (Optional)** section of **Processing Settings**:
 
 ```yaml
 hitl:
@@ -642,8 +655,72 @@ hitl:
 | `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
 
 Like the Inbox settings, it is read from the **active** configuration profile, cached
-for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
-the default if the configuration cannot be read.
+for about 60 seconds, applies whether or not Review Routing (`hitl.enabled`) is on,
+and falls back to the default if the configuration cannot be read.
+
+## Routing rules
+
+[Review Routing](./review-routing.md) decides, after policy rule validation, whether
+a processed document is reviewed and in which review queue. A profile configures it
+in two places:
+
+| Section | In the Web UI | Holds |
+|---|---|---|
+| `hitl` | **Processing Settings → Review Routing (Optional)** | The **Review Routing** switch (`hitl.enabled`), the confidence threshold and **Review missing required fields**, which the built-in routing rules read, and the Inbox and bulk-skip settings above |
+| `routing` | The **Routing Rules** tab (Admins only) | The routing table: the routing rules, the default outcome and the placement limit |
+
+In **Processing Settings** the sections follow the order of the pipeline:
+**Policy Rule Validation (Optional)** comes after **Extraction**, then **Review
+Routing (Optional)**, then **Summarization (Optional)**.
+
+The switch is off in the system defaults. A newly created stack turns it on in the
+profiles it creates, and a stack update keeps the value each profile has; see
+[The Review Routing switch](./review-routing.md#the-review-routing-switch) for the
+cases and for how to turn it off for unattended processing.
+
+The `routing` section is versioned with the profile like every other section:
+
+```yaml
+routing:
+  max_consecutive_placements: 3     # 1-10: placements in a row before a document continues
+  tables:
+    - id: review-routing
+      rules:
+        - id: builtin-confidence-alerts
+          label: Confidence alerts
+          conditions:
+            - input: reviewed
+              test: "false"
+            - input: confidence_alert_count
+              test: "> 0"
+          actions:                  # What happens to a matching document; [] = not reviewed
+            - type: review_queue    # The only action type
+              queue: default        # A review queue id
+          reason: "Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them."
+      default_outcome:
+        actions: []
+        reason: ""
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `routing.tables` | one table with the built-in routing rules | The routing table. A profile has exactly one |
+| `routing.tables[].rules` | `builtin-extraction-failed`, `builtin-confidence-alerts`, `builtin-missing-required` | Tried in order; the first enabled routing rule whose conditions all hold decides |
+| `routing.tables[].rules[].actions` | — | What happens to a document the routing rule matches: one `review_queue` action naming a queue, or an empty list for no review |
+| `routing.tables[].rules[].reason` | — | What the reviewer is told. `{placeholders}` take the document's values; without a reason one is generated |
+| `routing.tables[].default_outcome` | `actions: []` (no review) | What a document that matches no routing rule gets: `actions` and a `reason`, as on a routing rule |
+| `routing.max_consecutive_placements` | 3 | How many times in a row a document can be placed in a review queue (1–10) |
+
+A profile without a `routing` section uses the defaults, which hold a document when
+a section's extraction failed, or when it has a confidence alert or a missing
+required field. The section is checked when a
+profile is saved (limits, inputs, tests, field paths, policy rule ids, classes,
+actions, reason placeholders, and the queues the routing rules name), and in the web
+UI only an Admin's save may change it. A save that is accepted can still
+return warnings, for a routing rule that reads a policy rule result in a profile
+where policy rule validation does not run. The inputs, the test syntax, the reason
+and its placeholders, the limits, the warnings and DMN XML export and import are
+described in [Review Routing](./review-routing.md).
 
 ## Stack Parameters
 
@@ -660,10 +737,13 @@ Key parameters that can be configured during CloudFormation deployment:
 - `BDACallbackTimeoutSeconds`: How long the BDA step waits for its asynchronous completion callback before failing (default: 7200 s); keep it below `WorkflowExecutionTimeoutSeconds`
 - `QueueStalledAgeThresholdSeconds`: How long the oldest queued document may wait *with no queue progress at all* before `DocumentQueueStalledAlarm` fires (default: 1800 s). Not a backlog limit — see [Monitoring](./monitoring.md#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm)
 - `LogLevel`: Set logging level (DEBUG, INFO, WARN, ERROR; default: `WARN`). `WARN` is the default because `INFO` and `DEBUG` can emit sensitive values — document contents, PII and S3 presigned URLs — into CloudWatch. At `INFO` or `DEBUG`, access logging is also enabled on the web UI's REST API stage (request metadata only — no request/response bodies), capturing requests that fail before reaching a Lambda (e.g. authorizer 401/403s, WAF blocks); at the `WARN` default that access log is **not** configured, so raise `LogLevel` to `INFO` if you need that audit trail
+- `ManageApiGatewayAccountSettings`: Whether this deployment sets the Region's API Gateway CloudWatch logging role, which REST API access logging at `LogLevel` `INFO` or `DEBUG` requires (default: `true`). It is one setting per account and Region, so let one deployment per Region manage it and set `false` on the others. See [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role)
 - `WAFAllowedIPv4Ranges`: IP restrictions for web UI access (default: allow all)
 - `CloudFrontPriceClass`: Set CloudFront price class for UI distribution (CloudFront hosting only)
 - `CloudFrontAllowedGeos`: Optional geographic restrictions for UI access (CloudFront hosting only)
 - `WebUIHosting`: Select hosting mode — `CloudFront` (default) or `APIGateway` for VPC-based hosting (see [API Gateway Hosting](./apigateway-hosting.md))
+- `TenantSelection`: Whether a user whom the identity provider grants two or more tenants chooses the active one (`UserSelect`) or is granted none (`Disabled`, the default). Requires `TenantGrantSource=IdpClaim`. See [Multi-Tenant Isolation](./multi-tenancy.md#letting-a-user-choose-among-their-tenants)
+- `CustomerManagedKmsKeyArn`: Optional ARN of a symmetric customer managed KMS key in the stack's account and Region, used instead of the key the stack creates. It can be set only when the stack is created; an update that sets, clears or changes it is refused. See [Customer Managed KMS Key](./customer-managed-kms-key.md)
 - `CustomConfigPath`: Optional S3 URI to a custom configuration file that overrides pattern presets. Leave blank to use selected pattern configuration. Example: s3://my-bucket/custom-config/config.yaml
 
 ### Integration and Tracing Parameters
@@ -815,6 +895,8 @@ The solution implements sophisticated concurrency control and throttling managem
 - **Circuit Breaker**: Temporary halt on repeated failures
 - **Rate Limiting**: Configurable request rate controls
 
+Calls through the `idp_common` Bedrock client (Converse and embeddings) and agentic extraction's model calls retry an HTTP 500, 502, 503 or 504 whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. A 429 reply that names no error type (code `"429"`) is retried too, as throttling. The Z3 rule translator keeps its own retry list and does not. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
+
 The solution tracks metrics for throttling events and successful retries, viewable in the CloudWatch dashboard.
 
 ### Step Functions Retry Configuration
@@ -822,15 +904,37 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. Eight task states additionally list `TransientError` — the five
-extraction and assessment states (in-process extraction, shard plan, shard, shard
-merge, assessment) and the three rule-validation states (policy classification,
-per-section rule validation, orchestration). That is the one name their handlers
-re-raise a transient cause under when it arrives as an ordinary Python exception (a
-botocore read or connect timeout, a dropped connection, a Strands wrapper around
-one). The classification lives in
+availability codes. The OCR, classification, extraction, assessment, policy rule
+validation, review, summarization and evaluation task states additionally list
+`TransientError`: `OCRStep`, `ClassificationStep`, the extraction and assessment
+states (`ExtractionStep`, `ExtractionPlanStep`, `ShardExtractionStep`,
+`ExtractionMergeStep`, `AssessmentStep`), the policy rule validation states
+(`PolicyClassificationStep`, `PolicyRuleValidationStep`,
+`PolicyRuleConsolidationStep`), the two review states (`ApplyReviewChangesStep`,
+`RoutingStep`), `SummarizationStep` and `EvaluationStep`. To list them from the
+definition, search `patterns/unified/statemachine/workflow.asl.json` for the
+retriers that name `TransientError`. That is the one name their handlers re-raise a
+transient cause under when it arrives as an ordinary Python exception (a botocore
+read or connect timeout, a dropped connection, a Strands wrapper around one). This
+includes a failure the service records instead of raising: an OCR page whose
+Textract or Bedrock call failed transiently, and a summarization section whose
+model call did, now fail their step with `TransientError` and are retried, where
+before the document failed with no retry. In `EvaluationStep` it is an LLM-judge
+call that failed transiently (a throttle that outlasted the Bedrock client's
+retries, a bare HTTP 5xx, a read timeout): the comparator raises it instead of
+scoring the field 0.0, and the step is retried without a failed evaluation being
+recorded first. A deterministic judge error still scores its field 0.0. The same
+holds for the step's S3 reads: a throttled, 5xx or timed-out read of the document,
+the baseline or a section's extraction result is retried, where before it scored
+the section's fields as misses or failed the evaluation with no retry, and a
+missing object keeps its existing outcome. If the retries run out, the step's Catch
+records the evaluation as failed and the document continues.
+`RecordEvaluationFailureStep` does not list `TransientError`, because it makes no
+model call and never raises. Whether a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
-code first (a `ValidationException` is deterministic whatever its message says),
+code first (a `ValidationException` is deterministic whatever its message says,
+and a bare HTTP 500, 502, 503, 504 or 429 in place of a code is transient),
+takes a decision-model failure's own `retry_later` verdict as final,
 and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
 hide a transient root and a swallowed transient error cannot lend its transience
 to an unrelated failure raised after it.
@@ -902,9 +1006,11 @@ added later is covered without editing the test.
 #### Adding a Lambda task state to the workflow
 
 Because that test enumerates the definition rather than naming states, a new Lambda
-task state inherits three requirements the moment it is added. All 24 existing states
-comply; a new one that does not will fail `make test-packages-cicd` in both CIs,
-naming the state:
+task state inherits three requirements the moment it is added. Every existing state
+complies; a new one that does not will fail `make test-packages-cicd` in both CIs,
+naming the state. Its name must also follow the naming rules that
+`patterns/unified/tests/test_state_names.py` enforces (a Lambda task is named
+`…Step`, a hook `Pre…Hook` or `Post…Hook`, a Choice `Check…`):
 
 1. **It must carry a transient retrier** — at least one of `ThrottlingException`,
    `Lambda.TooManyRequestsException`, `Lambda.ServiceException` or
@@ -1229,7 +1335,7 @@ classification:
       temperature: "0.0"
       top_p: "0.0"
       top_k: "5"
-      max_tokens: ""               # empty uses the model's maximum
+      max_tokens: "10000"          # output cap; empty uses the model's maximum
       reasoning_effort: medium     # reasoning-capable models only; ignored by Nova
       model_lambda_hook_arn: ""    # used when model is 'LambdaHook'
       modality: {text: "", images: ""}
@@ -1263,6 +1369,7 @@ classification:
   document_shape:                  # applies under both strategies
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
+    pageOrder: scan                # or printed_page_numbers; see classification.md#page-order
 ```
 
 Four notes on reading that:
@@ -1291,8 +1398,12 @@ Four notes on reading that:
   carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
   call per section that always returns one class, so the per-segment `_packet`
   variants would never be read.
-- **`fallback_class` is not validated against your class list.** It accepts any
-  string; the built-in value is `unclassified`. Pointing it at one of your own
+- **`fallback_class` should be `unclassified` or one of your classes.** The
+  built-in value is `unclassified`. Any other string is stored as written, and a
+  page given it has no extraction schema, so nothing is extracted from it;
+  `idp-cli config-validate` warns when the fallback names no configured class
+  (comparing names exactly, and suggesting the nearest class name), without
+  failing validation, so the configuration still uploads. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
   document whose class could not actually be decided — which may be what you
   want, or may not.
@@ -1303,7 +1414,9 @@ and accuracy figures behind each — see
 [Classification](./classification.md#choosing-granularity-modality-and-strategy).
 The authoritative list of every key with its shipped default and an inline
 rationale is
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`;
+for the prompts it holds a reference to each prompt's own file, listed under
+[Default prompts](./classification.md#default-prompts).
 
 ## Section Splitting
 

@@ -453,8 +453,15 @@ def test_required_arg_count_is_stable(spec):
     and deleteBulkReviewJob (jobId) 149-150; and the five MCP credential ops that
     take a required argument -- createMcpCredential (name, role),
     updateMcpCredential, rotateMcpCredential, revokeMcpCredential and
-    setMcpCredentialTenant (clientId) -- 151-155; listMcpCredentials takes none)."""
+    setMcpCredentialTenant (clientId) -- 151-155; listMcpCredentials takes none;
+    and the five review-routing and reprocess ops -- sendBackReviewItem (objectKey,
+    cycleId), testRoutingTable (objectKey), getReviewQueueReferences
+    (queueId), convertRoutingDmn (direction, content) and getReprocessOptions
+    (objectKeys) -- 156-160; the paged listReviewQueues still takes none; and
+    getReviewCompletionPlan (objectKey, cycleId) the 161st,
+    getProcessChangesPlan (objectKey) the 162nd and selectActiveTenant (tenantId)
+    the 163rd)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 155
+    assert len(required) == 163

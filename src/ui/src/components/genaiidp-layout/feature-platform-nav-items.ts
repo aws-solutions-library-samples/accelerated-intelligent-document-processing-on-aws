@@ -24,12 +24,85 @@ import Badge from '@cloudscape-design/components/badge';
 import Popover from '@cloudscape-design/components/popover';
 import Box from '@cloudscape-design/components/box';
 import type { SideNavigationProps } from '@cloudscape-design/components';
+import { defineMessages, type IntlShape, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import type { CatalogFeature, InstalledFeature } from '../../types/feature-platform';
 import { FEATURES_PATH_PREFIX, featureDetailHref } from '../../routes/constants';
 
 export const FEATURES_SECTION_ID = 'idp-feature-platform';
 
 export const COMING_SOON_HREF = '#extension-coming-soon';
+
+/** The "Browse catalog" link, always first in the section: the navigation finds the section by it. */
+export const BROWSE_CATALOG_HREF = `#${FEATURES_PATH_PREFIX}`;
+
+const messages = defineMessages<{
+  section: NoMessageValues;
+  browseCatalog: NoMessageValues;
+  comingSoon: NoMessageValues;
+  notInRegion: NoMessageValues;
+  install: NoMessageValues;
+  update: NoMessageValues;
+  notInstalled: NoMessageValues;
+  updateAvailable: NoMessageValues;
+  marketplaceSubscriptionNote: NoMessageValues;
+}>({
+  section: {
+    id: 'navigation.extensions.section',
+    defaultMessage: 'Extensions',
+    description: 'Side navigation section that lists the installed extensions and the ones the catalog offers.',
+  },
+  browseCatalog: {
+    id: 'navigation.extensions.browseCatalog',
+    defaultMessage: 'Browse catalog',
+    description: 'First link of the Extensions section of the side navigation, to the catalog browser that lists every extension.',
+  },
+  comingSoon: {
+    id: 'navigation.extensions.comingSoon',
+    defaultMessage: 'Coming soon',
+    description: 'Badge next to an extension announced in the Extensions section of the side navigation but not published yet.',
+  },
+  notInRegion: {
+    id: 'navigation.extensions.notInRegion',
+    defaultMessage: 'Not in this Region',
+    description:
+      'Badge next to an extension in the Extensions section of the side navigation that is not published for the AWS Region of this deployment, so it cannot be installed here.',
+  },
+  install: {
+    id: 'navigation.extensions.install',
+    defaultMessage: 'Install',
+    description: 'Badge, for an Admin, next to an extension in the Extensions section of the side navigation that is not installed yet.',
+  },
+  update: {
+    id: 'navigation.extensions.update',
+    defaultMessage: 'Update',
+    description:
+      'Badge, for an Admin, next to an installed extension in the Extensions section of the side navigation whose catalog has a newer version.',
+  },
+  notInstalled: {
+    id: 'navigation.extensions.notInstalled',
+    defaultMessage: 'Not installed',
+    description:
+      'Badge, for a user who cannot install, next to an extension in the Extensions section of the side navigation that is not installed yet.',
+  },
+  updateAvailable: {
+    id: 'navigation.extensions.updateAvailable',
+    defaultMessage: 'Update available',
+    description:
+      'Badge, for a user who cannot install, next to an installed extension in the Extensions section of the side navigation whose catalog has a newer version.',
+  },
+  marketplaceSubscriptionNote: {
+    id: 'navigation.extensions.marketplaceSubscriptionNote',
+    defaultMessage: 'Requires an AWS Marketplace subscription.',
+    description:
+      'Sentence appended to the hover text of a not-yet-installed marketplace extension in the Extensions section of the side navigation.',
+  },
+});
+
+type NavIntl = Pick<IntlShape, 'formatMessage'>;
+
+/** The label in the UI's language; without `intl` (callers outside the navigation, tests) the English source text. */
+const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: NavIntl): string =>
+  intl ? intl.formatMessage(message) : String(message.defaultMessage);
 
 const COMING_SOON_EXTENSIONS: { displayName: string; description: string }[] = [];
 
@@ -135,18 +208,18 @@ function mergeEntries(installed: InstalledFeature[], catalog: CatalogFeature[]):
   return Array.from(byId.values()).sort((a, b) => a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase()));
 }
 
-// Badge text + colour per lifecycle status. 'ready' renders no badge (clean
+// Badge message + colour per lifecycle status. 'ready' renders no badge (clean
 // nav for the common installed-and-current case); status is implied by the
 // absence of a CTA badge plus the hover description.
-const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey' | 'red' } | null> = {
+const STATUS_BADGE: Record<FeatureStatus, { message: TypedMessageDescriptor<NoMessageValues>; color: 'blue' | 'grey' | 'red' } | null> = {
   // Not published for this Region — cannot be installed here at all, so don't
   // invite a subscription that couldn't be used.
-  unavailable: { text: 'Not in this Region', color: 'red' },
+  unavailable: { message: messages.notInRegion, color: 'red' },
   // "Install" rather than "Deploy" or "Set up" to match the vocabulary used
   // everywhere else for this step: InstallPrompt, "Awaiting installation",
   // listInstalledFeatures, the InstalledFeatures table.
-  install: { text: 'Install', color: 'blue' },
-  update: { text: 'Update', color: 'blue' },
+  install: { message: messages.install, color: 'blue' },
+  update: { message: messages.update, color: 'blue' },
   ready: null,
 };
 
@@ -155,9 +228,9 @@ const STATUS_BADGE: Record<FeatureStatus, { text: string; color: 'blue' | 'grey'
  * STATUS_BADGE so the extension still reads as "not current" at a glance — it is the
  * imperative that misleads, not the emphasis.
  */
-const NON_ADMIN_BADGE_TEXT: Partial<Record<FeatureStatus, string>> = {
-  install: 'Not installed',
-  update: 'Update available',
+const NON_ADMIN_BADGE_MESSAGE: Partial<Record<FeatureStatus, TypedMessageDescriptor<NoMessageValues>>> = {
+  install: messages.notInstalled,
+  update: messages.updateAvailable,
 };
 
 /**
@@ -166,15 +239,15 @@ const NON_ADMIN_BADGE_TEXT: Partial<Record<FeatureStatus, string>> = {
  * hover/focus. When there's no badge AND no description there's nothing to
  * show, so we return undefined.
  */
-function buildStatusInfo(entry: NavEntry, canInstall: boolean): React.ReactNode {
+function buildStatusInfo(entry: NavEntry, canInstall: boolean, intl?: NavIntl): React.ReactNode {
   const status = statusOf(entry);
   const badgeSpec = STATUS_BADGE[status];
   // "Install" and "Update" name an action only an Admin can take (subscribeFeature is
   // Admin-only, and the feature page routes everyone else to AwaitingAdminInstall). For
   // the rest, the same lifecycle state is said as a state rather than an invitation —
   // which is all this badge claims to do anyway, per the note above.
-  const badgeText = !canInstall && (status === 'install' || status === 'update') ? NON_ADMIN_BADGE_TEXT[status] : badgeSpec?.text;
-  const badge = badgeSpec && badgeText ? React.createElement(Badge, { color: badgeSpec.color }, badgeText) : null;
+  const badgeMessage = !canInstall && (status === 'install' || status === 'update') ? NON_ADMIN_BADGE_MESSAGE[status] : badgeSpec?.message;
+  const badge = badgeSpec && badgeMessage ? React.createElement(Badge, { color: badgeSpec.color }, labelOf(badgeMessage, intl)) : null;
 
   // A not-yet-installed marketplace extension needs a subscription at some point,
   // and the badge no longer says so. Note it in the hover text instead: the nav
@@ -183,7 +256,7 @@ function buildStatusInfo(entry: NavEntry, canInstall: boolean): React.ReactNode 
   // which is the verdict it cannot see.
   const needsSubscriptionNote = status === 'install' && entry.source === 'marketplace';
   const hoverText = needsSubscriptionNote
-    ? [entry.description, 'Requires an AWS Marketplace subscription.'].filter(Boolean).join(' ')
+    ? [entry.description, labelOf(messages.marketplaceSubscriptionNote, intl)].filter(Boolean).join(' ')
     : entry.description;
 
   if (!hoverText) {
@@ -223,7 +296,7 @@ function buildStatusInfo(entry: NavEntry, canInstall: boolean): React.ReactNode 
  *     [installed, catalog],
  *   );
  */
-function comingSoonItems(installed: InstalledFeature[]): SideNavigationProps.Link[] {
+function comingSoonItems(installed: InstalledFeature[], intl?: NavIntl): SideNavigationProps.Link[] {
   const installedIds = new Set(installed.map((f) => f.featureId));
   return COMING_SOON_EXTENSIONS.filter((c) => !installedIds.has(c.displayName)).map(
     (c) =>
@@ -241,7 +314,7 @@ function comingSoonItems(installed: InstalledFeature[]): SideNavigationProps.Lin
             position: 'right',
             size: 'small',
           },
-          React.createElement(Badge, { color: 'grey' }, 'Coming soon'),
+          React.createElement(Badge, { color: 'grey' }, labelOf(messages.comingSoon, intl)),
         ),
       }) as SideNavigationProps.Link,
   );
@@ -253,6 +326,8 @@ export function buildFeaturesNavSection(
   /* Defaults to true so existing callers and tests keep the admin wording; only the
      nav, which knows the role, narrows it. */
   canInstall = true,
+  /** Formats the section's own labels and badges; without it they are the English source text. */
+  intl?: NavIntl,
 ): SideNavigationProps.Section {
   const entries = mergeEntries(installed, catalog);
 
@@ -267,7 +342,7 @@ export function buildFeaturesNavSection(
         // status badge, wrapped in a Popover so hovering shows the feature's
         // description. The actual action (Subscribe / Install / Update) lives
         // on the feature page; the nav badge only communicates status.
-        info: buildStatusInfo(e, canInstall),
+        info: buildStatusInfo(e, canInstall, intl),
       }) as SideNavigationProps.Link,
   );
 
@@ -279,17 +354,17 @@ export function buildFeaturesNavSection(
   // selector (Cloudscape nav links expose no per-item className hook).
   const browseCatalog: SideNavigationProps.Link = {
     type: 'link',
-    text: 'Browse catalog',
-    href: `#${FEATURES_PATH_PREFIX}`,
+    text: labelOf(messages.browseCatalog, intl),
+    href: BROWSE_CATALOG_HREF,
   };
 
-  const extensionItems = [...items, ...comingSoonItems(installed)];
+  const extensionItems = [...items, ...comingSoonItems(installed, intl)];
 
   return {
     type: 'section',
     // "(Preview)" signals that the extension framework is still being built out —
     // there are no production extensions to install yet beyond the bundled demo.
-    text: 'Extensions',
+    text: labelOf(messages.section, intl),
     items: extensionItems.length > 0 ? [browseCatalog, ...extensionItems] : [browseCatalog],
   };
 }

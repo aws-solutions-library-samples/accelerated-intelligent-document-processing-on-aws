@@ -71,6 +71,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 import {
   DndContext,
   DragEndEvent,
@@ -110,6 +111,276 @@ import {
   sortSectionsByFirstPage,
   validateGrouping,
 } from './section-grouping';
+import type { GroupingIssue } from './section-grouping';
+
+const messages = defineMessages<{
+  pageLabel: { readonly id: number };
+  movePage: { readonly id: number };
+  movePageWithSelection: { readonly id: number; readonly others: number };
+  drag: { readonly id: number };
+  dragWithSelection: { readonly id: number; readonly others: number };
+  selectPage: { readonly id: number };
+  viewFullPage: NoMessageValues;
+  orderWithin: NoMessageValues;
+  moveEarlier: NoMessageValues;
+  moveLater: NoMessageValues;
+  moveToSection: NoMessageValues;
+  sectionOption: { readonly id: string };
+  sectionOptionWithClass: { readonly id: string; readonly class: string };
+  sortSection: { readonly id: string };
+  deleteSection: { readonly id: string };
+  sectionHeader: { readonly id: string };
+  chooseClass: NoMessageValues;
+  customOrder: NoMessageValues;
+  dropHere: NoMessageValues;
+  invalidHeader: NoMessageValues;
+  summary: { readonly pages: number; readonly sections: number };
+  selected: { readonly count: number };
+  clearSelection: NoMessageValues;
+  addSection: NoMessageValues;
+  expand: NoMessageValues;
+  draggingPages: { readonly count: number };
+  cancel: NoMessageValues;
+  defaultSave: NoMessageValues;
+  defaultTitle: NoMessageValues;
+  close: NoMessageValues;
+  notRendered: NoMessageValues;
+}>({
+  pageLabel: {
+    id: 'common.pageGrouping.pageLabel',
+    defaultMessage: 'Page {id}',
+    description:
+      "A page on the Edit Page Grouping board: its thumbnail's alternative text, the label under it while it is dragged alone, and the title and image text of its full-size view. {id} is the page's number.",
+  },
+  movePage: {
+    id: 'common.pageGrouping.movePage',
+    defaultMessage: 'Move page {id}',
+    description: "Label, for screen readers, of the menu button on a page of the Edit Page Grouping board. {id} is the page's number.",
+  },
+  movePageWithSelection: {
+    id: 'common.pageGrouping.movePageWithSelection',
+    defaultMessage: '{others, plural, one {Move page {id} and # other selected page} other {Move page {id} and # other selected pages}}',
+    description:
+      "Label, for screen readers, of the menu button on a page of the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected.",
+  },
+  drag: {
+    id: 'common.pageGrouping.drag',
+    defaultMessage: 'Page {id}, drag to reorder it or move it to another section',
+    description:
+      "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board, which is dragged to move the page. {id} is the page's number.",
+  },
+  dragWithSelection: {
+    id: 'common.pageGrouping.dragWithSelection',
+    defaultMessage:
+      '{others, plural, one {Page {id}, drag to move it and # other selected page} other {Page {id}, drag to move it and # other selected pages}}',
+    description:
+      "Label, for screen readers, of a page's thumbnail on the Edit Page Grouping board when the page is selected with others, which move with it. {id} is the page's number; {others} is how many other pages are selected.",
+  },
+  selectPage: {
+    id: 'common.pageGrouping.selectPage',
+    defaultMessage: 'Select page {id}',
+    description:
+      "Label, for screen readers, of the checkbox that selects a page on the Edit Page Grouping board. {id} is the page's number.",
+  },
+  viewFullPage: {
+    id: 'common.pageGrouping.viewFullPage',
+    defaultMessage: 'View full page',
+    description: "Item of a page's menu on the Edit Page Grouping board: shows the page at full size.",
+  },
+  orderWithin: {
+    id: 'common.pageGrouping.orderWithin',
+    defaultMessage: 'Order within this section',
+    description:
+      "Item of a page's menu on the Edit Page Grouping board that holds Move earlier and Move later, which move the page within its section.",
+  },
+  moveEarlier: {
+    id: 'common.pageGrouping.moveEarlier',
+    defaultMessage: 'Move earlier',
+    description: "Item of a page's menu on the Edit Page Grouping board: moves the page one place earlier in its section.",
+  },
+  moveLater: {
+    id: 'common.pageGrouping.moveLater',
+    defaultMessage: 'Move later',
+    description: "Item of a page's menu on the Edit Page Grouping board: moves the page one place later in its section.",
+  },
+  moveToSection: {
+    id: 'common.pageGrouping.moveToSection',
+    defaultMessage: 'Move to section',
+    description: "Item of a page's menu on the Edit Page Grouping board that lists the other sections the page can move to.",
+  },
+  sectionOption: {
+    id: 'common.pageGrouping.sectionOption',
+    defaultMessage: 'Section {id}',
+    description:
+      "A section with no class, in the Move to section list of a page's menu on the Edit Page Grouping board. {id} is the section's number.",
+  },
+  sectionOptionWithClass: {
+    id: 'common.pageGrouping.sectionOptionWithClass',
+    defaultMessage: 'Section {id} ({class})',
+    description:
+      "A section in the Move to section list of a page's menu on the Edit Page Grouping board. {id} is the section's number; {class} is its document class, shown as is.",
+  },
+  sortSection: {
+    id: 'common.pageGrouping.sortSection',
+    defaultMessage: 'Sort section {id} pages in document order',
+    description:
+      "Label, for screen readers, of the button on a section's column of the Edit Page Grouping board that puts the section's pages back in document order. {id} is the section's number.",
+  },
+  deleteSection: {
+    id: 'common.pageGrouping.deleteSection',
+    defaultMessage: 'Delete section {id}',
+    description:
+      "Label, for screen readers, of the button that deletes an empty section from the Edit Page Grouping board. {id} is the section's number.",
+  },
+  sectionHeader: {
+    id: 'common.pageGrouping.sectionHeader',
+    defaultMessage: 'Section {id}',
+    description: "Heading of a section's column on the Edit Page Grouping board. {id} is the section's number.",
+  },
+  chooseClass: {
+    id: 'common.pageGrouping.chooseClass',
+    defaultMessage: 'Choose a document class',
+    description: "Placeholder of the class picker on a section's column of the Edit Page Grouping board.",
+  },
+  customOrder: {
+    id: 'common.pageGrouping.customOrder',
+    defaultMessage: 'Custom page order',
+    description: "Badge on a section's column of the Edit Page Grouping board when the section's pages are not in document order.",
+  },
+  dropHere: {
+    id: 'common.pageGrouping.dropHere',
+    defaultMessage: 'Drop a page here.',
+    description: "Shown in a section's column of the Edit Page Grouping board while the section has no pages.",
+  },
+  invalidHeader: {
+    id: 'common.pageGrouping.invalidHeader',
+    defaultMessage: 'This grouping is not valid yet',
+    description: 'Heading of the alert above the Edit Page Grouping board that lists the problems with the grouping as a whole.',
+  },
+  summary: {
+    id: 'common.pageGrouping.summary',
+    defaultMessage: '{pages, plural, one {# page} other {# pages}} · {sections, plural, one {# section} other {# sections}}',
+    description:
+      "Badge above the Edit Page Grouping board. {pages} is the number of the document's pages; {sections} is the number of sections on the board.",
+  },
+  selected: {
+    id: 'common.pageGrouping.selected',
+    defaultMessage:
+      '{count, plural, one {# page selected — moving any one moves all of them} other {# pages selected — moving any one moves all of them}}',
+    description: 'Shown above the Edit Page Grouping board while pages are selected. {count} is the number of selected pages.',
+  },
+  clearSelection: {
+    id: 'common.pageGrouping.clearSelection',
+    defaultMessage: 'Clear selection',
+    description: 'Link button above the Edit Page Grouping board that unselects every selected page.',
+  },
+  addSection: {
+    id: 'common.pageGrouping.addSection',
+    defaultMessage: 'Add section',
+    description: 'Button above the Edit Page Grouping board that adds an empty section.',
+  },
+  expand: {
+    id: 'common.pageGrouping.expand',
+    defaultMessage: 'Expand',
+    description: 'Button above the Edit Page Grouping board, when the board is shown in place on its screen, that opens it in a dialog.',
+  },
+  draggingPages: {
+    id: 'common.pageGrouping.draggingPages',
+    defaultMessage: '{count, plural, one {# page} other {# pages}}',
+    description:
+      'Label under the page being dragged on the Edit Page Grouping board when the selected pages move with it. {count} is how many pages move, two or more.',
+  },
+  cancel: {
+    id: 'common.pageGrouping.cancel',
+    defaultMessage: 'Cancel',
+    description: 'Button of the Edit Page Grouping board that closes it without saving.',
+  },
+  defaultSave: {
+    id: 'common.pageGrouping.defaultSave',
+    defaultMessage: 'Save grouping',
+    description: "The Edit Page Grouping board's save button, when the screen that shows the board gives the button no label of its own.",
+  },
+  defaultTitle: {
+    id: 'common.pageGrouping.defaultTitle',
+    defaultMessage: 'Edit Page Grouping',
+    description: "Title of the Edit Page Grouping board's dialog, when the screen that opens it gives no title of its own.",
+  },
+  close: {
+    id: 'common.pageGrouping.close',
+    defaultMessage: 'Close',
+    description: "Button that closes a page's full-size view, opened from the Edit Page Grouping board.",
+  },
+  notRendered: {
+    id: 'common.pageGrouping.notRendered',
+    defaultMessage: 'This page has not finished rendering.',
+    description:
+      "Shown beside a spinner in a page's full-size view, opened from the Edit Page Grouping board, while the page's image is not ready.",
+  },
+});
+
+/** The problems `validateGrouping` reports, worded one whole message per code by `groupingIssueText`. */
+const issueMessages = defineMessages<{
+  noId: NoMessageValues;
+  duplicateId: { readonly id: string };
+  noPages: NoMessageValues;
+  pageClaimed: { readonly pageId: number; readonly sectionId: string };
+  notInDocument: { readonly count: number; readonly pageIds: string };
+  pagesNotInSection: { readonly count: number; readonly pageIds: string };
+}>({
+  noId: {
+    id: 'common.sectionGrouping.noId',
+    defaultMessage: 'A section has no id.',
+    description: 'A problem with the grouping, listed in the alert above the Edit Page Grouping board.',
+  },
+  duplicateId: {
+    id: 'common.sectionGrouping.duplicateId',
+    defaultMessage: "Section id ''{id}'' is used by more than one section.",
+    description:
+      "A problem shown on a section's column of the Edit Page Grouping board. {id} is the section id that more than one section uses.",
+  },
+  noPages: {
+    id: 'common.sectionGrouping.noPages',
+    defaultMessage: 'This section has no pages. Move a page into it, or delete the section.',
+    description: "A problem shown on a section's column of the Edit Page Grouping board while the section has no pages.",
+  },
+  pageClaimed: {
+    id: 'common.sectionGrouping.pageClaimed',
+    defaultMessage: 'Page {pageId} is already in section {sectionId}.',
+    description:
+      "A problem shown on a section's column of the Edit Page Grouping board when another section already holds one of its pages. {pageId} is the page's number; {sectionId} is the number of the section that holds it.",
+  },
+  notInDocument: {
+    id: 'common.sectionGrouping.notInDocument',
+    defaultMessage: '{count, plural, one {Page {pageIds} not in this document.} other {Pages {pageIds} not in this document.}}',
+    description:
+      "A problem shown on a section's column of the Edit Page Grouping board when the section holds pages the document does not have. {count} is how many; {pageIds} lists their numbers, separated by commas.",
+  },
+  pagesNotInSection: {
+    id: 'common.sectionGrouping.pagesNotInSection',
+    defaultMessage:
+      '{count, plural, one {Page {pageIds} is not in any section. Every page has to belong to one.} other {Pages {pageIds} are not in any section. Every page has to belong to one.}}',
+    description:
+      'A problem with the grouping, listed in the alert above the Edit Page Grouping board, when pages of the document are in no section. {count} is how many; {pageIds} lists their numbers, separated by commas.',
+  },
+});
+
+/** A problem `validateGrouping` found, in the reader's language. */
+const groupingIssueText = (issue: GroupingIssue, intl: IntlShape): string => {
+  switch (issue.code) {
+    case 'noId':
+      return intl.formatMessage(issueMessages.noId);
+    case 'duplicateId':
+      return intl.formatMessage(issueMessages.duplicateId, { id: issue.sectionId });
+    case 'noPages':
+      return intl.formatMessage(issueMessages.noPages);
+    case 'pageClaimed':
+      return intl.formatMessage(issueMessages.pageClaimed, { pageId: issue.pageId, sectionId: issue.sectionId });
+    case 'notInDocument':
+      return intl.formatMessage(issueMessages.notInDocument, { count: issue.pageIds.length, pageIds: issue.pageIds.join(', ') });
+    case 'pagesNotInSection':
+      return intl.formatMessage(issueMessages.pagesNotInSection, { count: issue.pageIds.length, pageIds: issue.pageIds.join(', ') });
+  }
+};
 
 /** One page of the document, in the caller's own numbering. */
 export interface GroupingPage {
@@ -183,14 +454,20 @@ const nextSectionId = (sections: GroupedSection[]): string => {
 const CARD_WIDTH = 112;
 
 /** The thumbnail itself, with no drag wiring — shared by the card and the drag overlay. */
-const PageThumb = ({ page }: { page: GroupingPage }): React.JSX.Element =>
-  page.imageUri ? (
-    <img src={page.imageUri} alt={`Page ${page.id}`} style={{ width: '100%', display: 'block', borderRadius: '2px' }} />
+const PageThumb = ({ page }: { page: GroupingPage }): React.JSX.Element => {
+  const intl = useIntl();
+  return page.imageUri ? (
+    <img
+      src={page.imageUri}
+      alt={intl.formatMessage(messages.pageLabel, { id: page.id })}
+      style={{ width: '100%', display: 'block', borderRadius: '2px' }}
+    />
   ) : (
     <Box textAlign="center" padding="s">
       <Spinner />
     </Box>
   );
+};
 
 /** A page thumbnail: selectable, draggable, a drop target, and movable without dragging. */
 const PageCard = ({
@@ -218,6 +495,7 @@ const PageCard = ({
   onNudge: (pageId: number, direction: -1 | 1) => void;
   onPreview: (pageId: number) => void;
 }): React.JSX.Element => {
+  const intl = useIntl();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `page-${page.id}`,
     data: { pageId: page.id, fromSectionId: sectionId },
@@ -231,9 +509,10 @@ const PageCard = ({
 
   // Dragging one page of a selection carries the whole selection, so say so.
   const movesWithSelection = isSelected && selectionSize > 1;
-  const moving = movesWithSelection
-    ? `page ${page.id} and ${selectionSize - 1} other selected page${selectionSize > 2 ? 's' : ''}`
-    : `page ${page.id}`;
+  const others = selectionSize - 1;
+  const moveLabel = movesWithSelection
+    ? intl.formatMessage(messages.movePageWithSelection, { id: page.id, others })
+    : intl.formatMessage(messages.movePage, { id: page.id });
 
   return (
     <div
@@ -263,8 +542,8 @@ const PageCard = ({
         style={{ cursor: 'grab' }}
         aria-label={
           movesWithSelection
-            ? `Page ${page.id}, drag to move it and ${selectionSize - 1} other selected page${selectionSize > 2 ? 's' : ''}`
-            : `Page ${page.id}, drag to reorder it or move it to another section`
+            ? intl.formatMessage(messages.dragWithSelection, { id: page.id, others })
+            : intl.formatMessage(messages.drag, { id: page.id })
         }
       >
         <PageThumb page={page} />
@@ -282,13 +561,17 @@ const PageCard = ({
             }
           }}
         >
-          <Checkbox checked={isSelected} onChange={() => onToggleSelect(page.id, false)} ariaLabel={`Select page ${page.id}`}>
+          <Checkbox
+            checked={isSelected}
+            onChange={() => onToggleSelect(page.id, false)}
+            ariaLabel={intl.formatMessage(messages.selectPage, { id: page.id })}
+          >
             {page.id}
           </Checkbox>
         </span>
         <ButtonDropdown
           variant="icon"
-          ariaLabel={`Move ${moving}`}
+          ariaLabel={moveLabel}
           /* Portals the menu instead of rendering it inside the section column, which is
              a scrolling `overflow: auto` box: the menu is taller than the column, so its
              last item was clipped away, and it inherited the column's width, wrapping
@@ -306,23 +589,25 @@ const PageCard = ({
                The detail is already loaded — pages render at PDF_RENDER_WIDTH (1200px)
                and the document view presigns the pipeline's full-size page image — so
                this shows what is in memory rather than fetching anything. */
-            { id: '__view', text: 'View full page' },
+            { id: '__view', text: intl.formatMessage(messages.viewFullPage) },
             {
               id: '__reorder',
-              text: 'Order within this section',
+              text: intl.formatMessage(messages.orderWithin),
               items: [
-                { id: '__earlier', text: 'Move earlier', disabled: isFirstInSection },
-                { id: '__later', text: 'Move later', disabled: isLastInSection },
+                { id: '__earlier', text: intl.formatMessage(messages.moveEarlier), disabled: isFirstInSection },
+                { id: '__later', text: intl.formatMessage(messages.moveLater), disabled: isLastInSection },
               ],
             },
             ...(otherSections.length > 0
               ? [
                   {
                     id: '__move',
-                    text: 'Move to section',
+                    text: intl.formatMessage(messages.moveToSection),
                     items: otherSections.map((s) => ({
                       id: s.sectionId,
-                      text: `Section ${s.sectionId}${s.documentClass ? ` (${s.documentClass})` : ''}`,
+                      text: s.documentClass
+                        ? intl.formatMessage(messages.sectionOptionWithClass, { id: s.sectionId, class: s.documentClass })
+                        : intl.formatMessage(messages.sectionOption, { id: s.sectionId }),
                     })),
                   },
                 ]
@@ -360,7 +645,7 @@ const SectionColumn = ({
 }: {
   section: GroupedSection;
   pages: GroupingPage[];
-  errors: string[];
+  errors: GroupingIssue[];
   classOptions: ConfigClassOption[];
   canChangeClass: boolean;
   otherSections: GroupedSection[];
@@ -374,6 +659,7 @@ const SectionColumn = ({
   onSortPages: (sectionId: string) => void;
   onToggleSelect: (pageId: number, viaShift: boolean) => void;
 }): React.JSX.Element => {
+  const intl = useIntl();
   const { setNodeRef, isOver } = useDroppable({ id: `section-${section.sectionId}`, data: { sectionId: section.sectionId } });
   const selected = classOptions.find((o) => o.value === section.documentClass);
   // A section whose pages do not run in document order is legitimate — a packet can be
@@ -392,14 +678,14 @@ const SectionColumn = ({
                   <Button
                     iconName="undo"
                     variant="icon"
-                    ariaLabel={`Sort section ${section.sectionId} pages in document order`}
+                    ariaLabel={intl.formatMessage(messages.sortSection, { id: section.sectionId })}
                     onClick={() => onSortPages(section.sectionId)}
                   />
                 )}
                 <Button
                   iconName="remove"
                   variant="icon"
-                  ariaLabel={`Delete section ${section.sectionId}`}
+                  ariaLabel={intl.formatMessage(messages.deleteSection, { id: section.sectionId })}
                   /* Only an empty section can go: deleting one with pages would orphan
                      them, and deleting one with field values should be deliberate. Drag
                      the pages out first — validateGrouping's empty-section error says
@@ -410,7 +696,7 @@ const SectionColumn = ({
               </SpaceBetween>
             }
           >
-            Section {section.sectionId}
+            <FormattedMessage {...messages.sectionHeader} values={{ id: section.sectionId }} />
           </Header>
         }
       >
@@ -420,14 +706,18 @@ const SectionColumn = ({
               selectedOption={selected ?? (section.documentClass ? { label: section.documentClass, value: section.documentClass } : null)}
               options={classOptions}
               disabled={!canChangeClass}
-              placeholder="Choose a document class"
+              placeholder={intl.formatMessage(messages.chooseClass)}
               onChange={({ detail }: { detail: SelectProps.ChangeDetail }) =>
                 onClassChange(section.sectionId, detail.selectedOption.value ?? '')
               }
             />
           )}
 
-          {customOrder && <Badge color="blue">Custom page order</Badge>}
+          {customOrder && (
+            <Badge color="blue">
+              <FormattedMessage {...messages.customOrder} />
+            </Badge>
+          )}
 
           <div
             ref={setNodeRef}
@@ -446,7 +736,7 @@ const SectionColumn = ({
           >
             {pages.length === 0 ? (
               <Box color="text-body-secondary" fontSize="body-s" padding="xs">
-                Drop a page here.
+                <FormattedMessage {...messages.dropHere} />
               </Box>
             ) : (
               pages.map((page, index) => (
@@ -471,8 +761,8 @@ const SectionColumn = ({
           {errors.length > 0 && (
             <Alert type="error">
               <SpaceBetween size="xxs">
-                {errors.map((e) => (
-                  <span key={e}>{e}</span>
+                {errors.map((issue) => (
+                  <span key={JSON.stringify(issue)}>{groupingIssueText(issue, intl)}</span>
                 ))}
               </SpaceBetween>
             </Alert>
@@ -489,14 +779,15 @@ const PageGroupingEditor = ({
   classOptions = [],
   canChangeClass = true,
   consequence,
-  saveLabel = 'Save grouping',
+  saveLabel,
   isSaving = false,
   onSave,
   secondarySave,
   onCancel,
   presentation = 'inline',
-  title = 'Edit Page Grouping',
+  title,
 }: PageGroupingEditorProps): React.JSX.Element => {
+  const intl = useIntl();
   const asModal = presentation === 'modal';
   // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note
   // at the top of the file.
@@ -616,10 +907,10 @@ const PageGroupingEditor = ({
       <Alert type="info">{consequence}</Alert>
 
       {validation.document.length > 0 && (
-        <Alert type="error" header="This grouping is not valid yet">
+        <Alert type="error" header={intl.formatMessage(messages.invalidHeader)}>
           <SpaceBetween size="xxs">
-            {validation.document.map((e) => (
-              <span key={e}>{e}</span>
+            {validation.document.map((issue) => (
+              <span key={JSON.stringify(issue)}>{groupingIssueText(issue, intl)}</span>
             ))}
           </SpaceBetween>
         </Alert>
@@ -627,24 +918,24 @@ const PageGroupingEditor = ({
 
       <SpaceBetween direction="horizontal" size="xs" alignItems="center">
         <Badge color={validation.isValid ? 'green' : 'red'}>
-          {pages.length} page{pages.length === 1 ? '' : 's'} · {draft.length} section{draft.length === 1 ? '' : 's'}
+          <FormattedMessage {...messages.summary} values={{ pages: pages.length, sections: draft.length }} />
         </Badge>
         {selectedPageIds.size > 0 && (
           <>
             <Box fontSize="body-s" color="text-status-info">
-              {selectedPageIds.size} page{selectedPageIds.size === 1 ? '' : 's'} selected — moving any one moves all of them
+              <FormattedMessage {...messages.selected} values={{ count: selectedPageIds.size }} />
             </Box>
             <Button variant="link" onClick={() => setSelectedPageIds(new Set())}>
-              Clear selection
+              <FormattedMessage {...messages.clearSelection} />
             </Button>
           </>
         )}
         <Button iconName="add-plus" onClick={addSection}>
-          Add section
+          <FormattedMessage {...messages.addSection} />
         </Button>
         {!isExpanded && !asModal && (
           <Button iconName="expand" onClick={() => setIsExpanded(true)}>
-            Expand
+            <FormattedMessage {...messages.expand} />
           </Button>
         )}
       </SpaceBetween>
@@ -705,7 +996,11 @@ const PageGroupingEditor = ({
               >
                 <PageThumb page={activeDragPage} />
                 <Box textAlign="center" fontSize="body-s">
-                  {draggingCount > 1 ? `${draggingCount} pages` : `Page ${activeDragPage.id}`}
+                  {draggingCount > 1 ? (
+                    <FormattedMessage {...messages.draggingPages} values={{ count: draggingCount }} />
+                  ) : (
+                    <FormattedMessage {...messages.pageLabel} values={{ id: activeDragPage.id }} />
+                  )}
                 </Box>
               </div>
             ) : null}
@@ -721,7 +1016,7 @@ const PageGroupingEditor = ({
     <Box float="right">
       <SpaceBetween direction="horizontal" size="xs">
         <Button variant="link" onClick={onCancel} disabled={isSaving}>
-          Cancel
+          <FormattedMessage {...messages.cancel} />
         </Button>
         {secondarySave && (
           <Button
@@ -738,7 +1033,7 @@ const PageGroupingEditor = ({
           disabled={!validation.isValid || !isChanged}
           onClick={() => onSave(sortSectionsByFirstPage(draft))}
         >
-          {saveLabel}
+          {saveLabel ?? <FormattedMessage {...messages.defaultSave} />}
         </Button>
       </SpaceBetween>
     </Box>
@@ -761,19 +1056,25 @@ const PageGroupingEditor = ({
     <Modal
       visible
       size="max"
-      header={`Page ${previewPage.id}`}
+      header={intl.formatMessage(messages.pageLabel, { id: previewPage.id })}
       onDismiss={() => setPreviewPageId(null)}
       footer={
         <Box float="right">
-          <Button onClick={() => setPreviewPageId(null)}>Close</Button>
+          <Button onClick={() => setPreviewPageId(null)}>
+            <FormattedMessage {...messages.close} />
+          </Button>
         </Box>
       }
     >
       {previewPage.imageUri ? (
-        <img src={previewPage.imageUri} alt={`Page ${previewPage.id}`} style={{ width: '100%', height: 'auto', display: 'block' }} />
+        <img
+          src={previewPage.imageUri}
+          alt={intl.formatMessage(messages.pageLabel, { id: previewPage.id })}
+          style={{ width: '100%', height: 'auto', display: 'block' }}
+        />
       ) : (
         <Box textAlign="center" padding="xl">
-          <Spinner /> This page has not finished rendering.
+          <Spinner /> <FormattedMessage {...messages.notRendered} />
         </Box>
       )}
     </Modal>
@@ -783,7 +1084,13 @@ const PageGroupingEditor = ({
   if (isExpanded) {
     return (
       <>
-        <Modal visible width={MODAL_WIDTH} header={title} onDismiss={asModal ? onCancel : () => setIsExpanded(false)} footer={footer}>
+        <Modal
+          visible
+          width={MODAL_WIDTH}
+          header={title ?? intl.formatMessage(messages.defaultTitle)}
+          onDismiss={asModal ? onCancel : () => setIsExpanded(false)}
+          footer={footer}
+        >
           {/* Wide enough for three section columns side by side; more scroll sideways. */}
           <div style={{ minWidth: `${MODAL_MIN_WIDTH}px` }}>{body}</div>
         </Modal>

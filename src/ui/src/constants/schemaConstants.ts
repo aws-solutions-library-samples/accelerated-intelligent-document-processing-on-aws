@@ -199,6 +199,12 @@ export const X_AWS_IDP_DOCUMENT_TYPE = 'x-aws-idp-document-type';
 /** Marks a schema as a policy type (for rule validation) */
 export const X_AWS_IDP_POLICY_TYPE = 'x-aws-idp-policy-type';
 
+/** The Policy Discovery group a policy class accumulates (#608); later uploads naming it find the class by this key */
+export const X_AWS_IDP_POLICY_GROUP = 'x-aws-idp-policy-group';
+
+/** The Policy Discovery uploads that built a policy class, oldest first, with the rules each supplied and superseded (#608) */
+export const X_AWS_IDP_POLICY_UPLOADS = 'x-aws-idp-policy-uploads';
+
 /** Classification metadata for document type */
 export const X_AWS_IDP_CLASSIFICATION = 'x-aws-idp-classification';
 
@@ -624,3 +630,25 @@ export const DEFAULT_SCHEMA_VERSION = 'https://json-schema.org/draft/2020-12/sch
 
 /** Default confidence threshold */
 export const DEFAULT_CONFIDENCE_THRESHOLD = 0.9;
+
+// ============================================================================
+// Decision models (System One API)
+// ============================================================================
+/**
+ * The decision-model question types, in the order the UI offers them. Mirrors
+ * QUESTION_TYPES in lib/idp_common_pkg/idp_common/decision_model/wire.py; kept in
+ * step by scripts/tests/test_decision_question_types_parity.py.
+ */
+export const DECISION_QUESTION_TYPES = ['noul', 'choice', 'score'] as const;
+export type DecisionQuestionType = (typeof DECISION_QUESTION_TYPES)[number];
+
+/** UI labels for the question types, and what each one's criteria are. */
+export const DECISION_QUESTION_TYPE_OPTIONS: ReadonlyArray<{
+  value: DecisionQuestionType;
+  label: string;
+  description: string;
+}> = [
+  { value: 'noul', label: 'Yes / no', description: 'Returns the probability the statement is true. Optional true and false criteria.' },
+  { value: 'choice', label: 'Choice', description: 'Picks one of 2 to 255 named options, each with a description.' },
+  { value: 'score', label: 'Score', description: 'Rates against 2 to 10 ordered levels, lowest first.' },
+];

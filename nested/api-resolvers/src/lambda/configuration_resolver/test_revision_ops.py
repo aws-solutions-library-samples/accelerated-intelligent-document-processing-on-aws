@@ -139,7 +139,8 @@ class TestHappyPath:
         args, kwargs = manager.restore_revision.call_args
         assert args == ("lending", 1)
         assert kwargs["created_by"] == "author@example.com"
-        assert kwargs["write_guard"] is None
+        # Every restore is guarded: only an Admin may change the routing rules.
+        assert callable(kwargs["write_guard"])
 
     def test_label_passes_label_and_notes_through(self, manager):
         result = index.handler(

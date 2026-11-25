@@ -24,10 +24,11 @@ from idp_common.dynamodb.ttl import calculate_ttl
 from idp_common.models import (
     Document,
     Page,
-    ProcessingIssue,
     Section,
     Status,
     coerce_revision,
+    deserialize_issue_list,
+    serialize_issue_list,
 )
 from idp_common.review_queues.statuses import LEGACY_PENDING
 from idp_common.utils import cumulative_metering
@@ -361,14 +362,22 @@ def set_section_alerts(
     without the figure that says it was truncated. ``ConfidenceThresholdAlerts``
     holds what fits; ``ConfidenceThresholdAlertsTotal`` appears only when
     something was dropped, so an unaffected document's item is byte-identical to
-    before. No consumer reads the total yet — it exists so "17 alerts" can be
-    told apart from "17 of 412", by a reader or by whoever surfaces it next.
+    before. The row reader restores the total as ``Section.confidence_alert_total``,
+    and review routing counts it, so "17 alerts" is told apart from "17 of 412".
+
+    The total written is the larger of the list's length and the total the section
+    already carries. A section loaded from a capped row holds the stored subset
+    and the true figure; writing it back must not shrink the figure to the
+    subset's length. A section with a total and an empty list still writes the
+    total.
     """
-    if not section.confidence_threshold_alerts:
+    alerts = section.confidence_threshold_alerts or []
+    total = max(len(alerts), section.confidence_alert_total or 0)
+    if not total:
         return
     stored = serialize_confidence_threshold_alerts(section, limit=limit)
-    section_data["ConfidenceThresholdAlerts"] = stored
-    total = len(section.confidence_threshold_alerts)
+    if alerts:
+        section_data["ConfidenceThresholdAlerts"] = stored
     if len(stored) < total:
         section_data["ConfidenceThresholdAlertsTotal"] = total
         logger.warning(
@@ -437,25 +446,9 @@ def serialize_processing_issues(section: Section) -> List[Dict[str, Any]]:
     """
     Serialize a Section's structured processing issues to compact camelCase
     dicts mirroring the GraphQL ``ProcessingIssue`` type. ``details`` is
-    JSON-stringified rather than stored as a nested map, keeping the attribute
-    to one scalar regardless of the blob's shape. Note no consumer reads
-    ``details`` back today (the API resolvers strip it — it is not part of the
-    GraphQL type); it is written for parity with the live doc item.
+    JSON-encoded so the tracking item stays a flat, schema-friendly shape.
     """
-    issues_data: List[Dict[str, Any]] = []
-    for issue in section.processing_issues or []:
-        issue_item: Dict[str, Any] = {
-            "stage": issue.stage,
-            "severity": issue.severity,
-            "code": issue.code,
-            "message": issue.message,
-        }
-        if issue.root_cause:
-            issue_item["rootCause"] = issue.root_cause
-        if issue.details:
-            issue_item["details"] = json.dumps(issue.details, default=str)
-        issues_data.append(issue_item)
-    return issues_data
+    return serialize_issue_list(section.processing_issues or [])
 
 
 class DocumentDynamoDBService:
@@ -540,6 +533,13 @@ class DocumentDynamoDBService:
             item["SubmissionSource"] = document.submission_source
         if document.test_set_id:
             item["TestSetId"] = document.test_set_id
+        # Caller-supplied attributes, snapshotted at intake (#1851). Written only
+        # when present, so a document without any gets exactly the item it always
+        # did. Floats go in as Decimal; a whole-valued float reads back as an int.
+        if document.attributes:
+            item["DocumentAttributes"] = convert_floats_to_decimal(
+                dict(document.attributes)
+            )
         # Which object version the malware gate is waiting on. Written HERE, on
         # create, rather than by a later update: the gate's compare-and-set reads
         # it, so a window in which the row exists without it is a window in which
@@ -563,6 +563,14 @@ class DocumentDynamoDBService:
             item["ConfigMappingPrefix"] = document.config_mapping_prefix
         if document.config_assignment_error:
             item["ConfigAssignmentError"] = document.config_assignment_error
+        # Document-level processing issues, which only ingest writes today (#597):
+        # the row is created before any section exists, so this is the one channel
+        # an ingest-time warning has. The count is written beside it so the
+        # document list's badge has text behind it from the first moment the row
+        # exists, rather than only after the workflow's first whole-document write.
+        if document.processing_issues:
+            item["ProcessingIssues"] = serialize_issue_list(document.processing_issues)
+            item["ProcessingIssueCount"] = document.processing_issue_count
 
         if expires_after:
             item["ExpiresAfter"] = expires_after
@@ -978,6 +986,17 @@ class DocumentDynamoDBService:
             # build a filter on it without also handling the fact that it is never
             # REMOVEd: a document that once carried an issue keeps the attribute
             # after a later run clears it.
+            # The document-level list is written under the same gate as the count
+            # it contributes to, so the two are always written from one object.
+            # SET only, never REMOVEd: `create_document` replaces the whole row, so
+            # a new ingest or a reprocess already starts it empty.
+            if document.processing_issues:
+                set_expressions.append("#DocProcessingIssues = :DocProcessingIssues")
+                expression_names["#DocProcessingIssues"] = "ProcessingIssues"
+                expression_values[":DocProcessingIssues"] = serialize_issue_list(
+                    document.processing_issues
+                )
+
             if issue_count > 0:
                 set_expressions.append("#HasProcessingIssues = :HasProcessingIssues")
                 expression_names["#HasProcessingIssues"] = "HasProcessingIssues"
@@ -1001,12 +1020,17 @@ class DocumentDynamoDBService:
         # union, which no longer matches the declared Dict[str, Any].
         return update_expression, expression_names, expression_values  # pyright: ignore[reportReturnType]
 
-    def _dynamodb_item_to_document(self, item: Dict[str, Any]) -> Document:
+    def _dynamodb_item_to_document(
+        self, item: Dict[str, Any], *, with_policy_rule_validation: bool = False
+    ) -> Document:
         """
         Convert DynamoDB item data to a Document object.
 
         Args:
             item: The document item returned from DynamoDB
+            with_policy_rule_validation: Also restore the policy rule validation
+                result from the JSON string this service stores it as. See
+                ``get_document``.
 
         Returns:
             Document object populated with data from DynamoDB
@@ -1119,28 +1143,12 @@ class DocumentDynamoDBService:
                             }
                         )
 
-                # Convert persisted processing issues back to ProcessingIssue.
-                processing_issues = []
-                issues_data = section_data.get("ProcessingIssues", [])
-                if issues_data:
-                    for iss in issues_data:
-                        details = iss.get("details")
-                        if isinstance(details, str):
-                            try:
-                                details = json.loads(details)
-                            except (json.JSONDecodeError, TypeError):
-                                details = {}
-                        processing_issues.append(
-                            ProcessingIssue(
-                                stage=iss.get("stage", ""),
-                                severity=iss.get("severity", "info"),
-                                code=iss.get("code", ""),
-                                message=iss.get("message", ""),
-                                root_cause=iss.get("rootCause", ""),
-                                section_id=section_data.get("Id"),
-                                details=details or {},
-                            )
-                        )
+                # Convert persisted processing issues back to ProcessingIssue,
+                # through the same helper the document-level list uses.
+                processing_issues = deserialize_issue_list(
+                    section_data.get("ProcessingIssues"),
+                    section_id=section_data.get("Id"),
+                )
 
                 doc.sections.append(
                     Section(
@@ -1155,6 +1163,18 @@ class DocumentDynamoDBService:
                         page_ids=page_ids,
                         extraction_result_uri=section_data.get("OutputJSONUri"),
                         confidence_threshold_alerts=confidence_threshold_alerts,
+                        # Present only when the stored list was capped: the
+                        # section's true alert count.
+                        confidence_alert_total=(
+                            int(alert_total)
+                            if (
+                                alert_total := section_data.get(
+                                    "ConfidenceThresholdAlertsTotal"
+                                )
+                            )
+                            is not None
+                            else None
+                        ),
                         missing_required_fields=_read_alert_shaped_list(
                             section_data.get("MissingRequiredFields")
                         ),
@@ -1188,6 +1208,24 @@ class DocumentDynamoDBService:
         doc.missing_required_field_count = int(
             item.get("MissingRequiredFieldCount") or 0
         )
+        # Read back for the same reason: a load->write round trip must not drop the
+        # ingest-time issue from the count it contributes to.
+        doc.processing_issues = deserialize_issue_list(item.get("ProcessingIssues"))
+        # Read back so a load->write round trip (reprocess, a review finalize run)
+        # carries the intake snapshot rather than an empty set.
+        stored_attributes = item.get("DocumentAttributes")
+        if isinstance(stored_attributes, dict):
+            doc.attributes = convert_decimals_to_native(stored_attributes)
+        # The same for the alert count: every whole-document write persists it,
+        # so a document reloaded here must carry the stored figure, not 0.
+        doc.confidence_alert_count = int(item.get("ConfidenceAlertCount") or 0)
+
+        # Where the document came from. Only the create path writes these, so
+        # restoring them changes no write. A run that starts from a reloaded
+        # document (after assembly, or a reprocess) needs them to keep a Test
+        # Studio document out of the review queues.
+        doc.submission_source = item.get("SubmissionSource")
+        doc.test_set_id = item.get("TestSetId")
 
         # Convert Review Status fields
         doc.hitl_status = item.get("HITLStatus")
@@ -1211,6 +1249,8 @@ class DocumentDynamoDBService:
                 from idp_common.models import RuleValidationResult
 
                 rv_data = item.get("RuleValidationResult")
+                if with_policy_rule_validation and isinstance(rv_data, str):
+                    rv_data = json.loads(rv_data)
                 doc.rule_validation_result = RuleValidationResult(
                     request_id=rv_data.get("request_id"),
                     summary=rv_data.get("summary"),
@@ -1400,8 +1440,21 @@ class DocumentDynamoDBService:
             condition_expression="attribute_exists(PK)",
         )
 
+    def remove_attributes(self, object_key: str, names: Sequence[str]) -> None:
+        """Remove the named attributes from a document's tracking row.
+
+        ``update_document`` sets attributes and never removes one, so a caller
+        that cleared part of a document (a result a run will produce again)
+        removes the attributes that held it. Requires the row to exist.
+        """
+        self.update_review_attributes(object_key, {}, names)
+
     def get_document(
-        self, object_key: str, *, consistent_read: bool = False
+        self,
+        object_key: str,
+        *,
+        consistent_read: bool = False,
+        with_policy_rule_validation: bool = False,
     ) -> Optional[Document]:
         """
         Get a document from DynamoDB by its object key.
@@ -1412,6 +1465,14 @@ class DocumentDynamoDBService:
                 is eventually consistent, so it can miss a write that has just
                 landed; a caller re-reading to decide what happened after a
                 conditional write was refused needs the current item.
+            with_policy_rule_validation: Also restore ``rule_validation_result``.
+                ``update_document`` stores it as a JSON string, and a read does
+                not restore it from that form unless this is set. The runs that
+                requeue a document read this way (saved edits, a completed
+                review) depend on the result being absent: policy rule
+                validation skips a document that already carries one, and those
+                runs must validate again. A caller that keeps the stage's result
+                (a run that starts after it) sets this.
 
         Returns:
             Document object if found, None otherwise
@@ -1426,7 +1487,9 @@ class DocumentDynamoDBService:
 
         item = self.client.get_item(key, consistent_read=consistent_read)
         if item:
-            return self._dynamodb_item_to_document(item)
+            return self._dynamodb_item_to_document(
+                item, with_policy_rule_validation=with_policy_rule_validation
+            )
         return None
 
     def claim_for_execution(self, object_key: str) -> bool:

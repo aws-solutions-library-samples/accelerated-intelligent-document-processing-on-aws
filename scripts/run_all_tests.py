@@ -19,7 +19,7 @@ is a hard error, so adding tests in a new location forces a conscious decision
 here.
 
 It also decides the verdict on the **standing-failure baseline** declared in
-``.claude/skills/full-test-battery.md``, because this is the process that has the
+``.claude/skills/full-test-battery/SKILL.md``, because this is the process that has the
 results. A failure nobody declared is red, as before; a declared failure that did
 not occur is now red too, so a row cannot outlive its cause and become a waiver
 over a passing test. Each root's results are written as JUnit XML under
@@ -124,6 +124,8 @@ RUN_ROOTS = [
     "feature-platform/feature-template/feature-api/tests",
     "feature-platform/idp-data-generator/feature-api/tests",
     "feature-platform/idp-data-generator/docker_build_lambda/tests",
+    "feature-platform/decision-model-decider/image-build/tests",
+    "feature-platform/decision-model-decider/ui-deployer/tests",
     "feature-platform/pii-anonymizer/feature-api/tests",
     "feature-platform/pii-anonymizer/hook/tests",
     "feature-platform/pii-anonymizer/ui-deployer/tests",
@@ -222,6 +224,7 @@ RUN_ROOTS = [
     "src/lambda/chat_with_document_processor/tests",
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
+    "src/lambda/customer_managed_kms_key_check",
     "src/lambda/external_idp_group_mapping",
     "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",

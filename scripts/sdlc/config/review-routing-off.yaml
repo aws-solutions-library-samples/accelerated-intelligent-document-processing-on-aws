@@ -1,0 +1,14 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Switches Review Routing off in the default profile of a test deployment.
+#
+# A new stack has Review Routing on, so a document with a field under its
+# confidence threshold, or with a required field missing, waits in a review
+# queue for a reviewer. The integration test and the GovCloud transform test
+# process documents unattended and wait for each to complete, so they upload
+# this file to the default profile once the stack is deployed. The upload is a
+# change to that profile: every other setting keeps its value.
+
+hitl:
+  enabled: false

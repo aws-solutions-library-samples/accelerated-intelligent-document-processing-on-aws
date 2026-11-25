@@ -20,6 +20,7 @@ import boto3
 import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
 from idp_common.config_scope import unscoped_is_denied
+from idp_common.agents.common.chat_text import visible_chat_text
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
 from idp_common.chat_session_agents import (
@@ -70,6 +71,7 @@ _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 # agent_chat_resolver — the two enforce the same operation on two different entry
 # paths.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+_QUICK_START_ROLES = ("Admin",)
 
 
 def _caller_in_groups(event, allowed):
@@ -88,8 +90,19 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
+def _quick_start_enabled():
+    """Whether this deployment offers Quick Start: ``EnableQuickStartWidget``.
+
+    The template sets ``QUICK_START_ENABLED`` from that parameter on every function
+    that can run a Quick Start turn. Unset reads as the parameter's default.
+    """
+    return os.environ.get("QUICK_START_ENABLED", "true").strip().lower() != "false"
+
+
 def _enforce_agent_chat_groups(event):
-    """Reject a caller who is not in a group permitted to use Agent Chat.
+    """Reject a caller who is not in a group permitted to use Agent Chat, and a
+    Quick Start turn (``method`` ``quick_start``) from anyone but an Admin, or from
+    anyone at all on a deployment that turns Quick Start off.
 
     The resolver in front of the dispatcher path already applies this check; this
     is the same gate applied where the work actually happens, so an invocation
@@ -112,11 +125,15 @@ def _enforce_agent_chat_groups(event):
     real 403 before the response is committed. This copy of the check remains the
     last line of defence for any invocation that reaches the function directly.
 
-    Invocations with no ``identity`` are not group-checked: they are the backend
-    paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,
-    whose transport forwards no Cognito group claim — see ``_caller_identity`` in
-    src/lambda/chat_stream_processor/app.py). Those are gated by IAM instead.
+    Invocations with no ``identity`` are not group-checked: they are backend
+    paths (a direct ``lambda:InvokeFunction``), gated by IAM instead. Both chat
+    routes forward one: the resolver from the dispatcher's claims, and the
+    streaming route from the verified ID token (``_caller_identity`` in
+    src/lambda/chat_stream_processor/app.py).
     """
+    if event.get("method") == "quick_start" and not _quick_start_enabled():
+        logger.warning("Rejecting Quick Start: it is turned off for this deployment")
+        raise PermissionError("Quick Start is turned off for this deployment")
     if event.get("identity") is None:
         return
     if not _caller_in_groups(event, _AGENT_CHAT_GROUPS):
@@ -136,6 +153,11 @@ def _enforce_agent_chat_groups(event):
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )
+    if event.get("method") == "quick_start" and not _caller_in_groups(
+        event, _QUICK_START_ROLES
+    ):
+        logger.warning("Rejecting Quick Start: caller is not an Admin")
+        raise PermissionError("Unauthorized: Quick Start requires the Admin group")
 
 
 def _owner_sub(event):
@@ -312,13 +334,16 @@ def _persist_chat_turn(
                     "ExpiresAfter": expires_after,
                 }
             )
-        last_message = prompt[:100] + "..." if len(prompt) > 100 else prompt
+        visible = visible_chat_text(prompt)
+        last_message = visible[:100] + "..." if len(visible) > 100 else visible
         # Count only the messages THIS call stored.
         stored_count = (1 if persist_user_message else 0) + (1 if assistant_text else 0)
         existing = sessions_table.get_item(
             Key={"userId": user_id, "sessionId": session_id}
         ).get("Item")
         if existing:
+            if not last_message:
+                last_message = existing.get("lastMessage", "")
             if stored_count:
                 sessions_table.update_item(
                     Key={"userId": user_id, "sessionId": session_id},
@@ -334,7 +359,7 @@ def _persist_chat_turn(
                     },
                 )
         else:
-            title = prompt.strip()
+            title = visible or "Quick Start"
             if len(title) > 50:
                 title = title[:47] + "..."
             sessions_table.put_item(

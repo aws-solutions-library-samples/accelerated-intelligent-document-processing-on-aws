@@ -12,8 +12,10 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
-import { render, waitFor } from '@testing-library/react';
+import { waitFor } from '@testing-library/react';
+import { renderWithIntl as render } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -73,11 +75,18 @@ const ready = (over: Partial<EditReady> = {}): EditModel => ({
   },
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderPage = (model: EditModel) =>
   render(
     <MemoryRouter>
       <EditPage model={model} />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const button = (name: string) => {
@@ -107,6 +116,7 @@ describe('the edit screen bar with Refresh', () => {
       >
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(barButtonLabels()).toEqual(['Refresh', 'Skip', 'Cancel', 'Save', 'Process Changes']);
     button('Refresh').click();
@@ -118,6 +128,7 @@ describe('the edit screen bar with Refresh', () => {
       <EditScreen title="a.pdf" objectKey="in/a.pdf" actions={{ busy: 'save', onAction: vi.fn(), showRefresh: true }}>
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     const refresh = createWrapper(document.body)
       .findHeader()!
@@ -134,6 +145,7 @@ describe('the edit screen bar with Refresh', () => {
       <EditScreen title="a.pdf" objectKey="in/a.pdf" actions={{ busy: null, onAction: vi.fn(), showRefresh: true, showClaim: true }}>
         <div />
       </EditScreen>,
+      { wrapper: English },
     );
     expect(barButtonLabels()).toEqual(['Refresh', 'Claim']);
   });

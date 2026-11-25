@@ -22,11 +22,22 @@ import {
 } from '@cloudscape-design/components';
 import type { BoxProps } from '@cloudscape-design/components';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 import SchemaBuilder from '../json-schema-builder/SchemaBuilder';
 import FieldDescription, { stripInlineMarkdown } from './FieldDescription';
+import RoutingLayout from '../config-routing/RoutingLayout';
+import type { RoutingConfig } from '../config-routing/routing-types';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import useUserRole from '../../hooks/use-user-role';
 import { TEST_STUDIO_PATH } from '../../routes/constants';
+
+const messages = defineMessages<{ routingTab: NoMessageValues }>({
+  routingTab: {
+    id: 'configuration.builder.routingTab',
+    defaultMessage: 'Routing Rules',
+    description: 'Label of the configuration tab that holds the routing rules of a profile.',
+  },
+});
 
 // Turn a schema key into a concise, human-readable field label.
 // e.g. "assessment_integration" -> "Assessment Integration",
@@ -617,6 +628,18 @@ interface ConfigBuilderProps {
   highlightClassName?: string | null;
   versionDescription?: string;
   onDescriptionChange?: ((description: string) => void) | null;
+  /** Show the Routing Rules tab (the profile's routing table), after Policy Schema. */
+  showRoutingTab?: boolean;
+  /** The profile's `routing` section, as the form holds it. */
+  routing?: unknown;
+  onRoutingChange?: ((routing: RoutingConfig) => void) | null;
+  /** True for anyone but an Admin: the tab then shows the routing rules and offers no action. */
+  routingReadOnly?: boolean;
+  /** The profile's document classes and policy classes, for a rule's field and policy paths. */
+  classes?: unknown;
+  policyClasses?: unknown;
+  /** What the server refused about the routing table on the last save. */
+  routingServerError?: string | null;
 }
 
 const ConfigBuilder = ({
@@ -640,6 +663,13 @@ const ConfigBuilder = ({
   highlightClassName = null,
   versionDescription = '',
   onDescriptionChange = null,
+  showRoutingTab = false,
+  routing = null,
+  onRoutingChange = null,
+  routingReadOnly = true,
+  classes = null,
+  policyClasses = null,
+  routingServerError = null,
 }: ConfigBuilderProps): React.JSX.Element => {
   const navigate = useNavigate();
   const { available: generatorAvailable } = useSyntheticDataGenerator();
@@ -2130,6 +2160,40 @@ const ConfigBuilder = ({
                         onValidate={onRuleSchemaValidate}
                         isRuleSchema={true}
                         highlightClassName={highlightClassName}
+                      />
+                    </ExtBox>
+                  ),
+                },
+              ]
+            : []),
+          // The label is a message component, so it needs the locale provider only
+          // when the tab is shown.
+          ...(showRoutingTab
+            ? [
+                {
+                  id: 'routing',
+                  label: <FormattedMessage {...messages.routingTab} />,
+                  content: (
+                    <ExtBox style={{ height: 'calc(70vh - 60px)', overflow: 'auto' }} padding="s">
+                      <RoutingLayout
+                        routing={routing}
+                        onChange={(next) => onRoutingChange?.(next)}
+                        readOnly={routingReadOnly || !onRoutingChange}
+                        reviewRoutingEnabled={normalizeBoolish(getValueAtPath(formValues, 'hitl.enabled')) === true}
+                        // The rule of idp_common.config.feature_flags.policy_rule_validation_enabled,
+                        // on the form's values: the stage is on unless it is switched off, and it
+                        // runs only for a profile that has policies.
+                        policyRuleValidationEnabled={
+                          normalizeBoolish(getValueAtPath(formValues, 'rule_validation.enabled')) !== false &&
+                          Array.isArray(formValues.policy_classes) &&
+                          formValues.policy_classes.length > 0
+                        }
+                        onOpenProcessingSettings={() => setActiveTabId('configuration')}
+                        classes={classes}
+                        policyClasses={policyClasses}
+                        defaults={defaultConfig?.routing}
+                        profileName={currentVersionName || 'default'}
+                        serverError={routingServerError}
                       />
                     </ExtBox>
                   ),

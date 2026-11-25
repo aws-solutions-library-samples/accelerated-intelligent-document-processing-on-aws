@@ -1,26 +1,46 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../contexts/app';
 import { Notification } from '../types/common';
 
 const logger = new ConsoleLogger('useNotifications');
 
+const messages = defineMessages<{ welcome: NoMessageValues; dismiss: NoMessageValues }>({
+  welcome: {
+    id: 'common.notifications.welcome',
+    defaultMessage: 'Welcome to GenAI IDP (GenAIIDP)',
+    description: 'Banner at the top of the app until the user dismisses it. GenAI IDP (GenAIIDP) is the name of the product.',
+  },
+  dismiss: {
+    id: 'common.notifications.dismiss',
+    defaultMessage: 'Dismiss message',
+    description:
+      'Screen-reader label of the button that closes a message at the top of the page (the welcome banner, an error or a confirmation).',
+  },
+});
+
 const dismissedInitialNotificationsStorageKey = 'dismissedInitialNotifications';
 
+/** The welcome banner's id, which also records its dismissal; its text is worded when returned. */
+const WELCOME_ID = 'welcome-1';
+
+// The state holds no UI text of its own: the welcome banner and every dismiss label are
+// worded where the hook returns them, in the UI's language.
 const initialNotifications: Omit<Notification, 'onDismiss'>[] = [
   {
     type: 'info',
-    content: 'Welcome to GenAI IDP (GenAIIDP)',
+    content: '',
     dismissible: true,
-    dismissLabel: 'Dismiss message',
-    id: 'welcome-1',
+    id: WELCOME_ID,
   },
 ];
 
 const useNotifications = (): Notification[] => {
+  const intl = useIntl();
   const { errorMessage, setErrorMessage, successMessage, setSuccessMessage } = useAppContext();
 
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -112,7 +132,6 @@ const useNotifications = (): Notification[] => {
       type: 'error',
       content: errorMessage,
       dismissible: true,
-      dismissLabel: 'Dismiss message',
       id,
       onDismiss: () => {
         setNotifications((current) => current.filter((i) => i.id !== id));
@@ -134,7 +153,6 @@ const useNotifications = (): Notification[] => {
       type: 'success',
       content: successMessage,
       dismissible: true,
-      dismissLabel: 'Dismiss message',
       id,
       onDismiss: () => {
         setNotifications((current) => current.filter((i) => i.id !== id));
@@ -151,7 +169,16 @@ const useNotifications = (): Notification[] => {
     return undefined;
   }, [successMessage]);
 
-  return notifications;
+  // Worded here, not in the effects, so a language change relabels the banners and adds none.
+  return useMemo(
+    () =>
+      notifications.map((n) => ({
+        ...n,
+        content: n.id === WELCOME_ID ? intl.formatMessage(messages.welcome) : n.content,
+        dismissLabel: intl.formatMessage(messages.dismiss),
+      })),
+    [notifications, intl],
+  );
 };
 
 export default useNotifications;

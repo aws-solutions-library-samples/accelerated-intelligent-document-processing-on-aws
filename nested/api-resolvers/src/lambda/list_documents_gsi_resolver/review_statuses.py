@@ -130,6 +130,8 @@ TRACKING_REVIEW_ATTRIBUTES = (
     "HITLStatus",
     "HITLReviewedBy",
     "ReviewQueue",
+    "ReviewQueueName",
+    "ReviewRoutedBy",
     "ReviewCycleId",
     "ReviewStatusUri",
     "ReviewDisposedAt",

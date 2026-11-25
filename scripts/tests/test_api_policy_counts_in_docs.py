@@ -84,7 +84,7 @@ _EXPECTATIONS = _REPO / "scripts" / "api_rbac_expectations.yaml"
 SCANNED_DOCS = (
     "docs/rbac.md",
     "docs/migration-appsync-to-rest.md",
-    ".claude/skills/api-rbac-test.md",
+    ".claude/skills/api-rbac-test/SKILL.md",
     "security/threat-modeling/feature-threats/rbac-authentication.md",
     "security/threat-modeling/architecture/system-overview.md",
     # Only the `[Unreleased]` section is read — see `_document_text`.
@@ -135,7 +135,7 @@ EXCLUDED_DOCS: dict[str, tuple[frozenset[str], str]] = {
 MIN_FINDINGS_PER_DOC = {
     "docs/rbac.md": 6,
     "docs/migration-appsync-to-rest.md": 4,
-    ".claude/skills/api-rbac-test.md": 3,
+    ".claude/skills/api-rbac-test/SKILL.md": 3,
     "security/threat-modeling/feature-threats/rbac-authentication.md": 12,
     "security/threat-modeling/architecture/system-overview.md": 6,
     # The `[Unreleased]` section states the change, not the distribution, so it reads
@@ -148,9 +148,8 @@ MIN_FINDINGS_PER_DOC = {
 def _tracked_markdown() -> list[str]:
     """Every tracked ``.md`` path, symlinks excluded.
 
-    Symlinks are skipped because `.cline/skills/*.md` are symlinks to the `.claude`
-    originals — the same bytes under a second name, which would double every finding
-    and report a failure twice.
+    Symlinks are skipped because a Markdown symlink is the same bytes under a second
+    name, which would double every finding and report a failure twice.
     """
     out = subprocess.run(
         ["git", "ls-files", "-z", "*.md"],

@@ -77,17 +77,23 @@ class DocumentState(str, Enum):
 
 
 class DocumentBucket(str, Enum):
-    """The four progress buckets every `DocumentState` is reported under.
+    """The progress buckets every `DocumentState` is reported under.
 
     `idp_sdk`'s progress monitor and `idp-cli`'s display layer both group
-    documents into exactly these four, and they are the keys of the
-    `status_data` dict `idp_cli/display.py` consumes.
+    documents into exactly these, and they are the keys of the `status_data`
+    dict `idp_cli/display.py` consumes.
+
+    `AWAITING_REVIEW` is neither finished nor in flight: processing has stopped
+    and the document is waiting for a person to work it in a review queue. A
+    monitor treats it as settled -- nothing more happens without a reviewer --
+    but never as a success or a failure.
     """
 
     COMPLETED = "completed"
     RUNNING = "running"
     QUEUED = "queued"
     FAILED = "failed"
+    AWAITING_REVIEW = "awaiting_review"
 
 
 #: Terminal and successful. `REDACTED_SUPERSEDED` belongs here rather than under
@@ -166,10 +172,25 @@ IN_FLIGHT_DOCUMENT_STATES = frozenset(
         DocumentState.RULE_VALIDATION,
         DocumentState.RULE_VALIDATION_ORCHESTRATOR,
         DocumentState.SUMMARIZING,
-        DocumentState.HITL_IN_PROGRESS,
         DocumentState.EVALUATING,
         DocumentState.POSTPROCESSING,
         DocumentState.IN_PROGRESS,
+    }
+)
+
+#: Processing has stopped and the document is waiting for a human reviewer.
+#:
+#: `HITL_IN_PROGRESS` is what the workflow writes when it ends phase 1 for a
+#: document routed to a review queue: the execution finishes and frees its slot,
+#: and only a reviewer's Complete or Reject starts the run that continues it. So
+#: it is not in flight -- a monitor that waits for it waits for a person, with no
+#: bound -- and it is not terminal either, because it will change once reviewed.
+#: It used to sit in `IN_FLIGHT_DOCUMENT_STATES`, which made
+#: `idp-cli run-inference --monitor` poll forever on any batch containing a
+#: document sent to review (#2022).
+AWAITING_REVIEW_DOCUMENT_STATES = frozenset(
+    {
+        DocumentState.HITL_IN_PROGRESS,
     }
 )
 
@@ -180,6 +201,7 @@ TERMINAL_DOCUMENT_STATES = SUCCESS_DOCUMENT_STATES | FAILED_DOCUMENT_STATES
 _DOCUMENT_STATE_BUCKETS: "dict[DocumentBucket, frozenset[DocumentState]]" = {
     DocumentBucket.COMPLETED: SUCCESS_DOCUMENT_STATES,
     DocumentBucket.FAILED: FAILED_DOCUMENT_STATES,
+    DocumentBucket.AWAITING_REVIEW: AWAITING_REVIEW_DOCUMENT_STATES,
     DocumentBucket.QUEUED: NOT_STARTED_DOCUMENT_STATES,
     DocumentBucket.RUNNING: IN_FLIGHT_DOCUMENT_STATES,
 }
@@ -298,7 +320,22 @@ class Pattern(str, Enum):
 
 
 class RerunStep(str, Enum):
-    """Pipeline steps for rerun operations."""
+    """The step a reprocess starts at.
 
+    The values are the steps of ``idp_common.run_plan.steps``, the alias ``ocr``
+    (the beginning) and ``resume`` (the first step that has no output).
+    ``scripts/tests/test_run_step_catalog.py`` holds the two lists together.
+    Not every step exists in both processing modes: ``assessment`` is a
+    Pipeline-mode step, and in BDA mode ``classification`` and ``extraction``
+    mean the beginning.
+    """
+
+    BEGINNING = "beginning"
+    OCR = "ocr"
     CLASSIFICATION = "classification"
     EXTRACTION = "extraction"
+    ASSESSMENT = "assessment"
+    POLICY_RULE_VALIDATION = "policy_rule_validation"
+    SUMMARIZATION = "summarization"
+    EVALUATION = "evaluation"
+    RESUME = "resume"

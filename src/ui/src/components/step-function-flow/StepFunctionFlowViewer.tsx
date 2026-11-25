@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT-0
  */
 import React, { useState, useEffect, useRef } from 'react';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 import { Container, Header, SpaceBetween, Box, Alert, Spinner, Button, Modal, Badge } from '@cloudscape-design/components';
 import {
   FaPlay,
@@ -23,22 +24,205 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { getStepFunctionExecution } from '../../graphql/generated';
 import { getMalwareScanView } from '../common/malware-scan';
 import type { MalwareScanFields } from '../common/malware-scan';
+import { stepMessage } from '../run-plan/StartStepPicker';
+import type { ProcessingMode } from '../run-plan/run-steps';
 import FlowDiagram from './FlowDiagram';
+import { isStepDisabled, type StepConfig } from './is-step-disabled';
+import SkippedStatus from './SkippedStatus';
+import { SKIPPED_STATUS, readRunPlan, withSkippedSteps, type ExecutionRunPlan } from './skipped-steps';
 import StepDetails from './StepDetails';
+import { stepLabelMessages, stepName, stepStatusLabel } from './step-labels';
+import { useFormatters } from '../../i18n/format';
 
 import './StepFunctionFlowViewer.css';
 
 const client = generateClient();
 const logger = new ConsoleLogger('StepFunctionFlowViewer');
 
-interface StepConfig {
-  summarization?: { enabled?: boolean };
-  // v0.6: confidence enablement lives under extraction.confidence; the slim
-  // assessment carrier still exposes `enabled` for the step itself.
-  extraction?: { confidence?: { enabled?: boolean } };
-  assessment?: { enabled?: boolean };
-  evaluation?: { enabled?: boolean };
-}
+const messages = defineMessages<{
+  title: NoMessageValues;
+  autoRefreshOn: NoMessageValues;
+  autoRefreshOff: NoMessageValues;
+  loading: NoMessageValues;
+  loadErrorHeader: NoMessageValues;
+  loadErrorFallback: NoMessageValues;
+  notFoundHeader: NoMessageValues;
+  notFound: NoMessageValues;
+  disableAutoRefresh: NoMessageValues;
+  enableAutoRefresh: NoMessageValues;
+  refreshNow: NoMessageValues;
+  lastUpdated: { readonly time: string };
+  overviewTitle: NoMessageValues;
+  executionFailed: NoMessageValues;
+  errorLabel: NoMessageValues;
+  diagramTitle: NoMessageValues;
+  stepDetailsTitle: NoMessageValues;
+  timelineTitle: NoMessageValues;
+  mapIteration: NoMessageValues;
+  skippedNote: { readonly step: string };
+  skippedNoteRejected: NoMessageValues;
+  beginningPipeline: NoMessageValues;
+  beginningBda: NoMessageValues;
+}>({
+  title: {
+    id: 'documents.processingFlow.title',
+    defaultMessage: 'Document Processing Flow',
+    description:
+      "Title of the dialog that Reports › Processing Flow opens on the document page, which shows the document's Step Functions execution.",
+  },
+  autoRefreshOn: {
+    id: 'documents.processingFlow.autoRefreshOn',
+    defaultMessage: '🔄 Auto-Refresh On',
+    description:
+      'Beside the refresh buttons in Reports › Processing Flow on the document page: the dialog reloads the execution every 10 seconds. Keep the emoji.',
+  },
+  autoRefreshOff: {
+    id: 'documents.processingFlow.autoRefreshOff',
+    defaultMessage: '⏸️ Auto-Refresh Off',
+    description:
+      'Beside the refresh buttons in Reports › Processing Flow on the document page: the dialog does not reload the execution by itself. Keep the emoji.',
+  },
+  loading: {
+    id: 'documents.processingFlow.loading',
+    defaultMessage: 'Loading processing flow...',
+    description: "Shown in Reports › Processing Flow on the document page while the document's Step Functions execution loads.",
+  },
+  loadErrorHeader: {
+    id: 'documents.processingFlow.loadErrorHeader',
+    defaultMessage: 'Error loading processing flow',
+    description: "Header of the alert in Reports › Processing Flow on the document page when the document's execution could not be loaded.",
+  },
+  loadErrorFallback: {
+    id: 'documents.processingFlow.loadErrorFallback',
+    defaultMessage: 'An error occurred while loading the processing flow.',
+    description:
+      "Text of the alert in Reports › Processing Flow on the document page when the document's execution could not be loaded and the error has no message of its own.",
+  },
+  notFoundHeader: {
+    id: 'documents.processingFlow.notFoundHeader',
+    defaultMessage: 'No processing flow found',
+    description:
+      'Header of the notice in Reports › Processing Flow on the document page when the document has no Step Functions execution.',
+  },
+  notFound: {
+    id: 'documents.processingFlow.notFound',
+    defaultMessage: 'No Step Functions execution found for this document.',
+    description:
+      'Text of the notice in Reports › Processing Flow on the document page when the document has no Step Functions execution. Step Functions is the name of an AWS service.',
+  },
+  disableAutoRefresh: {
+    id: 'documents.processingFlow.disableAutoRefresh',
+    defaultMessage: 'Disable Auto-Refresh',
+    description: 'Button in Reports › Processing Flow on the document page that stops reloading the execution every 10 seconds.',
+  },
+  enableAutoRefresh: {
+    id: 'documents.processingFlow.enableAutoRefresh',
+    defaultMessage: 'Enable Auto-Refresh',
+    description: 'Button in Reports › Processing Flow on the document page that starts reloading the execution every 10 seconds.',
+  },
+  refreshNow: {
+    id: 'documents.processingFlow.refreshNow',
+    defaultMessage: 'Refresh Now',
+    description: 'Button in Reports › Processing Flow on the document page that reloads the execution once.',
+  },
+  lastUpdated: {
+    id: 'documents.processingFlow.lastUpdated',
+    defaultMessage: 'Last updated: {time}',
+    description:
+      'When Reports › Processing Flow on the document page last loaded the execution. {time} is the time of day, formatted for the UI language.',
+  },
+  overviewTitle: {
+    id: 'documents.processingFlow.overviewTitle',
+    defaultMessage: 'Execution Overview',
+    description:
+      "Header of the section of Reports › Processing Flow on the document page that shows the execution's status, duration, start time and end time.",
+  },
+  executionFailed: {
+    id: 'documents.processingFlow.executionFailed',
+    defaultMessage: 'Execution Failed',
+    description:
+      'Header of the alert in the Execution Overview of Reports › Processing Flow on the document page when the execution failed. The alert shows the error the execution reported, in English.',
+  },
+  errorLabel: {
+    id: 'documents.processingFlow.errorLabel',
+    defaultMessage: 'Error:',
+    description:
+      'Bold label before the error an execution or a step reported, in the Execution Overview and the Steps Timeline of Reports › Processing Flow on the document page. The error stays in English.',
+  },
+  diagramTitle: {
+    id: 'documents.processingFlow.diagramTitle',
+    defaultMessage: 'Processing Flow',
+    description: "Header of the section of Reports › Processing Flow on the document page that draws the execution's steps as a diagram.",
+  },
+  stepDetailsTitle: {
+    id: 'documents.processingFlow.stepDetailsTitle',
+    defaultMessage: 'Step Details',
+    description:
+      'Header of the section of Reports › Processing Flow on the document page that shows the step chosen in the diagram or the Steps Timeline.',
+  },
+  timelineTitle: {
+    id: 'documents.processingFlow.timelineTitle',
+    defaultMessage: 'Steps Timeline',
+    description:
+      "Header of the section of Reports › Processing Flow on the document page that lists the execution's steps with their status and duration.",
+  },
+  mapIteration: {
+    id: 'documents.processingFlow.mapIteration',
+    defaultMessage: 'Map Iteration',
+    description:
+      'Badge on an entry of the Steps Timeline in Reports › Processing Flow on the document page that is one iteration of a Map step. Map is a Step Functions state type.',
+  },
+  skippedNote: {
+    id: 'documents.processingFlow.skippedNote',
+    defaultMessage: 'Skipped by the run plan. This run started at {step}.',
+    description:
+      'Why a step shown as Skipped in Reports › Processing Flow on the document page was not done: the tooltip of the step in the flow diagram and the Steps Timeline, and the notice in its Step Details. {step} is the name of the processing step the run started at, for example Extraction.',
+  },
+  skippedNoteRejected: {
+    id: 'documents.processingFlow.skippedNoteRejected',
+    defaultMessage: 'Skipped by the run plan. This run recorded a rejected review and did no processing step.',
+    description:
+      'Why a step shown as Skipped in Reports › Processing Flow on the document page was not done, for a run that only recorded a rejected review: the tooltip of the step in the flow diagram and the Steps Timeline, and the notice in its Step Details.',
+  },
+  beginningPipeline: {
+    id: 'documents.processingFlow.beginningPipeline',
+    defaultMessage: 'OCR',
+    description:
+      'Name of the first processing step of a document processed in Pipeline mode, in Reports › Processing Flow on the document page: the name of that step when the run skipped it, and of the step a run started at. OCR is optical character recognition.',
+  },
+  beginningBda: {
+    id: 'documents.processingFlow.beginningBda',
+    defaultMessage: 'Bedrock Data Automation',
+    description:
+      'Name of the first processing step of a document processed in BDA mode, in Reports › Processing Flow on the document page: the name of that step when the run skipped it, and of the step a run started at. Bedrock Data Automation is the name of an AWS service.',
+  },
+});
+
+/** The first step of a run plan's step list, which is named after what it does in each mode. */
+const BEGINNING = 'beginning';
+
+/**
+ * The name of a processing step of the run plan, as the viewer shows it: the web UI's one
+ * set of step labels (StartStepPicker.tsx), which also names the display steps a run can
+ * start at (Apply Review Changes). The first step is named after what it does in each mode.
+ */
+const runStepName = (intl: IntlShape, stepId: string, mode: ProcessingMode): string => {
+  if (stepId === BEGINNING) return intl.formatMessage(mode === 'bda' ? messages.beginningBda : messages.beginningPipeline);
+  const message = stepMessage(stepId);
+  return message ? intl.formatMessage(message) : stepId;
+};
+
+/** One "Skipped" entry for a step the run plan skipped, with why. */
+const skippedStep = (intl: IntlShape, stepId: string, plan: ExecutionRunPlan): Step => ({
+  name: runStepName(intl, stepId, plan.mode),
+  type: SKIPPED_STATUS,
+  status: SKIPPED_STATUS,
+  isMainStep: true,
+  skipNote:
+    plan.startStep === 'rejected'
+      ? intl.formatMessage(messages.skippedNoteRejected)
+      : intl.formatMessage(messages.skippedNote, { step: runStepName(intl, plan.startStep, plan.mode) }),
+});
 
 interface Step {
   name: string;
@@ -55,6 +239,10 @@ interface Step {
   iterationIndex?: number;
   mapIterations?: number;
   mapIterationDetails?: Step[];
+  /** Set on the entry of a step the run plan skipped: why it was not done. */
+  skipNote?: string;
+  /** Set on the Malware Scan step only: the document's verdict, which the step is recognised and worded by. */
+  malwareScan?: MalwareScanFields;
 }
 
 interface ExecutionData {
@@ -62,6 +250,8 @@ interface ExecutionData {
     status: string;
     startDate?: string;
     stopDate?: string;
+    /** The execution input (AWSJSON), which carries the run plan. */
+    input?: string | null;
     error?: string;
     steps?: Step[];
   };
@@ -85,7 +275,11 @@ interface StepFunctionFlowViewerProps {
   malwareScan?: MalwareScanFields | null;
 }
 
-/** The leading synthetic step, built from the document's own verdict. */
+/**
+ * The `name` of the leading synthetic step, built from the document's own verdict. Like every
+ * step's name, it keys the step's elements and matches the selected step. It is not shown:
+ * `stepName` names the step in the UI's language.
+ */
 const MALWARE_SCAN_STEP_NAME = 'Malware Scan';
 
 export const buildMalwareScanStep = (scan?: MalwareScanFields | null): Step | null => {
@@ -125,31 +319,10 @@ export const buildMalwareScanStep = (scan?: MalwareScanFields | null): Step | nu
     // execution failure, and this execution did not fail — for a refused
     // document it never started. The detail panel's alert carries the remedy.
     output: view.detail,
+    // The verdict marks the step: where it shows, `stepName` and `stepOutput` word it in the UI's
+    // language, so this build, which runs inside the fetch, needs no `intl`.
+    malwareScan: scan,
   };
-};
-
-// Helper function to check if a step is disabled based on configuration
-const isStepDisabled = (stepName: string, config: StepConfig | null | undefined): boolean => {
-  if (!config) return false;
-
-  const stepNameLower = stepName.toLowerCase();
-
-  // Check if this is a summarization step
-  if (stepNameLower.includes('summarization') || stepNameLower.includes('summary')) {
-    return config.summarization?.enabled === false;
-  }
-
-  // Check if this is an assessment step
-  if (stepNameLower.includes('assessment') || stepNameLower.includes('assess')) {
-    return (config.extraction?.confidence?.enabled ?? config.assessment?.enabled) === false;
-  }
-
-  // Check if this is an evaluation step
-  if (stepNameLower.includes('evaluation') || stepNameLower.includes('evaluate')) {
-    return config.evaluation?.enabled === false;
-  }
-
-  return false;
 };
 
 const StepFunctionFlowViewer = ({
@@ -159,6 +332,8 @@ const StepFunctionFlowViewer = ({
   mergedConfig = null,
   malwareScan = null,
 }: StepFunctionFlowViewerProps): React.JSX.Element => {
+  const intl = useIntl();
+  const { formatDateTime, formatTime } = useFormatters();
   const [selectedStep, setSelectedStep] = useState<Step | null>(null);
   const [data, setData] = useState<ExecutionData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -236,7 +411,11 @@ const StepFunctionFlowViewer = ({
         // first is where it belongs chronologically and where a reader looks for
         // "was this document allowed in".
         const malwareStep = buildMalwareScanStep(malwareScan);
-        setProcessedSteps(malwareStep ? [malwareStep, ...enhancedSteps] : enhancedSteps);
+        // A run that started at a later step, or skipped an optional one, never entered
+        // the states of the steps it left out: each is shown as one Skipped entry.
+        const plan = readRunPlan(((resultData as Record<string, unknown>).getStepFunctionExecution as Record<string, unknown>).input);
+        const shownSteps = plan ? withSkippedSteps(enhancedSteps, plan, (stepId) => skippedStep(intl, stepId, plan)) : enhancedSteps;
+        setProcessedSteps(malwareStep ? [malwareStep, ...shownSteps] : shownSteps);
 
         // If there's a failed step and no step is currently selected, select the first failed step
         if (!selectedStep) {
@@ -300,13 +479,13 @@ const StepFunctionFlowViewer = ({
     if (autoRefreshEnabled) {
       return (
         <Box variant="small" color="text-status-success">
-          🔄 Auto-Refresh On
+          <FormattedMessage {...messages.autoRefreshOn} />
         </Box>
       );
     }
     return (
       <Box variant="small" color="text-status-inactive">
-        ⏸️ Auto-Refresh Off
+        <FormattedMessage {...messages.autoRefreshOff} />
       </Box>
     );
   };
@@ -343,46 +522,46 @@ const StepFunctionFlowViewer = ({
     }
   }, [data]);
 
-  const getStepIcon = (stepName: string, stepType: string, status: string): React.JSX.Element => {
+  const getStepIcon = (name: string, stepType: string, status: string): React.JSX.Element => {
     const iconProps = { size: 24, className: `step-icon step-icon-${status.toLowerCase()}` };
 
-    if (stepName.toLowerCase().includes('upload') || stepName.toLowerCase().includes('input')) {
+    if (name.toLowerCase().includes('upload') || name.toLowerCase().includes('input')) {
       return <FaFileAlt size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('bda') || stepName.toLowerCase().includes('bedrock')) {
+    if (name.toLowerCase().includes('bda') || name.toLowerCase().includes('bedrock')) {
       return <FaRobot size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('review') || stepName.toLowerCase().includes('hitl')) {
+    if (name.toLowerCase().includes('review') || name.toLowerCase().includes('hitl')) {
       return <FaEye size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('result') || stepName.toLowerCase().includes('process')) {
+    if (name.toLowerCase().includes('result') || name.toLowerCase().includes('process')) {
       return <FaChartBar size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('map') || stepName.toLowerCase().includes('sections')) {
+    if (name.toLowerCase().includes('map') || name.toLowerCase().includes('sections')) {
       return <FaMap size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('iterator')) {
+    if (name.toLowerCase().includes('iterator')) {
       return <FaList size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('ocr')) {
+    if (name.toLowerCase().includes('ocr')) {
       return <FaFileAlt size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('classification')) {
+    if (name.toLowerCase().includes('classification')) {
       return <FaRobot size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('extraction')) {
+    if (name.toLowerCase().includes('extraction')) {
       return <FaRobot size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('assessment')) {
+    if (name.toLowerCase().includes('assessment')) {
       return <FaEye size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('summarization')) {
+    if (name.toLowerCase().includes('summarization')) {
       return <FaChartBar size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('evaluation')) {
+    if (name.toLowerCase().includes('evaluation')) {
       return <FaChartBar size={iconProps.size} className={iconProps.className} />;
     }
-    if (stepName.toLowerCase().includes('workflow')) {
+    if (name.toLowerCase().includes('workflow')) {
       return <FaCheck size={iconProps.size} className={iconProps.className} />;
     }
 
@@ -400,7 +579,7 @@ const StepFunctionFlowViewer = ({
   };
 
   const formatDuration = (startDate?: string, stopDate?: string): string => {
-    if (!startDate) return 'N/A';
+    if (!startDate) return intl.formatMessage(stepLabelMessages.notAvailable);
     const start = new Date(startDate);
     const end = stopDate ? new Date(stopDate) : new Date();
     const duration = Math.floor((end.getTime() - start.getTime()) / 1000);
@@ -412,11 +591,11 @@ const StepFunctionFlowViewer = ({
 
   if (loading && !data) {
     return (
-      <Modal visible={visible} onDismiss={onDismiss} header="Document Processing Flow" size="max">
+      <Modal visible={visible} onDismiss={onDismiss} header={intl.formatMessage(messages.title)} size="max">
         <Box textAlign="center" padding="xxl">
           <Spinner size="large" />
           <Box variant="p" margin={{ top: 'm' }}>
-            Loading processing flow...
+            <FormattedMessage {...messages.loading} />
           </Box>
         </Box>
       </Modal>
@@ -425,9 +604,9 @@ const StepFunctionFlowViewer = ({
 
   if (error) {
     return (
-      <Modal visible={visible} onDismiss={onDismiss} header="Document Processing Flow" size="max">
-        <Alert type="error" header="Error loading processing flow">
-          {String(error.message || 'An error occurred while loading the processing flow.')}
+      <Modal visible={visible} onDismiss={onDismiss} header={intl.formatMessage(messages.title)} size="max">
+        <Alert type="error" header={intl.formatMessage(messages.loadErrorHeader)}>
+          {String(error.message || intl.formatMessage(messages.loadErrorFallback))}
         </Alert>
       </Modal>
     );
@@ -436,9 +615,9 @@ const StepFunctionFlowViewer = ({
   const execution = data?.getStepFunctionExecution;
   if (!execution) {
     return (
-      <Modal visible={visible} onDismiss={onDismiss} header="Document Processing Flow" size="max">
-        <Alert type="info" header="No processing flow found">
-          No Step Functions execution found for this document.
+      <Modal visible={visible} onDismiss={onDismiss} header={intl.formatMessage(messages.title)} size="max">
+        <Alert type="info" header={intl.formatMessage(messages.notFoundHeader)}>
+          <FormattedMessage {...messages.notFound} />
         </Alert>
       </Modal>
     );
@@ -462,56 +641,81 @@ const StepFunctionFlowViewer = ({
                 onClick={toggleAutoRefresh}
                 iconName={autoRefreshEnabled ? 'refresh' : 'settings'}
               >
-                {autoRefreshEnabled ? 'Disable' : 'Enable'} Auto-Refresh
+                <FormattedMessage {...(autoRefreshEnabled ? messages.disableAutoRefresh : messages.enableAutoRefresh)} />
               </Button>
               <Button onClick={() => fetchStepFunctionExecution()} iconName="refresh" loading={loading}>
-                Refresh Now
+                <FormattedMessage {...messages.refreshNow} />
               </Button>
               {lastRefreshTime && (
                 <Box variant="small" color="text-body-secondary">
-                  Last updated: {lastRefreshTime.toLocaleTimeString()}
+                  <FormattedMessage {...messages.lastUpdated} values={{ time: formatTime(lastRefreshTime) }} />
                 </Box>
               )}
             </SpaceBetween>
           }
         >
-          Document Processing Flow
+          <FormattedMessage {...messages.title} />
         </Header>
       }
       size="max"
     >
       <SpaceBetween size="l">
         {/* Execution Overview */}
-        <Container header={<Header variant="h3">Execution Overview</Header>}>
+        <Container
+          header={
+            <Header variant="h3">
+              <FormattedMessage {...messages.overviewTitle} />
+            </Header>
+          }
+        >
           <SpaceBetween size="l">
             <SpaceBetween direction="horizontal" size="l">
               <Box>
-                <Box variant="awsui-key-label">Status</Box>
-                <Box className={`execution-status execution-status-${execution.status.toLowerCase()}`}>{execution.status}</Box>
+                <Box variant="awsui-key-label">
+                  <FormattedMessage {...stepLabelMessages.status} />
+                </Box>
+                <Box className={`execution-status execution-status-${execution.status.toLowerCase()}`}>
+                  {stepStatusLabel(execution.status, intl)}
+                </Box>
               </Box>
               <Box>
-                <Box variant="awsui-key-label">Duration</Box>
+                <Box variant="awsui-key-label">
+                  <FormattedMessage {...stepLabelMessages.duration} />
+                </Box>
                 <Box>{formatDuration(execution.startDate, execution.stopDate)}</Box>
               </Box>
               <Box>
-                <Box variant="awsui-key-label">Started</Box>
-                <Box>{execution.startDate ? new Date(execution.startDate).toLocaleString() : 'N/A'}</Box>
+                <Box variant="awsui-key-label">
+                  <FormattedMessage {...stepLabelMessages.started} />
+                </Box>
+                <Box>
+                  {execution.startDate ? (
+                    formatDateTime(new Date(execution.startDate))
+                  ) : (
+                    <FormattedMessage {...stepLabelMessages.notAvailable} />
+                  )}
+                </Box>
               </Box>
               {execution.stopDate && (
                 <Box>
-                  <Box variant="awsui-key-label">Completed</Box>
-                  <Box>{new Date(execution.stopDate).toLocaleString()}</Box>
+                  <Box variant="awsui-key-label">
+                    <FormattedMessage {...stepLabelMessages.completed} />
+                  </Box>
+                  <Box>{formatDateTime(new Date(execution.stopDate))}</Box>
                 </Box>
               )}
             </SpaceBetween>
 
             {/* Display execution-level error if present */}
             {hasExecutionError && (
-              <Alert type="error" header="Execution Failed">
+              <Alert type="error" header={intl.formatMessage(messages.executionFailed)}>
                 <SpaceBetween size="s">
                   <Box>
                     <FaExclamationTriangle size={20} style={{ marginRight: '8px', color: '#d13212' }} />
-                    <strong>Error:</strong> {execution.error}
+                    <strong>
+                      <FormattedMessage {...messages.errorLabel} />
+                    </strong>{' '}
+                    {execution.error}
                   </Box>
                 </SpaceBetween>
               </Alert>
@@ -520,7 +724,13 @@ const StepFunctionFlowViewer = ({
         </Container>
 
         {/* Flow Diagram */}
-        <Container header={<Header variant="h3">Processing Flow</Header>}>
+        <Container
+          header={
+            <Header variant="h3">
+              <FormattedMessage {...messages.diagramTitle} />
+            </Header>
+          }
+        >
           <FlowDiagram
             steps={processedSteps.length > 0 ? processedSteps : execution.steps || []}
             onStepClick={setSelectedStep}
@@ -532,22 +742,35 @@ const StepFunctionFlowViewer = ({
 
         {/* Step Details */}
         {selectedStep && (
-          <Container header={<Header variant="h3">Step Details</Header>}>
+          <Container
+            header={
+              <Header variant="h3">
+                <FormattedMessage {...messages.stepDetailsTitle} />
+              </Header>
+            }
+          >
             <StepDetails step={selectedStep} formatDuration={formatDuration} getStepIcon={getStepIcon} mergedConfig={mergedConfig} />
           </Container>
         )}
 
         {/* Steps Timeline */}
-        <Container header={<Header variant="h3">Steps Timeline</Header>}>
+        <Container
+          header={
+            <Header variant="h3">
+              <FormattedMessage {...messages.timelineTitle} />
+            </Header>
+          }
+        >
           <div className="steps-timeline">
             {(processedSteps.length > 0 ? processedSteps : execution.steps)?.map((step, index) => {
-              const stepDisabled = isStepDisabled(step.name, mergedConfig);
+              const stepSkipped = step.status === SKIPPED_STATUS;
+              const stepDisabled = !stepSkipped && isStepDisabled(step.name, mergedConfig);
               return (
                 <div
                   key={`timeline-${step.name}-${step.type}-${step.status}-${step.startDate || index}`}
                   className={`timeline-step ${step.status.toLowerCase()} ${selectedStep?.name === step.name ? 'selected' : ''} ${
                     step.isMapIteration ? 'map-iteration-step' : ''
-                  } ${stepDisabled ? 'step-disabled' : ''}`}
+                  } ${stepDisabled || stepSkipped ? 'step-disabled' : ''}`}
                   onClick={() => setSelectedStep(step)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -556,24 +779,47 @@ const StepFunctionFlowViewer = ({
                   }}
                   role="button"
                   tabIndex={0}
-                  title={stepDisabled ? 'This step was disabled in configuration and performed no processing' : ''}
+                  title={stepDisabled ? intl.formatMessage(stepLabelMessages.disabledTitle) : (step.skipNote ?? '')}
                 >
                   <div className="timeline-step-icon">{getStepIcon(step.name, step.type, step.status)}</div>
                   <div className="timeline-step-content">
                     <div className="timeline-step-name">
-                      {step.name}
-                      {stepDisabled && <Badge color="grey">NOT ENABLED</Badge>}
-                      {step.isMapIteration && <Badge color="green">Map Iteration</Badge>}
-                      {step.type === 'Map' && step.mapIterations && <Badge color="blue">{step.mapIterations} iterations</Badge>}
+                      {stepName(step, intl)}
+                      {stepDisabled && (
+                        <Badge color="grey">
+                          <FormattedMessage {...stepLabelMessages.notEnabled} />
+                        </Badge>
+                      )}
+                      {step.isMapIteration && (
+                        <Badge color="green">
+                          <FormattedMessage {...messages.mapIteration} />
+                        </Badge>
+                      )}
+                      {step.type === 'Map' && step.mapIterations && (
+                        <Badge color="blue">
+                          <FormattedMessage {...stepLabelMessages.iterations} values={{ count: step.mapIterations }} />
+                        </Badge>
+                      )}
                     </div>
                     <div className="timeline-step-meta">
-                      <span className={`timeline-step-status status-${step.status.toLowerCase()}`}>{step.status}</span>
-                      <span className="timeline-step-duration">{formatDuration(step.startDate, step.stopDate)}</span>
+                      {stepSkipped ? (
+                        <SkippedStatus />
+                      ) : (
+                        <>
+                          <span className={`timeline-step-status status-${step.status.toLowerCase()}`}>
+                            {stepStatusLabel(step.status, intl)}
+                          </span>
+                          <span className="timeline-step-duration">{formatDuration(step.startDate, step.stopDate)}</span>
+                        </>
+                      )}
                     </div>
                     {step.error && (
                       <div className="timeline-step-error">
                         <FaExclamationTriangle size={14} style={{ marginRight: '4px', color: '#d13212' }} />
-                        <strong>Error:</strong> {step.error.length > 100 ? `${step.error.substring(0, 100)}...` : step.error}
+                        <strong>
+                          <FormattedMessage {...messages.errorLabel} />
+                        </strong>{' '}
+                        {step.error.length > 100 ? `${step.error.substring(0, 100)}...` : step.error}
                       </div>
                     )}
                   </div>

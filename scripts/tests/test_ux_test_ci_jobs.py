@@ -299,7 +299,11 @@ def test_each_job_is_advisory_interruptible_and_in_the_ux_review_stage(
         f"{name} is no longer interruptible, so a burst of pushes pays for a full "
         "run per push"
     )
-    assert job["tags"] == ["size:large"]
+    # code.aws.dev runs jobs as EKS pods: an arch tag picks the node type and
+    # KUBERNETES_* picks the size (was gitlab.aws.dev's size:large).
+    assert job["tags"] == ["arch:amd64"]
+    assert job["variables"]["KUBERNETES_CPU_REQUEST"] == "8"
+    assert job["variables"]["KUBERNETES_MEMORY_LIMIT"] == "16Gi"
     assert job["stage"] == "ux_review"
     assert job["variables"]["GIT_DEPTH"] == 0, (
         f"{name} diffs against the merge base with develop, which a shallow "
@@ -1206,8 +1210,8 @@ def test_the_setup_steps_create_the_environments_rotate_and_confirm(
 def test_the_docs_name_the_one_step_that_keeps_the_jobs_environment(
     ci_config, ci_text: str, build_job
 ) -> None:
-    """``.node_setup`` unpacks Node.js from nodejs.org and has its npm upgrade
-    itself with the job's environment, as in every job that builds the UI, so
+    """``.node_setup`` unpacks Node.js from nodejs.org, and uses its bundled npm,
+    with the job's environment, as in every job that builds the UI, so
     while ``ux_test_build`` includes it the security item and the comment above
     the wrapper name it, rather than saying no third-party step inherits the job's
     secrets."""
@@ -1513,6 +1517,7 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
         "ai-ux-test-stories-pair",
         "ai-ux-test-stories-report",
         "ai-ux-test-stories-search",
+        "ai-ux-translation-review",
     ], targets
     for target in targets:
         assert not sections[target].startswith(GATE_SECTION_PREFIXES), (
@@ -1784,17 +1789,27 @@ def test_the_search_target_hands_the_query_over_as_a_query(query: str) -> None:
 @pytest.mark.unit
 def test_the_unattended_skill_is_registered_in_claude_md() -> None:
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    assert ".claude/skills/ux-test-ci.md" in claude_md
+    assert ".claude/skills/ux-test-ci/SKILL.md" in claude_md
 
 
 @pytest.mark.unit
 def test_dep_audit_reads_the_ux_toolchain_lockfile() -> None:
-    """``install.sh`` runs ``npm ci`` from this lockfile, so its tree must be audited."""
+    """``install.sh`` runs ``npm ci`` from this lockfile, so its tree must be audited.
+
+    The generator reads every package-lock.json ``git ls-files`` reports (pinned
+    end to end on this checkout by ``scripts/security/tests/test_dep_manifest.py``),
+    so what this lockfile needs is to be tracked and to be discovered that way.
+    """
     text = DEP_MANIFEST.read_text(encoding="utf-8")
-    match = re.search(r"^NODE_LOCKFILES=\((.*?)^\)", text, re.MULTILINE | re.DOTALL)
-    assert match, "generate-dep-manifest.sh no longer declares NODE_LOCKFILES"
-    lockfiles = re.findall(r'"([^"]+)"', match.group(1))
-    assert f"$REPO_ROOT/{UX_LOCKFILE}" in lockfiles, lockfiles
+    assert "':(glob)**/package-lock.json'" in text, (
+        "generate-dep-manifest.sh no longer discovers lockfiles through git"
+    )
+    tracked = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--error-unmatch", UX_LOCKFILE],
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.returncode == 0, tracked.stderr
     assert (REPO_ROOT / UX_LOCKFILE).is_file()
 
 

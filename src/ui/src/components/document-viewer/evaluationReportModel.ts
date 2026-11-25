@@ -12,8 +12,55 @@
  *
  * Pure and side-effect free: no fetching, no formatting decisions that belong to
  * the component. The markdown report is still generated and downloadable — this
- * does not replace the artifact, only how it is presented.
+ * does not replace the artifact, only how it is presented. The texts it words
+ * itself (a placeholder for a missing name or reason, a value's size, the How to
+ * fix steps) are in the UI's language when given `intl`, and English without it.
  */
+import { createIntl, defineMessages, type IntlShape, type NoMessageValues } from 'react-intl';
+import { formatFixed, formatPercent } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
+
+const messages = defineMessages<{
+  excludedReason: NoMessageValues;
+  unnamedField: { readonly position: number };
+  unnamedItem: { readonly position: number };
+  listSize: { readonly count: number };
+  objectSize: { readonly count: number };
+}>({
+  excludedReason: {
+    id: 'documents.evaluationReport.excludedReason',
+    defaultMessage: 'excluded',
+    description:
+      'Exclusion reason of a section the evaluation skipped, in the sections not evaluated of Reports › Evaluation Report on the document page, when the evaluation recorded no reason.',
+  },
+  unnamedField: {
+    id: 'documents.evaluationReport.unnamedField',
+    defaultMessage: 'field {position}',
+    description:
+      "Field name in a section's field table in Reports › Evaluation Report on the document page, for a field the evaluation recorded without a name. {position} is the field's position in the section, from 1.",
+  },
+  unnamedItem: {
+    id: 'documents.evaluationReport.unnamedItem',
+    defaultMessage: 'item {position}',
+    description:
+      "Field name of a nested comparison in a section's field table in Reports › Evaluation Report on the document page, when the evaluation recorded no path for it. {position} is its position under the field, from 1.",
+  },
+  listSize: {
+    id: 'documents.evaluationReport.listSize',
+    defaultMessage: '{count, plural, one {# item} other {# items}}',
+    description:
+      'The Expected or Extracted value of a field in Reports › Evaluation Report on the document page when the value is a list; choosing it shows the list. {count} is how many items the list has.',
+  },
+  objectSize: {
+    id: 'documents.evaluationReport.objectSize',
+    defaultMessage: '{count, plural, one {# field} other {# fields}}',
+    description:
+      'The Expected or Extracted value of a field in Reports › Evaluation Report on the document page when the value is an object; choosing it shows the object. {count} is how many fields the object has.',
+  },
+});
+
+/** Formats the English source text for callers that pass no `intl`. */
+const englishIntl = createIntl({ locale: 'en', defaultLocale: 'en' });
 
 export interface AttributeResult {
   name?: string;
@@ -147,7 +194,8 @@ export const scoreBand = (score: number | null): ScoreBand => {
 };
 
 /** "94.2%" — scores are proportions everywhere in this payload. */
-export const formatScore = (score: number | null): string => (score === null ? '—' : `${(score * 100).toFixed(1)}%`);
+export const formatScore = (score: number | null, locale: Locale): string =>
+  score === null ? '—' : formatPercent(score, locale, { fractionDigits: 1 });
 
 // ---------------------------------------------------------------------------
 // Parity with the markdown report.
@@ -382,13 +430,13 @@ export interface ExcludedSectionRow {
 }
 
 /** Sections skipped by evaluation, with why — the markdown's "Excluded Sections" table. */
-export const excludedSectionRows = (results: EvaluationResults | null | undefined): ExcludedSectionRow[] =>
+export const excludedSectionRows = (results: EvaluationResults | null | undefined, intl?: IntlShape): ExcludedSectionRow[] =>
   (Array.isArray(results?.excluded_sections) ? results.excluded_sections : [])
     .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
     .map((entry) => ({
       sectionId: asString(entry.section_id) ?? '',
       classification: asString(entry.classification) ?? '',
-      reason: asString(entry.exclusion_reason) ?? 'excluded',
+      reason: asString(entry.exclusion_reason) ?? (intl ?? englishIntl).formatMessage(messages.excludedReason),
       pages: toPageIds(entry.page_ids),
     }));
 
@@ -399,39 +447,140 @@ export interface SectionFailure {
   steps: string[];
 }
 
+// The How to fix steps, one set per failure type. A step that names the section's class has a
+// whole sentence of its own for a section without one.
+const fixMessages = defineMessages<{
+  addConfiguration: { readonly className: string };
+  addConfigurationNoClass: NoMessageValues;
+  matchClassName: NoMessageValues;
+  provideBaseline: NoMessageValues;
+  addNestedProperty: NoMessageValues;
+  rerunEvaluation: NoMessageValues;
+  openExtractionOutput: NoMessageValues;
+  checkTruncation: NoMessageValues;
+  rerunExtraction: NoMessageValues;
+  compareBaseline: NoMessageValues;
+  fixBaseline: NoMessageValues;
+  reviewSchema: { readonly className: string };
+  reviewSchemaNoClass: NoMessageValues;
+  rerunOnceValid: NoMessageValues;
+}>({
+  addConfiguration: {
+    id: 'documents.evaluationReport.fix.addConfiguration',
+    defaultMessage: "Add a configuration for ''{className}'' in the evaluation config",
+    description:
+      "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class. {className} is the section's document class; the quotes around it stay.",
+  },
+  addConfigurationNoClass: {
+    id: 'documents.evaluationReport.fix.addConfigurationNoClass',
+    defaultMessage: "Add a configuration for 'this class' in the evaluation config",
+    description:
+      'First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class, when the section has no class. The quoted words stand for the class.',
+  },
+  matchClassName: {
+    id: 'documents.evaluationReport.fix.matchClassName',
+    defaultMessage: 'Ensure the document class name matches exactly (case-insensitive)',
+    description:
+      'Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class.',
+  },
+  provideBaseline: {
+    id: 'documents.evaluationReport.fix.provideBaseline',
+    defaultMessage: 'Or provide baseline data when evaluating, so a configuration can be generated',
+    description:
+      'Third How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because the evaluation configuration has none for its class. Baseline data is the expected values the extraction is compared with.',
+  },
+  addNestedProperty: {
+    id: 'documents.evaluationReport.fix.addNestedProperty',
+    defaultMessage: 'Add at least one property to the nested object named above, or remove it from the schema',
+    description:
+      "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because a nested object in its class's schema has no properties. The error above the steps names the object.",
+  },
+  rerunEvaluation: {
+    id: 'documents.evaluationReport.fix.rerunEvaluation',
+    defaultMessage: 'Re-run the evaluation',
+    description:
+      "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because a nested object in its class's schema has no properties.",
+  },
+  openExtractionOutput: {
+    id: 'documents.evaluationReport.fix.openExtractionOutput',
+    defaultMessage: "Open the section's extraction output — the model's response was not parseable JSON",
+    description:
+      "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its extraction result could not be read as JSON. JSON is a data format's name.",
+  },
+  checkTruncation: {
+    id: 'documents.evaluationReport.fix.checkTruncation',
+    defaultMessage: 'Check whether the response was truncated (raise max_tokens) or wrapped in commentary',
+    description:
+      "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its extraction result could not be read as JSON. max_tokens is a configuration setting's name, written as is.",
+  },
+  rerunExtraction: {
+    id: 'documents.evaluationReport.fix.rerunExtraction',
+    defaultMessage: 'Re-run extraction for this document, then re-evaluate',
+    description:
+      'Third How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its extraction result could not be read as JSON.',
+  },
+  compareBaseline: {
+    id: 'documents.evaluationReport.fix.compareBaseline',
+    defaultMessage: 'Compare the baseline (expected) values against the class schema — the types disagree',
+    description:
+      "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its baseline values do not have the types its class's schema expects. Baseline values are the expected values the extraction is compared with.",
+  },
+  fixBaseline: {
+    id: 'documents.evaluationReport.fix.fixBaseline',
+    defaultMessage: 'Fix the baseline data, or widen the schema field type, and re-run the evaluation',
+    description:
+      "Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because its baseline values do not have the types its class's schema expects.",
+  },
+  reviewSchema: {
+    id: 'documents.evaluationReport.fix.reviewSchema',
+    defaultMessage: "Review the evaluation schema for ''{className}'' against the error above",
+    description:
+      "First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because of another error in the evaluation schema of its class, which is shown above the steps. {className} is the section's document class; the quotes around it stay.",
+  },
+  reviewSchemaNoClass: {
+    id: 'documents.evaluationReport.fix.reviewSchemaNoClass',
+    defaultMessage: "Review the evaluation schema for 'this class' against the error above",
+    description:
+      'First How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because of another error in the evaluation schema of its class, which is shown above the steps, when the section has no class. The quoted words stand for the class.',
+  },
+  rerunOnceValid: {
+    id: 'documents.evaluationReport.fix.rerunOnceValid',
+    defaultMessage: 'Re-run the evaluation once the schema is valid',
+    description:
+      'Second How to fix step for a section of Reports › Evaluation Report on the document page that was not evaluated because of another error in the evaluation schema of its class.',
+  },
+});
+
 /**
  * Why a section was not scored, when it was not. Mirrors `_failure_remediation`
  * in models.py, including its refusal to guess: a result with no failure type
  * gets the reason and no steps, because advice for the wrong cause is worse than
- * none.
+ * none. The steps are in the UI's language with `intl`, in English without.
  */
-export const sectionFailure = (section: SectionResult): SectionFailure | null => {
+export const sectionFailure = (section: SectionResult, intl?: IntlShape): SectionFailure | null => {
   const metrics = (section.metrics ?? {}) as Record<string, unknown>;
   if (metrics.evaluation_failed !== true) return null;
   const failureType = asString(metrics.failure_type);
-  const cls = section.document_class ?? 'this class';
+  const fmt = intl ?? englishIntl;
+  const className = section.document_class ?? null;
   const stepsByType: Record<string, string[]> = {
     missing_schema_configuration: [
-      `Add a configuration for '${cls}' in the evaluation config`,
-      'Ensure the document class name matches exactly (case-insensitive)',
-      'Or provide baseline data when evaluating, so a configuration can be generated',
+      className === null
+        ? fmt.formatMessage(fixMessages.addConfigurationNoClass)
+        : fmt.formatMessage(fixMessages.addConfiguration, { className }),
+      fmt.formatMessage(fixMessages.matchClassName),
+      fmt.formatMessage(fixMessages.provideBaseline),
     ],
-    empty_nested_object: [
-      'Add at least one property to the nested object named above, or remove it from the schema',
-      'Re-run the evaluation',
-    ],
+    empty_nested_object: [fmt.formatMessage(fixMessages.addNestedProperty), fmt.formatMessage(fixMessages.rerunEvaluation)],
     extraction_parsing_failed: [
-      "Open the section's extraction output — the model's response was not parseable JSON",
-      'Check whether the response was truncated (raise max_tokens) or wrapped in commentary',
-      'Re-run extraction for this document, then re-evaluate',
+      fmt.formatMessage(fixMessages.openExtractionOutput),
+      fmt.formatMessage(fixMessages.checkTruncation),
+      fmt.formatMessage(fixMessages.rerunExtraction),
     ],
-    baseline_data_validation_error: [
-      'Compare the baseline (expected) values against the class schema — the types disagree',
-      'Fix the baseline data, or widen the schema field type, and re-run the evaluation',
-    ],
+    baseline_data_validation_error: [fmt.formatMessage(fixMessages.compareBaseline), fmt.formatMessage(fixMessages.fixBaseline)],
     schema_configuration_error: [
-      `Review the evaluation schema for '${cls}' against the error above`,
-      'Re-run the evaluation once the schema is valid',
+      className === null ? fmt.formatMessage(fixMessages.reviewSchemaNoClass) : fmt.formatMessage(fixMessages.reviewSchema, { className }),
+      fmt.formatMessage(fixMessages.rerunOnceValid),
     ],
   };
   return {
@@ -481,15 +630,21 @@ const isMatchTrue = (value: unknown): boolean => value === true || value === 'tr
  * threshold: more than one comparison detail means an aggregate (a nested
  * object or a list), a single detail is the attribute itself restated.
  */
-export const attributeRows = (attributes: AttributeResult[] | undefined, keyPrefix = ''): ComparisonRow[] =>
+export const attributeRows = (attributes: AttributeResult[] | undefined, keyPrefix = '', intl?: IntlShape): ComparisonRow[] =>
   (attributes ?? []).map((attribute, index) => {
-    const name = attribute.name ?? `field ${index + 1}`;
-    const key = `${keyPrefix}${name}#${index}`;
+    const fmt = intl ?? englishIntl;
+    const name = attribute.name ?? fmt.formatMessage(messages.unnamedField, { position: index + 1 });
+    // The row's identity: the attribute's own name, never the placeholder shown for a missing
+    // one, so it does not change with the language.
+    const key = `${keyPrefix}${attribute.name ?? ''}#${index}`;
     const details = Array.isArray(attribute.field_comparison_details) ? attribute.field_comparison_details : [];
     const children =
       details.length > 1
         ? details.map((detail, childIndex) => {
-            const expectedKey = asString(detail.expected_key) ?? asString(detail.field_path) ?? `item ${childIndex + 1}`;
+            const expectedKey =
+              asString(detail.expected_key) ??
+              asString(detail.field_path) ??
+              fmt.formatMessage(messages.unnamedItem, { position: childIndex + 1 });
             const actualKey = asString(detail.actual_key);
             // Relative to the parent: every nested path repeats the attribute name,
             // which pushed the part that differs off the end of the cell.
@@ -538,22 +693,23 @@ export interface ValueShape {
  * How to show a value in a table cell. A list or object used to be
  * `JSON.stringify`'d into one truncated string, which is the "flattens all the
  * lists" complaint; the cell now says what it is and the structure is shown
- * expanded on demand.
+ * expanded on demand. A structure's size is in the UI's language with `intl`.
  */
-export const describeValue = (value: unknown): ValueShape => {
+export const describeValue = (value: unknown, intl?: IntlShape): ValueShape => {
   if (value === null || value === undefined || value === '') return { kind: 'empty', summary: '—' };
-  if (Array.isArray(value)) return { kind: 'list', summary: `${value.length} item${value.length === 1 ? '' : 's'}` };
+  const fmt = intl ?? englishIntl;
+  if (Array.isArray(value)) return { kind: 'list', summary: fmt.formatMessage(messages.listSize, { count: value.length }) };
   if (typeof value === 'object') {
     const n = Object.keys(value as Record<string, unknown>).length;
-    return { kind: 'object', summary: `${n} field${n === 1 ? '' : 's'}` };
+    return { kind: 'object', summary: fmt.formatMessage(messages.objectSize, { count: n }) };
   }
   return { kind: 'scalar', summary: String(value) };
 };
 
 /** Seconds → "12.3 s" / "2 min 5 s"; null when the run recorded none. */
-export const formatDuration = (seconds: unknown): string | null => {
+export const formatDuration = (seconds: unknown, locale: Locale): string | null => {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return null;
-  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  if (seconds < 60) return `${formatFixed(seconds, locale, 1)} s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes} min ${Math.round(seconds - minutes * 60)} s`;
 };

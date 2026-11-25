@@ -1529,10 +1529,14 @@ SCOPE_KEYED_WORDS: dict[str, frozenset[str]] = {
 #: A version or revision word names a configuration profile's version unless the
 #: name also says whose version it is: `versionId` (an S3 object version),
 #: `baseRevision` (the revision an edit was based on), `testSetVersion`,
-#: `installedVersion` (a feature's). The rule is "a version qualified by another
-#: noun is that noun's version"; these are the qualifying nouns the API uses. A
-#: name with the word `profile` or `config` is a profile whatever else it says.
-SCOPE_VERSION_OF_OTHER_THING_WORDS = frozenset({"id", "base", "test", "installed"})
+#: `installedVersion` (a feature's), `dmnVersion` (the DMN specification's, which
+#: selects the XML form a routing table is written in). The rule is "a version
+#: qualified by another noun is that noun's version"; these are the qualifying
+#: nouns the API uses. A name with the word `profile` or `config` is a profile
+#: whatever else it says.
+SCOPE_VERSION_OF_OTHER_THING_WORDS = frozenset(
+    {"id", "base", "test", "installed", "dmn"}
+)
 _NAME_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _VERSION_WORDS = frozenset({"version", "versions", "revision"})
 

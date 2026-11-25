@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/review-status-1.0.json",
+  "$id": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/review-status-1.1.json",
   "title": "IDP review status object",
   "description": "s3://<OutputBucket>/<documentKey>/review/status.json, written by idp_common.review_queues. See idp_common/review_queues/README.md.",
   "type": "object",
@@ -34,17 +34,62 @@
       "additionalProperties": false,
       "required": ["kind", "section_id", "score", "threshold"],
       "properties": {
-        "kind": { "enum": ["low_confidence", "blueprint_confidence"] },
+        "kind": {
+          "enum": [
+            "low_confidence",
+            "blueprint_confidence",
+            "missing_required",
+            "extraction_failed"
+          ]
+        },
         "section_id": { "type": "string" },
         "field": { "type": ["string", "null"] },
         "label": { "type": ["string", "null"] },
         "score": { "type": "number" },
         "threshold": { "type": "number" }
       }
+    },
+    "policyFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "policy", "name", "reason", "pages"],
+      "properties": {
+        "rule_id": { "type": "string" },
+        "policy": { "type": "string" },
+        "name": { "type": "string" },
+        "reason": { "type": "string" },
+        "pages": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "routedBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "table_id",
+        "rule_id",
+        "rule_label",
+        "placed_queue",
+        "fallback_reason",
+        "reason",
+        "reason_source",
+        "policy_failures",
+        "policy_failure_count"
+      ],
+      "properties": {
+        "table_id": { "type": "string" },
+        "rule_id": { "type": "string" },
+        "rule_label": { "type": "string" },
+        "placed_queue": { "type": "string" },
+        "fallback_reason": { "type": "string" },
+        "reason": { "type": "string" },
+        "reason_source": { "type": "string" },
+        "policy_failures": { "type": "array", "items": { "$ref": "#/$defs/policyFailure" } },
+        "policy_failure_count": { "type": "integer", "minimum": 0 }
+      }
     }
   },
   "properties": {
-    "schema_version": { "const": "1.0" },
+    "schema_version": { "const": "1.1" },
     "document_key": { "type": "string", "minLength": 1 },
     "status": { "enum": ["in_review", "complete", "rejected"] },
     "sequence": { "type": "integer", "minimum": 1 },
@@ -62,6 +107,7 @@
     "reviewer": { "type": ["string", "null"] },
     "reject_reason": { "type": ["string", "null"] },
     "reject_note": { "type": ["string", "null"] },
+    "routed_by": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/routedBy" }] },
     "timestamps": {
       "type": "object",
       "additionalProperties": false,

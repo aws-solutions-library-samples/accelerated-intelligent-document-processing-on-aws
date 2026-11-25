@@ -18,6 +18,7 @@ import {
   Modal,
 } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
+import { useFormatters } from '../../i18n/format';
 
 interface ConfigVersion {
   versionName: string;
@@ -100,6 +101,7 @@ const ConfigurationVersionsTable = ({
   onShowHistory,
   isAdmin = false,
 }: ConfigurationVersionsTableProps): React.JSX.Element => {
+  const { formatDateTime } = useFormatters();
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES);
@@ -178,14 +180,14 @@ const ConfigurationVersionsTable = ({
     {
       id: 'createdAt',
       header: 'Created',
-      cell: (item: ConfigVersion) => (item.createdAt ? new Date(item.createdAt).toLocaleString() : '-'),
+      cell: (item: ConfigVersion) => (item.createdAt ? formatDateTime(new Date(item.createdAt)) : '-'),
       sortingField: 'createdAt',
       width: 180,
     },
     {
       id: 'updatedAt',
       header: 'Updated',
-      cell: (item: ConfigVersion) => (item.updatedAt ? new Date(item.updatedAt).toLocaleString() : '-'),
+      cell: (item: ConfigVersion) => (item.updatedAt ? formatDateTime(new Date(item.updatedAt)) : '-'),
       sortingField: 'updatedAt',
       width: 180,
     },

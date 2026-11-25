@@ -52,9 +52,16 @@ Once installed, the generator is reachable three ways:
   configuration profile/class, with scenario, quality, and document-count
   controls. Choose a **destination**: create a new test set (a unique name is
   required — a name that already exists is rejected) or add the generated
-  documents to an existing test set. The resulting test set appears in the list
-  when the background job completes; click a test set's name to preview its
-  documents without running a test execution.
+  documents to an existing test set. A new set is created, as **Generating**, when
+  the job is submitted, so a second request for the same name, or a Test Studio
+  create under it, is refused while the job runs. If the job finishes without
+  starting generation (for example, the class is not in the chosen configuration
+  profile), the set is marked **Failed** with the reason, and can be deleted to
+  reuse the name. A job that errors is retried, so its set stays **Generating**
+  meanwhile; a retry only ever writes to the set created for it, never to a set
+  created later under the same name. The documents appear when the background job
+  completes; click a test set's name to preview its documents without running a
+  test execution.
 - **View/Edit Configuration → Document Schema** — a **Generate test set** button
   deep-links into Test Studio with the modal pre-filled for the current
   configuration profile.
@@ -84,8 +91,10 @@ A self-contained extension stack that plugs into the host contract:
   Bedrock; `GET /jobs` lists in-flight jobs and `GET /jobs/{id}` returns one
   job's status.
 - **BootstrapProcessor** (SQS-driven Lambda) — authors/resolves the document
-  class schema, writes it into a configuration profile, and invokes the
-  AgentCore Runtime asynchronously.
+  class schema, writes it into the target configuration profile, and invokes the
+  AgentCore Runtime asynchronously. A job generating from a class already in a
+  profile writes nothing to that profile. A target of `default` or a stack-managed
+  profile is refused, and the job fails with the reason.
 - **AgentCore Runtime** (arm64 container) — runs the SEED pipeline
   (`seed-data` + the accelerator's `idp_common.synthesis` adapter), writes the
   test set to the host Test Set bucket, and records terminal job status in the

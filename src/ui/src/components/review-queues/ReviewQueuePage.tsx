@@ -6,7 +6,8 @@
 // unassign or move several at once, or uses ⋮ on a row. An Annotator listed on the
 // queue (Home › Queues) claims items — one, the selected ones, or the next one —
 // which assigns them to the caller in Home › Tasks. Edit opens an item's
-// edit screen without changing its assignment (read-only unless it is yours).
+// edit screen without changing its assignment (read-only unless it is yours). An Admin
+// also sees the routing rules, in every configuration profile, that send documents here.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -30,9 +31,12 @@ import usePolling from '../../hooks/use-polling';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import { useFormatters } from '../../i18n/format';
+import { formatDateTime, formatRelativeTime, relativeTimeMessages } from '../../utils/date-time';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from './QueueAnnotatorsTable';
 import QueueProgress from './QueueProgress';
+import { QueueReferencesContainer } from './QueueReferences';
+import useQueueReferences from './use-queue-references';
 import useSavedQueueDefinitions from './use-saved-queue-definitions';
 import WorkItemsTable from './WorkItemsTable';
 import useSupervisorActions, { isAssignable, isRemovable, isSupervisorAction, isUnassignable } from './use-supervisor-actions';
@@ -41,12 +45,12 @@ import { QueueItemState } from '../common/review-status';
 import { claimItem, claimNextItem, documentName, fetchMyReviewQueues, fetchQueueItems, fetchQueuesOverview } from './review-api';
 import QueueDefinitionModal from './QueueDefinitionModal';
 import { listAnnotatorEmails, listReviewQueues } from './reviewer-assignment';
-import { fromReviewItem } from './work-items';
+import { fromReviewItem, workItemView } from './work-items';
 import BulkSkipModal from '../review-bulk/BulkSkipModal';
 import type { BulkSkipMode } from '../review-bulk/BulkSkipModal';
 import BulkResultsModal from '../review-bulk/BulkResultsModal';
 import { isSkippableQueueItem } from '../review-bulk/review-menu-items';
-import { NO_SKIPPABLE_SELECTION_REASON } from '../document-actions/action-reasons';
+import { actionReasonMessages } from '../document-actions/action-reasons';
 import { jobDetailPath } from '../../routes/constants';
 import type { WorkItem } from './work-items';
 
@@ -54,12 +58,27 @@ const logger = new ConsoleLogger('ReviewQueuePage');
 const POLL_MS = 20_000;
 const PAGE = 100;
 
-/** Why claimNextReviewItem claimed nothing, in words. */
-const CLAIM_NEXT_REASONS: Record<string, string> = {
-  EMPTY: 'No item in this queue is waiting to be claimed.',
-  CONTENDED: 'Other Annotators claimed the waiting items first. Try again.',
-  CAP_REACHED: 'You hold as many items from this queue as you may. Finish or skip one first.',
-};
+/** Why claimNextReviewItem claimed nothing, keyed by the reason code it returns. */
+const claimNextReasons = defineMessages<Record<'EMPTY' | 'CONTENDED' | 'CAP_REACHED', NoMessageValues>>({
+  EMPTY: {
+    id: 'reviewQueues.queuePage.claimNext.empty',
+    defaultMessage: 'No item in this queue is waiting to be claimed.',
+    description: "Error after an Annotator chose Next item on a review queue's page and no item of the queue was waiting.",
+  },
+  CONTENDED: {
+    id: 'reviewQueues.queuePage.claimNext.contended',
+    defaultMessage: 'Other Annotators claimed the waiting items first. Try again.',
+    description: "Error after an Annotator chose Next item on a review queue's page and other Annotators claimed every waiting item first.",
+  },
+  CAP_REACHED: {
+    id: 'reviewQueues.queuePage.claimNext.capReached',
+    defaultMessage: 'You hold as many items from this queue as you may. Finish or skip one first.',
+    description:
+      "Error after an Annotator chose Next item on a review queue's page while already holding as many of the queue's items as it allows one person.",
+  },
+});
+type ClaimNextReason = keyof typeof claimNextReasons;
+const isClaimNextReason = (code: string): code is ClaimNextReason => Object.hasOwn(claimNextReasons, code);
 
 const messages = defineMessages<{
   moreActions: NoMessageValues;
@@ -75,6 +94,45 @@ const messages = defineMessages<{
   adminDescription: NoMessageValues;
   skipJobStarted: NoMessageValues;
   skipResultsHeader: NoMessageValues;
+  claimNextNone: NoMessageValues;
+  claimed: { readonly name: string };
+  claimedCount: { readonly count: number };
+  claimFailed: { readonly count: number; readonly failures: string };
+  claimItemAction: NoMessageValues;
+  claimNextItemAction: NoMessageValues;
+  claim: NoMessageValues;
+  claimAssignedToYou: NoMessageValues;
+  claimAssignedTo: { readonly annotator: string };
+  claimNotWaiting: NoMessageValues;
+  defaultDescription: NoMessageValues;
+  settings: NoMessageValues;
+  refresh: NoMessageValues;
+  stale: NoMessageValues;
+  loadError: NoMessageValues;
+  loadQueueAction: NoMessageValues;
+  retry: NoMessageValues;
+  progressDescription: NoMessageValues;
+  keyMetrics: NoMessageValues;
+  metricPending: NoMessageValues;
+  metricAssigned: NoMessageValues;
+  metricAssignedToYou: NoMessageValues;
+  metricOldestWaiting: NoMessageValues;
+  metricInProgress: NoMessageValues;
+  metricAnnotators: NoMessageValues;
+  metricPriority: NoMessageValues;
+  notListed: NoMessageValues;
+  notDefined: NoMessageValues;
+  loading: NoMessageValues;
+  documentsTitle: NoMessageValues;
+  selectWaiting: NoMessageValues;
+  assignTo: NoMessageValues;
+  selectAssigned: NoMessageValues;
+  unassign: NoMessageValues;
+  nextItem: NoMessageValues;
+  annotatorDescription: NoMessageValues;
+  loadMore: NoMessageValues;
+  loadMoreItemsAction: NoMessageValues;
+  saved: { readonly name: string };
 }>({
   moreActions: {
     id: 'reviewQueues.queuePage.moreActions',
@@ -145,13 +203,230 @@ const messages = defineMessages<{
     defaultMessage: 'Skip All Reviews results',
     description: 'Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline.',
   },
+  claimNextNone: {
+    id: 'reviewQueues.queuePage.claimNext.none',
+    defaultMessage: 'No item was claimed.',
+    description:
+      "Error after an Annotator chose Next item on a review queue's page and the server claimed nothing, for a reason the page does not know.",
+  },
+  claimed: {
+    id: 'reviewQueues.queuePage.claimed',
+    defaultMessage: 'Claimed {name}. Work it in Home › Tasks.',
+    description:
+      'Notice after an Annotator claimed one review item, or the next one, on a queue\'s page. {name} is its file name. "Home › Tasks" is the page path where the Annotator works the items they hold.',
+  },
+  claimedCount: {
+    id: 'reviewQueues.queuePage.claimedCount',
+    defaultMessage: 'Claimed {count, plural, one {# item. Work it} other {# items. Work them}} in Home › Tasks.',
+    description:
+      'Notice after an Annotator claimed several selected review items on a queue\'s page. {count} is how many of them were claimed. "Home › Tasks" is the page path where the Annotator works the items they hold.',
+  },
+  claimFailed: {
+    id: 'reviewQueues.queuePage.claimFailed',
+    defaultMessage: "Couldn't claim {count, plural, one {# item} other {# items}}: {failures}",
+    description:
+      "Error after an Annotator claimed review items on a queue's page and some failed. {count} is how many failed; {failures} lists each one as its file name followed by the reason in parentheses, separated by semicolons.",
+  },
+  claimItemAction: {
+    id: 'reviewQueues.queuePage.claimItemAction',
+    defaultMessage: 'claim it',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when one review item cannot be claimed on a queue\'s page; "it" is the item.',
+  },
+  claimNextItemAction: {
+    id: 'reviewQueues.queuePage.claimNextItemAction',
+    defaultMessage: 'claim the next item',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Next item, on a queue\'s page, cannot claim an item.',
+  },
+  claim: {
+    id: 'reviewQueues.queuePage.claim',
+    defaultMessage: 'Claim',
+    description:
+      "Button above an Annotator's view of a review queue's Documents table, and item of a row's menu, that assigns the items to the Annotator. The count of selected items waiting for review is appended to the button in parentheses.",
+  },
+  claimAssignedToYou: {
+    id: 'reviewQueues.queuePage.claimAssignedToYou',
+    defaultMessage: 'This item is assigned to you',
+    description: "Why the Claim item of a review item's row menu is disabled: the reader already holds the item.",
+  },
+  claimAssignedTo: {
+    id: 'reviewQueues.queuePage.claimAssignedTo',
+    defaultMessage: 'Assigned to {annotator}',
+    description:
+      "Why the Claim item of a review item's row menu is disabled: another person holds it. {annotator} is that Annotator's e-mail address, or the Documents table's word for the reader (You) when it is theirs but not yet claimed.",
+  },
+  claimNotWaiting: {
+    id: 'reviewQueues.queuePage.claimNotWaiting',
+    defaultMessage: 'This item is not waiting for review',
+    description: "Why the Claim item of a review item's row menu is disabled: the item is not waiting in its queue.",
+  },
+  defaultDescription: {
+    id: 'reviewQueues.queuePage.defaultDescription',
+    defaultMessage: 'Production review queue.',
+    description: "Description under a production review queue's name on its page, when the queue has no description of its own.",
+  },
+  settings: {
+    id: 'reviewQueues.queuePage.settings',
+    defaultMessage: 'Settings',
+    description: "Button on a review queue's page that opens the queue's Settings dialog. Admin only.",
+  },
+  refresh: {
+    id: 'reviewQueues.queuePage.refresh',
+    defaultMessage: 'Refresh',
+    description: "Button on a review queue's page that reloads the queue, and its screen-reader label.",
+  },
+  stale: {
+    id: 'reviewQueues.queuePage.stale',
+    defaultMessage: 'Showing the last loaded queue',
+    description:
+      "Header of the warning on a review queue's page when reloading the queue failed and the items loaded before are still shown.",
+  },
+  loadError: {
+    id: 'reviewQueues.queuePage.loadError',
+    defaultMessage: "Couldn't load this queue",
+    description: "Header of the error on a review queue's page when the queue could not be loaded at all.",
+  },
+  loadQueueAction: {
+    id: 'reviewQueues.queuePage.loadQueueAction',
+    defaultMessage: 'load this queue',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a review queue\'s page cannot load the queue.',
+  },
+  retry: {
+    id: 'reviewQueues.queuePage.retry',
+    defaultMessage: 'Retry',
+    description: "Button of the load warning or error on a review queue's page that loads the queue again.",
+  },
+  progressDescription: {
+    id: 'reviewQueues.queuePage.progressDescription',
+    defaultMessage: "The share of this queue's documents an Annotator is working on",
+    description: "Description under the Queue Progress bar of a production review queue's page. Annotator is a user role.",
+  },
+  keyMetrics: {
+    id: 'reviewQueues.queuePage.keyMetrics',
+    defaultMessage: 'Key Metrics',
+    description: "Heading of the panel of counts on a review queue's page.",
+  },
+  metricPending: {
+    id: 'reviewQueues.queuePage.metric.pending',
+    defaultMessage: 'Pending',
+    description: "Label in the Key Metrics of a review queue's page: how many of its items no one is assigned to yet.",
+  },
+  metricAssigned: {
+    id: 'reviewQueues.queuePage.metric.assigned',
+    defaultMessage: 'Assigned',
+    description: "Label in the Key Metrics of a review queue's page: how many of its items are assigned to an Annotator.",
+  },
+  metricAssignedToYou: {
+    id: 'reviewQueues.queuePage.metric.assignedToYou',
+    defaultMessage: 'Assigned to you',
+    description: "Label in the Key Metrics of a review queue's page, for an Annotator: how many of its items the reader holds.",
+  },
+  metricOldestWaiting: {
+    id: 'reviewQueues.queuePage.metric.oldestWaiting',
+    defaultMessage: 'Oldest waiting',
+    description:
+      "Label in the Key Metrics of a review queue's page, for an Annotator: how long ago the item waiting longest entered the queue.",
+  },
+  metricInProgress: {
+    id: 'reviewQueues.queuePage.metric.inProgress',
+    defaultMessage: 'In Progress',
+    description: "Label in the Key Metrics of a review queue's page, for an Admin: how many of its items an Annotator has started.",
+  },
+  metricAnnotators: {
+    id: 'reviewQueues.queuePage.metric.annotators',
+    defaultMessage: 'Annotators',
+    description:
+      "Label in the Key Metrics of a review queue's page, for an Admin: how many Annotators the queue lists. Annotator is a user role.",
+  },
+  metricPriority: {
+    id: 'reviewQueues.queuePage.metric.priority',
+    defaultMessage: 'Priority',
+    description: "Label in the Key Metrics of a review queue's page, for an Admin: the queue's priority number.",
+  },
+  notListed: {
+    id: 'reviewQueues.queuePage.notListed',
+    defaultMessage: 'This queue does not list you as an Annotator.',
+    description: "Shown in the Key Metrics of a review queue's page when the reader is not one of the queue's Annotators.",
+  },
+  notDefined: {
+    id: 'reviewQueues.queuePage.notDefined',
+    defaultMessage: 'This queue is not defined in Review Management.',
+    description:
+      'Shown in the Key Metrics of a review queue\'s page, for an Admin, when the queue has no definition. "Review Management" names the Review Studio page that lists the queues.',
+  },
+  loading: {
+    id: 'reviewQueues.queuePage.loading',
+    defaultMessage: 'Loading…',
+    description: "Shown in the Key Metrics of a review queue's page while the queue loads.",
+  },
+  documentsTitle: {
+    id: 'reviewQueues.queuePage.documentsTitle',
+    defaultMessage: 'Documents',
+    description: "Title of a review queue's table of documents, on the queue's page.",
+  },
+  selectWaiting: {
+    id: 'reviewQueues.queuePage.selectWaiting',
+    defaultMessage: 'Select items waiting for review',
+    description: "Tooltip of the disabled Assign to… or Claim button above a review queue's Documents table: select items first.",
+  },
+  assignTo: {
+    id: 'reviewQueues.queuePage.assignTo',
+    defaultMessage: 'Assign to…',
+    description:
+      "Button above an Admin's view of a review queue's Documents table that assigns the selected items to an Annotator (opens a dialog). The count of assignable items is appended in parentheses.",
+  },
+  selectAssigned: {
+    id: 'reviewQueues.queuePage.selectAssigned',
+    defaultMessage: 'Select assigned items',
+    description: "Tooltip of the disabled Unassign button above a review queue's Documents table: select assigned items first.",
+  },
+  unassign: {
+    id: 'reviewQueues.queuePage.unassign',
+    defaultMessage: 'Unassign',
+    description:
+      "Button above an Admin's view of a review queue's Documents table that takes the selected items back from their Annotators (opens a dialog). The count of assigned items is appended in parentheses.",
+  },
+  nextItem: {
+    id: 'reviewQueues.queuePage.nextItem',
+    defaultMessage: 'Next item',
+    description: "Button above an Annotator's view of a review queue's Documents table that claims the queue's next waiting item.",
+  },
+  annotatorDescription: {
+    id: 'reviewQueues.queuePage.annotatorDescription',
+    defaultMessage:
+      'Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.',
+    description:
+      'Description under the Documents table header of a review queue, for an Annotator. "Claim" and "Next item" name the buttons above the table; "Home › Tasks" is the page path where the Annotator works the items they hold.',
+  },
+  loadMore: {
+    id: 'reviewQueues.queuePage.loadMore',
+    defaultMessage: 'Load more',
+    description: "Button under a review queue's Documents table that loads its next page of items.",
+  },
+  loadMoreItemsAction: {
+    id: 'reviewQueues.queuePage.loadMoreItemsAction',
+    defaultMessage: 'load more items',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when Load more, under a queue\'s Documents table, cannot load the next page of items.',
+  },
+  saved: {
+    id: 'reviewQueues.queuePage.saved',
+    defaultMessage: 'Saved the queue {name}.',
+    description: "Notice after an Admin saved a review queue's settings from its page. {name} is the queue's name, as stored.",
+  },
 });
 
 const isClaimable = (item: ReviewItem): boolean => item.state === QueueItemState.OPEN;
 
-/** The Items table: Document, Source, Queue, Priority and State, then the row Actions menu. */
+/** The columns the Documents table offers, in order; the row Actions menu follows them. */
 // Annotator: who each document is assigned to (sortable), so a queue's work can be read by person.
-const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state', 'owner'] as const;
+const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'age', 'reason', 'state', 'owner'] as const;
+/** The columns shown until the user changes them in the table's settings; the others are offered there. */
+const DEFAULT_VISIBLE_ITEM_COLUMNS = ['document', 'queue', 'reason', 'state', 'owner'] as const;
+/** The browser storage key of the Documents table's settings. */
+const ITEM_PREFERENCES_KEY = 'review-queue-items-preferences';
 
 interface ReviewQueuePageProps {
   /** Told the queue's name whenever it loads or is saved (for the breadcrumbs). */
@@ -162,6 +437,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   // The router has already decoded the queue id once.
   const { queue: queueId = '' } = useParams();
   const intl = useIntl();
+  const { locale } = useFormatters();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin, canReview, loading: roleLoading } = useUserRole();
   const navigate = useNavigate();
@@ -187,6 +463,8 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   const [refreshing, setRefreshing] = useState(false);
 
   const savedDefinitions = useSavedQueueDefinitions();
+  // The routing rules that name this queue: an Admin's to read, once per queue and on Refresh.
+  const references = useQueueReferences(isAdmin ? queueId : null);
 
   /** The queue definitions and health are Admin-only; an Annotator reads its own summary of the queue. */
   const loadContext = useCallback(async () => {
@@ -245,6 +523,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
 
   const refreshNow = async () => {
     setRefreshing(true);
+    references.reload();
     try {
       await load();
     } finally {
@@ -268,15 +547,16 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
         await claimItem(item);
         ok += 1;
       } catch (err) {
-        failed.push(`${documentName(item.objectKey)} (${describeApiError(err, 'claim it')})`);
+        failed.push(`${documentName(item.objectKey)} (${describeApiError(err, messages.claimItemAction, intl)})`);
       }
     }
     if (ok > 0)
       setSuccessMessage(
-        `Claimed ${targets.length === 1 ? documentName(targets[0].objectKey) : `${ok} items`}. Work ${ok === 1 ? 'it' : 'them'} in Home › Tasks.`,
+        targets.length === 1
+          ? intl.formatMessage(messages.claimed, { name: documentName(targets[0].objectKey) })
+          : intl.formatMessage(messages.claimedCount, { count: ok }),
       );
-    if (failed.length > 0)
-      setErrorMessage(`Couldn't claim ${failed.length === 1 ? '1 item' : `${failed.length} items`}: ${failed.join('; ')}`);
+    if (failed.length > 0) setErrorMessage(intl.formatMessage(messages.claimFailed, { count: failed.length, failures: failed.join('; ') }));
     setSelected([]);
     try {
       await afterClaim();
@@ -291,13 +571,14 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
     try {
       const result = await claimNextItem(queueId);
       if (result.item) {
-        setSuccessMessage(`Claimed ${documentName(result.item.objectKey)}. Work it in Home › Tasks.`);
+        setSuccessMessage(intl.formatMessage(messages.claimed, { name: documentName(result.item.objectKey) }));
       } else {
-        setErrorMessage(CLAIM_NEXT_REASONS[result.reason ?? ''] ?? 'No item was claimed.');
+        const code = result.reason ?? '';
+        setErrorMessage(intl.formatMessage(isClaimNextReason(code) ? claimNextReasons[code] : messages.claimNextNone));
       }
       await afterClaim();
     } catch (err) {
-      setErrorMessage(describeApiError(err, 'claim the next item'));
+      setErrorMessage(describeApiError(err, messages.claimNextItemAction, intl));
     } finally {
       setClaiming(null);
     }
@@ -306,18 +587,20 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   /** An Annotator's row menu entry: Claim, for an item waiting for review. */
   const claimMenuItems = (item: WorkItem) => {
     const claimable = !!item.reviewItem && isClaimable(item.reviewItem);
+    // The assignee as the table shows it: "You" for the caller's item, else the Annotator's e-mail.
+    const { assignee } = workItemView(item, intl);
     return [
       {
         id: 'claim',
-        text: 'Claim',
+        text: intl.formatMessage(messages.claim),
         disabled: !claimable,
         disabledReason: claimable
           ? undefined
           : item.assignedToMe
-            ? 'This item is assigned to you'
-            : item.assignedTo
-              ? `Assigned to ${item.assignedTo}`
-              : 'This item is not waiting for review',
+            ? intl.formatMessage(messages.claimAssignedToYou)
+            : assignee
+              ? intl.formatMessage(messages.claimAssignedTo, { annotator: assignee })
+              : intl.formatMessage(messages.claimNotWaiting),
       },
     ];
   };
@@ -350,7 +633,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
         id: 'skip-selected',
         text: counted(intl.formatMessage(messages.skipAllReviews), skippable.length),
         disabled: skippable.length === 0,
-        disabledReason: NO_SKIPPABLE_SELECTION_REASON,
+        disabledReason: intl.formatMessage(actionReasonMessages.noSkippableSelection),
       },
       { id: 'skip-by-profile', text: intl.formatMessage(messages.skipByProfile) },
     ],
@@ -398,7 +681,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
       setItems((prev) => [...(prev ?? []), ...page.items.map(fromReviewItem(isAdmin ? 'review' : 'queues'))]);
       setNextToken(page.nextToken ?? null);
     } catch (err) {
-      setErrorMessage(describeApiError(err, 'load more items'));
+      setErrorMessage(describeApiError(err, messages.loadMoreItemsAction, intl));
     } finally {
       setLoadingMore(false);
     }
@@ -409,7 +692,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
     if (title) onName?.(title);
   }, [title, onName]);
   const eligible = definition?.eligibleAnnotators ?? [];
-  const description = definition?.description || summary?.description || 'Production review queue.';
+  const description = definition?.description || summary?.description || intl.formatMessage(messages.defaultDescription);
 
   const openSettings = async () => {
     setSettingsOpen(true);
@@ -432,11 +715,16 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
             <SpaceBetween direction="horizontal" size="xs">
               {isAdmin && (
                 <Button iconName="settings" disabled={!definition} onClick={() => void openSettings()}>
-                  Settings
+                  <FormattedMessage {...messages.settings} />
                 </Button>
               )}
-              <Button iconName="refresh" ariaLabel="Refresh" loading={refreshing} onClick={() => void refreshNow()}>
-                Refresh
+              <Button
+                iconName="refresh"
+                ariaLabel={intl.formatMessage(messages.refresh)}
+                loading={refreshing}
+                onClick={() => void refreshNow()}
+              >
+                <FormattedMessage {...messages.refresh} />
               </Button>
             </SpaceBetween>
           }
@@ -449,10 +737,14 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
         {error != null && (
           <Alert
             type={items ? 'warning' : 'error'}
-            header={items ? 'Showing the last loaded queue' : "Couldn't load this queue"}
-            action={<Button onClick={() => void load()}>Retry</Button>}
+            header={intl.formatMessage(items ? messages.stale : messages.loadError)}
+            action={
+              <Button onClick={() => void load()}>
+                <FormattedMessage {...messages.retry} />
+              </Button>
+            }
           >
-            {describeApiError(error, 'load this queue')}
+            {describeApiError(error, messages.loadQueueAction, intl)}
           </Alert>
         )}
         {summary && (
@@ -460,23 +752,36 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
             // A finished item leaves its queue, so progress here is the work underway.
             count={summary.claimed}
             total={summary.unclaimed + summary.claimed}
-            countLabel="assigned or in progress"
-            description="The share of this queue's documents an Annotator is working on"
+            countLabel="underway"
+            description={intl.formatMessage(messages.progressDescription)}
           />
         )}
-        <Container header={<Header variant="h2">Key Metrics</Header>}>
+        <Container
+          header={
+            <Header variant="h2">
+              <FormattedMessage {...messages.keyMetrics} />
+            </Header>
+          }
+        >
           {!isAdmin ? (
             mySummary ? (
               <KeyValuePairs
                 columns={4}
                 items={[
-                  { label: 'Pending', value: mySummary.unclaimed },
-                  { label: 'Assigned', value: mySummary.claimed },
-                  { label: 'Assigned to you', value: mySummary.claimedByMe },
+                  { label: intl.formatMessage(messages.metricPending), value: mySummary.unclaimed },
+                  { label: intl.formatMessage(messages.metricAssigned), value: mySummary.claimed },
+                  { label: intl.formatMessage(messages.metricAssignedToYou), value: mySummary.claimedByMe },
                   {
-                    label: 'Oldest waiting',
+                    label: intl.formatMessage(messages.metricOldestWaiting),
                     value: mySummary.oldestEnqueuedAt ? (
-                      <span title={formatDateTime(mySummary.oldestEnqueuedAt)}>{formatRelativeTime(mySummary.oldestEnqueuedAt)}</span>
+                      <span title={formatDateTime(mySummary.oldestEnqueuedAt, locale)}>
+                        {formatRelativeTime(
+                          mySummary.oldestEnqueuedAt,
+                          locale,
+                          undefined,
+                          intl.formatMessage(relativeTimeMessages.justNow),
+                        )}
+                      </span>
                     ) : (
                       '—'
                     ),
@@ -484,32 +789,42 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                 ]}
               />
             ) : (
-              <Box color="text-body-secondary">{items ? 'This queue does not list you as an Annotator.' : 'Loading…'}</Box>
+              <Box color="text-body-secondary">
+                <FormattedMessage {...(items ? messages.notListed : messages.loading)} />
+              </Box>
             )
           ) : summary || definition ? (
             <KeyValuePairs
               columns={5}
               items={[
-                { label: 'Pending', value: summary?.unclaimed ?? '—' },
+                { label: intl.formatMessage(messages.metricPending), value: summary?.unclaimed ?? '—' },
                 {
-                  label: 'Assigned',
+                  label: intl.formatMessage(messages.metricAssigned),
                   value: summary ? Math.max(0, summary.claimed - (summary.inProgress ?? 0)) : '—',
                 },
-                { label: 'In Progress', value: summary?.inProgress ?? '—' },
-                { label: 'Annotators', value: definition ? eligible.length : (summary?.annotators ?? '—') },
-                { label: 'Priority', value: definition?.priority ?? summary?.priority ?? '—' },
+                { label: intl.formatMessage(messages.metricInProgress), value: summary?.inProgress ?? '—' },
+                {
+                  label: intl.formatMessage(messages.metricAnnotators),
+                  value: definition ? eligible.length : (summary?.annotators ?? '—'),
+                },
+                { label: intl.formatMessage(messages.metricPriority), value: definition?.priority ?? summary?.priority ?? '—' },
               ]}
             />
           ) : (
-            <Box color="text-body-secondary">{items ? 'This queue is not defined in Review Management.' : 'Loading…'}</Box>
+            <Box color="text-body-secondary">
+              <FormattedMessage {...(items ? messages.notDefined : messages.loading)} />
+            </Box>
           )}
         </Container>
         {isAdmin && <QueueAnnotatorsTable rows={annotatorRows} loading={definition == null && health == null && error == null} />}
+        {isAdmin && <QueueReferencesContainer state={references} />}
         <WorkItemsTable
           items={items ?? []}
           columns={ITEM_COLUMNS}
+          defaultVisible={DEFAULT_VISIBLE_ITEM_COLUMNS}
+          preferencesKey={ITEM_PREFERENCES_KEY}
           loading={(items == null && error == null) || (refreshing && (items ?? []).length === 0)}
-          title="Documents"
+          title={intl.formatMessage(messages.documentsTitle)}
           onRowAction={handleRowAction}
           extraRowActions={(item) => (isAdmin ? supervisor.menuItems(item.reviewItem) : claimMenuItems(item))}
           busyRowId={claiming}
@@ -520,27 +835,27 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
           actions={
             isAdmin ? (
               <SpaceBetween direction="horizontal" size="xs">
-                <span title={assignable.length === 0 ? 'Select items waiting for review' : undefined}>
+                <span title={assignable.length === 0 ? intl.formatMessage(messages.selectWaiting) : undefined}>
                   <Button disabled={assignable.length === 0} onClick={() => supervisor.open('assign', assignable)}>
-                    {counted('Assign to…', assignable.length)}
+                    {counted(intl.formatMessage(messages.assignTo), assignable.length)}
                   </Button>
                 </span>
-                <span title={unassignable.length === 0 ? 'Select assigned items' : undefined}>
+                <span title={unassignable.length === 0 ? intl.formatMessage(messages.selectAssigned) : undefined}>
                   <Button disabled={unassignable.length === 0} onClick={() => supervisor.open('unassign', unassignable)}>
-                    {counted('Unassign', unassignable.length)}
+                    {counted(intl.formatMessage(messages.unassign), unassignable.length)}
                   </Button>
                 </span>
                 {moreActions([queueGroup, skipGroup])}
               </SpaceBetween>
             ) : (
               <SpaceBetween direction="horizontal" size="xs">
-                <span title={claimable.length === 0 ? 'Select items waiting for review' : undefined}>
+                <span title={claimable.length === 0 ? intl.formatMessage(messages.selectWaiting) : undefined}>
                   <Button
                     disabled={claimable.length === 0 || claiming !== null}
                     loading={claiming === 'selected'}
                     onClick={() => void claim(claimable, 'selected')}
                   >
-                    {counted('Claim', claimable.length)}
+                    {counted(intl.formatMessage(messages.claim), claimable.length)}
                   </Button>
                 </span>
                 <Button
@@ -549,22 +864,18 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                   loading={claiming === 'next'}
                   onClick={() => void claimNext()}
                 >
-                  Next item
+                  <FormattedMessage {...messages.nextItem} />
                 </Button>
                 {canReview && moreActions([skipGroup])}
               </SpaceBetween>
             )
           }
-          description={
-            isAdmin
-              ? intl.formatMessage(messages.adminDescription)
-              : 'Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.'
-          }
+          description={intl.formatMessage(isAdmin ? messages.adminDescription : messages.annotatorDescription)}
           footer={
             nextToken ? (
               <Box textAlign="center">
                 <Button loading={loadingMore} onClick={() => void loadMore()}>
-                  Load more
+                  <FormattedMessage {...messages.loadMore} />
                 </Button>
               </Box>
             ) : undefined
@@ -581,7 +892,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
         onDismiss={() => setSettingsOpen(false)}
         onSaved={(q) => {
           if (q) {
-            setSuccessMessage(`Saved the queue ${q.name}.`);
+            setSuccessMessage(intl.formatMessage(messages.saved, { name: q.name }));
             // Show the saved definition at once (its name in the title and breadcrumb), and
             // keep it through reads that still return the old one.
             savedDefinitions.remember(q);

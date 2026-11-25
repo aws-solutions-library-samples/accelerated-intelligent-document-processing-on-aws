@@ -74,6 +74,28 @@ results = reporter.save(document, data_to_save=["evaluation_results", "metering"
 
 When `config` is provided with pricing information, the system automatically calculates unit costs and estimated costs for all metering data.
 
+### Pricing a document's metering (`pricing.py`)
+
+`idp_common.reporting.pricing` is the one implementation of "metering row to
+estimated dollars". `SaveReportingData` uses it for the metering Parquet rows and the
+`DocumentEstimatedCost` metric, and the SDK's fit check uses it for its per-document
+estimates, so the figures agree. It imports nothing heavier than the configuration
+models, so it does not need pyarrow.
+
+```python
+from idp_common.config.models import IDPConfig
+from idp_common.reporting.pricing import build_pricing_map, estimate_metering_cost
+
+pricing = build_pricing_map(IDPConfig.model_validate(config).pricing)
+cost = estimate_metering_cost(document.metering, pricing)
+cost.estimated_cost_usd   # None when no row had a price
+cost.unpriced_row_count   # rows left out of the figure
+```
+
+`unit_cost(pricing, service_api, unit, value)` documents the resolution rules: an
+exact pricing key with a longest-suffix walk, no substring matching, and `None`
+rather than $0.00 for a unit nothing declares non-chargeable.
+
 ## Features
 
 - **Modular Design**: Each data type has its own processing method, making it easy to add support for new data types
@@ -197,6 +219,25 @@ document's rows summed over its runs give its total. The tracking-table `Meterin
 attribute keeps the cumulative total (`idp_common.utils.cumulative_metering`), which
 is what the Web UI's Estimated Cost shows. Rows already written for documents
 reprocessed before this split was introduced are not rewritten.
+
+### One record per execution, whatever its status
+
+`save(document, data_to_save, execution_status=...)` passes the execution's terminal
+status to `save_metering_data`, which writes it to every row as `execution_status`
+alongside `execution_arn` (from `document.workflow_execution_arn`). When the ARN is
+known the parquet object is named after the execution
+(`<doc>_exec_<execution name>_results.parquet`) rather than the write time, so writing
+the same execution twice in one hour replaces the object. Both columns are NULL when
+the caller supplies neither, as on rows written before they existed.
+
+The workflow tracker reports every execution this way. For one that did not succeed
+(`FAILED`, `TIMED_OUT`, `ABORTED`) there is no output document, so the tracker takes
+the tracking row's cumulative `Metering` and subtracts the `metering_baseline` of the
+execution input's start document (`idp_common.utils.subtract_metering`), and reports
+that usage only — no sections or rule-validation rows. After SaveReportingData answers
+200 it writes a `meter#<execution ARN>` marker to the concurrency table, so a
+redelivered event for the same execution in a later hour (and so a later partition) is
+not reported again.
 
 ### One rate per unit: pricing sees sums, never single requests
 
@@ -599,7 +640,7 @@ The reporting module provides two types of automatic table creation:
 #### Dynamic Section Tables (Runtime)
 When processing documents with new section types, the `SaveReportingData` class automatically:
 - **Creates New Tables**: Generates a Glue table for each unique section type (e.g., `document_sections_invoice`, `document_sections_w2`)
-- **Updates Schemas**: Adds new columns when new fields are detected in extraction results
+- **Updates Schemas**: Adds new columns when new fields are detected in extraction results. The update merges into the table's existing columns rather than replacing them, so a column an earlier document contributed is kept, as the document sections crawler's `MergeNewColumns` policy also keeps it. Unlike that policy, the update also corrects column types (below). Names are compared lowercased, because Glue stores column names in lowercase while the extraction schema's field names keep their casing, so a document whose fields the table already has makes no `UpdateTable` call. A column whose stored type differs from the type `_convert_schema_to_glue_columns` maps it to is corrected in place; an existing column with no type is left alone. `_create_or_update_rule_validation_glue_table` uses the same merge (`SaveReportingData._merge_glue_columns`). On create, both helpers pass the document's columns through the same merge against an empty table, so names that differ only by case collapse into one column instead of reaching `CreateTable` as duplicates. On update, `UpdateTable` replaces the table-level `Parameters`, so both helpers send the existing parameters overlaid with their own keys (`SaveReportingData._merge_glue_table_parameters`): a parameter a crawler or an operator added is kept, and a key the code manages is reset to the code's value. `_create_or_update_rule_validation_glue_table` returns `False` when the table already has every column, as `_create_or_update_glue_table` does
 - **Configures Partitions**: Sets up partition projection for efficient date-based queries
 - **Normalizes Names**: Converts section types to lowercase for S3 path consistency (e.g., "W2" → "w2")
 

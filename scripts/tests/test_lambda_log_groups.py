@@ -123,6 +123,7 @@ TEMPLATES = [
     "nested/multi-doc-discovery/template.yaml",
     "feature-platform/main-stack-extensions/template.yaml",
     "feature-platform/confbench-testset/template.yaml",
+    "feature-platform/decision-model-decider/template.yaml",
     "feature-platform/feature-template/template.yaml",
     "feature-platform/idp-data-generator/template.yaml",
     "feature-platform/pii-anonymizer/template.yaml",
@@ -397,7 +398,7 @@ def test_every_lambda_declares_a_real_log_group(rel_path: str) -> None:
         f"{rel_path}: Lambda(s) would fall back to Lambda's auto-created "
         f"/aws/lambda/<fn> group, which has NO retention, so their logs are "
         f"billed forever: {problems}. Declare a log group (see "
-        f".claude/skills/infrastructure.md) or, if the function runs only during "
+        f".claude/skills/infrastructure/SKILL.md) or, if the function runs only during "
         f"a stack operation, add it to CUSTOM_RESOURCE_ONLY in this file."
     )
 
@@ -690,7 +691,7 @@ def test_custom_resource_functions_cannot_recreate_their_log_group(
         f"the stack delete removed its log group, and recreate it with no "
         f"retention and no KMS key: {problems}. Add a Deny on "
         f"logs:CreateLogGroup naming the group to the function's role (see "
-        f".claude/skills/infrastructure.md)."
+        f".claude/skills/infrastructure/SKILL.md)."
     )
 
 

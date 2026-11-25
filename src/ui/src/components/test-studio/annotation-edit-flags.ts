@@ -12,6 +12,8 @@
  */
 
 import { PROCESS_CHANGES_LABEL } from '../common/labels';
+import { formatPercent } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 /** The role flags these decisions read, as `useUserRole` reports them. */
 export interface AnnotationRoles {
@@ -169,8 +171,8 @@ export const estimateDecimals = (estimateConfidence: string | null | undefined):
  * measured one" — one review of a 12-document set moved a displayed 85.1% to 92.2%, a
  * swing two orders of magnitude wider than the digit being shown.
  */
-export const formatPct = (fraction: number, decimals = 1): string =>
-  Number.isFinite(fraction) ? `${(fraction * 100).toFixed(decimals)}%` : '—';
+export const formatPct = (fraction: number, locale: Locale, decimals = 1): string =>
+  Number.isFinite(fraction) ? formatPercent(fraction, locale, { fractionDigits: decimals }) : '—';
 
 /**
  * The queue link, carrying the transition it belongs to.

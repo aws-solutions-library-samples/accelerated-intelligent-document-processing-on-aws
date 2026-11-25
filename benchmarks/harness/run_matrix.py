@@ -111,11 +111,30 @@ def resolve_stack(stack):
     buckets = [b["Name"] for b in s3c.list_buckets()["Buckets"]]
     pfx = stack.lower()
 
+    def owned_by_stack(bucket):
+        """Whether CloudFormation says ``stack`` (or a stack it nests) owns it."""
+        try:
+            owners = lib.session().client("cloudformation", region_name=lib.REGION)
+            resources = owners.describe_stack_resources(PhysicalResourceId=bucket)
+        except Exception:  # noqa: BLE001 - unowned (or unreadable) is "not owned"
+            return False
+        return any(
+            r.get("StackName", "").startswith(stack)
+            for r in resources.get("StackResources", [])
+        )
+
     def find(sub):
-        for b in buckets:
-            if b.startswith(pfx) and sub in b:
-                return b
-        return None
+        # A bucket a stack retained when it was deleted keeps the stack's name
+        # prefix, so a redeployed stack of the same name has a look-alike beside
+        # its real bucket. Name order alone picked the orphan and scored a run
+        # against an empty bucket; prefer the one CloudFormation says is the
+        # stack's, and fall back to name order only when none is.
+        candidates = [b for b in buckets if b.startswith(pfx) and sub in b]
+        if len(candidates) > 1:
+            for b in candidates:
+                if owned_by_stack(b):
+                    return b
+        return candidates[0] if candidates else None
 
     ddbc = lib.ddb()
     # PAGINATE. ListTables caps a page at 100 names and returns them sorted, so a
@@ -298,8 +317,18 @@ def upload_config(stack, version, path, res=None, native=False):
         except Exception as e:
             print(f"    native upload error: {e}")
             return False
+    # Every first-party package root of THIS checkout, so idp-cli migrates and
+    # validates with the configuration model of the tree under test rather than
+    # whichever checkout the installed console script points at; and the caller's
+    # profile, defaulting to `default` as before.
+    first_party = ":".join(
+        os.path.join(REPO, "lib", d)
+        for d in sorted(os.listdir(os.path.join(REPO, "lib")))
+        if os.path.exists(os.path.join(REPO, "lib", d, "pyproject.toml"))
+    )
+    profile = os.environ.get("AWS_PROFILE", "default")
     r = sh(
-        f"PYTHONPATH={REPO}/lib/idp_common_pkg AWS_PROFILE=default idp-cli config-upload "
+        f'PYTHONPATH="{first_party}" AWS_PROFILE={profile} idp-cli config-upload '
         f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )

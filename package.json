@@ -17,7 +17,7 @@
     "typecheck:stats": "basedpyright --stats"
   },
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=26.0.0",
     "npm": ">=11.0.0"
   }
 }

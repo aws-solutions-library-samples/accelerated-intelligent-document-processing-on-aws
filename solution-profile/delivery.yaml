@@ -1,0 +1,135 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# How a delivery usually starts (Solution Profile contract v1, deliveryFile).
+# Every duration and effort here is a planning value for a first working
+# version, not a commitment or a measurement: S is up to 2 days, M up to 2
+# weeks, L more than 2 weeks. The stack deployment time (10 to 15 minutes) is
+# the figure docs/deployment.md quotes for the one-click template.
+day_one:
+  - id: deploy-nearest-preset
+    title: Deploy the stack with the configuration preset nearest the customer's documents
+    evidence:
+      - config_library/README.md
+      - docs/deployment.md
+      - docs/configuration.md
+  - id: run-samples
+    title: Process the preset's sample documents and read the results, processing issues and cost in the web UI
+    evidence:
+      - samples/lending_package.pdf
+      - docs/idp-cli.md#process--run-inference
+      - docs/web-ui.md
+      - docs/cost-calculator.md#built-in-web-ui-cost-estimation
+  - id: discovery-on-samples
+    title: Run the customer's own sample documents through Discovery or Quick Start to draft classes and schemas
+    evidence:
+      - docs/discovery.md
+      - docs/quick-start.md
+walking_skeleton:
+  description: >-
+    One document class from upload to result in the customer's own AWS account:
+    the stack deployed with the nearest preset, a class drafted from the
+    customer's own samples with Discovery or Quick Start, and those samples
+    processed end to end with their extracted values, confidence and cost
+    inspected. As a planning value this takes one to three days once the
+    account, Bedrock model access and sample documents are in place.
+  steps: [deploy-nearest-preset, discovery-on-samples, run-samples]
+typical_work:
+  - id: accuracy-baseline
+    title: Measure accuracy against ground truth for the hardest document class
+    category: configuration
+    effort: M
+    depends_on: [deploy-nearest-preset, discovery-on-samples]
+    prerequisites:
+      - Documents of the class with known-correct values, or time to confirm draft labels in Test Studio
+      - Agreement on which fields matter most, for field weighting
+    refs: [capability:evaluation, capability:test-studio, question:ground-truth, question:accuracy-target, extension:ground-truth-data]
+    evidence:
+      - docs/evaluation.md
+      - docs/test-studio.md
+      - docs/test-studio.md#draft-labeling-unlabeled-documents--ground-truth
+  - id: prompt-schema-tuning
+    title: Tune class schemas, descriptions, prompts, few-shot examples and models against the accuracy baseline
+    category: configuration
+    effort: M
+    depends_on: [accuracy-baseline]
+    prerequisites:
+      - An accuracy baseline to compare each change against
+    refs: [extension:json-schema-classes, extension:prompt-customisation, capability:few-shot-examples, capability:configuration-versions, capability:bedrock-model-choice]
+    evidence:
+      - docs/idp-configuration-best-practices.md
+      - docs/json-schema-migration.md
+      - docs/few-shot-examples.md
+      - docs/configuration-versions.md
+  - id: hook-development
+    title: Build and register a customer-owned hook Lambda at a pipeline hook point (for example normalising values or a custom rule)
+    category: hook
+    effort: M
+    depends_on: [deploy-nearest-preset]
+    prerequisites:
+      - A team that can build, test and operate an AWS Lambda function
+      - The hook point chosen for the processing mode in use, since post-OCR, post-classification and post-extraction exist in pipeline mode only
+    refs: [extension:lambda-hook-model, extension:pipeline-hook-post-extraction, extension:pipeline-hook-postprocessing, extension:pipeline-hook-preprocessing, extension:custom-prompt-lambda, limitation:lambda-hook-payload-limit, limitation:lambda-hook-timeout, limitation:step-hooks-not-in-bda]
+    evidence:
+      - docs/feature-platform.md#pipeline-hooks
+      - docs/lambda-hook-inference.md
+      - docs/feature-platform-developer-guide.md
+  - id: review-queue-setup
+    title: Turn on human review, set confidence thresholds per field, and give reviewers their roles
+    category: configuration
+    effort: S
+    depends_on: [accuracy-baseline]
+    prerequisites:
+      - Named reviewers or annotators, and identity-provider groups if sign-in is federated
+      - A labelled sample to check how many known-wrong values fall below a candidate threshold
+    refs: [capability:hitl-review-queues, capability:assessment-confidence, question:review-needs, question:reviewer-roles]
+    evidence:
+      - docs/human-review.md#turning-review-routing-on-and-off
+      - docs/review-queues.md#turning-review-queues-on
+      - docs/rbac.md
+  - id: downstream-integration-build
+    title: Deliver extracted results to the customer's downstream system
+    category: other
+    other_kind: integration
+    effort: M
+    depends_on: [run-samples]
+    prerequisites:
+      - The target system's interface and an owner on the customer side
+      - The output JSON shape agreed for each class
+    refs: [extension:downstream-integration, extension:eventbridge-post-processing, extension:pipeline-hook-postprocessing, capability:reporting-database, capability:idp-sdk, question:downstream-systems]
+    evidence:
+      - docs/post-processing-lambda-hook.md
+      - docs/post-processing-lambda-hook.md#two-post-processing-mechanisms--which-one-do-i-want
+      - docs/reporting-database.md
+      - docs/idp-sdk.md
+      - docs/review-queues.md#review-status-for-downstream-consumers
+  - id: load-test
+    title: Rehearse the peak hour with idp-cli load-test and check quotas with Capacity Planning
+    category: other
+    other_kind: aws-service
+    effort: S
+    depends_on: [prompt-schema-tuning]
+    prerequisites:
+      - A representative source file and the expected per-minute schedule
+      - Bedrock quotas requested for the models the configuration calls
+    refs: [capability:load-testing, capability:capacity-planning, extension:bedrock-quotas, prerequisite:service-quotas, question:peak-volume]
+    evidence:
+      - docs/idp-cli.md#load-test
+      - lib/idp_cli_pkg/examples/load-test-schedule.csv
+      - docs/capacity-planning.md
+  - id: security-review
+    title: Review the deployment against the published threat model and the Well-Architected template
+    category: other
+    other_kind: security-review
+    effort: M
+    depends_on: [deploy-nearest-preset]
+    prerequisites:
+      - The customer's data classification, residency and retention obligations
+      - The chosen network, identity and tenancy options
+    refs: [question:pii, question:network-isolation, question:identity-federation, question:multi-tenant]
+    evidence:
+      - docs/threat-model.md
+      - docs/well-architected.md
+      - docs/well-architected.md#what-the-solution-provides-and-what-remains-yours
+      - security/README.md
+      - SECURITY.md

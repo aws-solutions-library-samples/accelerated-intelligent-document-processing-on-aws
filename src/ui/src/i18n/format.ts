@@ -17,13 +17,16 @@
  * formatting (`toFixed`, `String`, `JSON.stringify`) and must not go through these helpers:
  * `1 234,50` round-trips through `parseFloat` as `1`.
  *
- * Nothing calls these yet. PR 2 of the series moves the existing call sites over, classifying
- * each `toFixed` site as prose or technical (D15), and records the one visible change, `US$`
- * in place of `$`, in the CHANGELOG.
+ * Every displayed date, time and amount in the UI goes through these helpers or through
+ * `useFormatters()`, and so does nearly every number. What remains on `toFixed` or
+ * `toLocaleString` is either technical (exported, parsed back, compared as text, logged or fed
+ * to a chart) or one of the exceptions named here: the test-run comparison's colour-graded
+ * cells and its field-metrics string, which are parsed back; and the capacity
+ * planner's quota strings, a follow-up.
  */
 import { useMemo } from 'react';
-import type { Locale } from './locales';
-import { useLocale } from './LocaleProvider';
+import { DEFAULT_LOCALE, type Locale } from './locales';
+import { useOptionalLocale } from './LocaleProvider';
 
 /** Locales whose text is English: they format with the runtime default, as today's bare calls do. */
 const ENGLISH_LOCALES: readonly Locale[] = ['en', 'en-XA'];
@@ -137,6 +140,8 @@ export const formatUsDollars = (amount: number, locale: Locale, { fractionDigits
 
 /** The helpers above with the locale already supplied; what `useFormatters` returns. */
 export interface Formatters {
+  /** The bound locale, for a pure formatting function that takes `locale` as a parameter. */
+  locale: Locale;
   formatDateTime: (date: Date, options?: Intl.DateTimeFormatOptions) => string;
   formatDate: (date: Date, options?: Intl.DateTimeFormatOptions) => string;
   formatTime: (date: Date, options?: Intl.DateTimeFormatOptions) => string;
@@ -147,6 +152,7 @@ export interface Formatters {
 }
 
 const bindFormatters = (locale: Locale): Formatters => ({
+  locale,
   formatDateTime: (date, options) => formatDateTime(date, locale, options),
   formatDate: (date, options) => formatDate(date, locale, options),
   formatTime: (date, options) => formatTime(date, locale, options),
@@ -159,9 +165,12 @@ const bindFormatters = (locale: Locale): Formatters => ({
 /**
  * The helpers bound to the current UI locale, for components: one object per locale, stable
  * across re-renders (safe in dependency lists), replaced when the locale changes so everything
- * formatted re-renders in the new one. Must be used within `LocaleProvider`.
+ * formatted re-renders in the new one. Outside `LocaleProvider` (a plain `render` in a test) it
+ * formats as `en`, the runtime default, so an English test needs no provider; the app always
+ * mounts the provider. `useLocale()` still throws there, because switching locale needs the
+ * provider.
  */
 export const useFormatters = (): Formatters => {
-  const { locale } = useLocale();
+  const locale = useOptionalLocale()?.locale ?? DEFAULT_LOCALE;
   return useMemo(() => bindFormatters(locale), [locale]);
 };

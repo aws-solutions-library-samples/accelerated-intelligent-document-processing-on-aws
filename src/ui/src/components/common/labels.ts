@@ -1,19 +1,114 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-export const appLayoutLabels = {
-  navigation: 'Side navigation',
-  navigationToggle: 'Open side navigation',
-  navigationClose: 'Close side navigation',
-  notifications: 'Notifications',
-  tools: 'Help panel',
-  toolsToggle: 'Open help panel',
-  toolsClose: 'Close help panel',
-} as const;
+import { useMemo } from 'react';
+import type { AppLayoutProps, PaginationProps } from '@cloudscape-design/components';
+import { defineMessages, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 
-export const paginationLabels = {
-  nextPageLabel: 'Next page',
-  previousPageLabel: 'Previous page',
-  pageLabel: (pageNumber: number): string => `Page ${pageNumber} of all pages`,
+/**
+ * The AppLayout aria labels every page layout passes, declared here and not per layout so
+ * the side navigation has one name across the app. Every one of them is set under every
+ * locale: with no label of the app's own, the layout's landmarks would go unnamed in English.
+ */
+const appLayoutMessages = defineMessages<{
+  navigation: NoMessageValues;
+  navigationToggle: NoMessageValues;
+  navigationClose: NoMessageValues;
+  notifications: NoMessageValues;
+  tools: NoMessageValues;
+  toolsToggle: NoMessageValues;
+  toolsClose: NoMessageValues;
+}>({
+  navigation: {
+    id: 'appLayout.ariaLabels.navigation',
+    defaultMessage: 'Side navigation',
+    description: 'Screen-reader name of the side navigation landmark of every page.',
+  },
+  navigationToggle: {
+    id: 'appLayout.ariaLabels.navigationToggle',
+    defaultMessage: 'Open side navigation',
+    description: 'Screen-reader label of the button that opens the side navigation.',
+  },
+  navigationClose: {
+    id: 'appLayout.ariaLabels.navigationClose',
+    defaultMessage: 'Close side navigation',
+    description: 'Screen-reader label of the button that closes the side navigation.',
+  },
+  notifications: {
+    id: 'appLayout.ariaLabels.notifications',
+    defaultMessage: 'Notifications',
+    description: 'Screen-reader name of the region at the top of every page that holds the flash messages.',
+  },
+  tools: {
+    id: 'appLayout.ariaLabels.tools',
+    defaultMessage: 'Help panel',
+    description: 'Screen-reader name of the info panel on the right of a page.',
+  },
+  toolsToggle: {
+    id: 'appLayout.ariaLabels.toolsToggle',
+    defaultMessage: 'Open help panel',
+    description: 'Screen-reader label of the button that opens the info panel.',
+  },
+  toolsClose: {
+    id: 'appLayout.ariaLabels.toolsClose',
+    defaultMessage: 'Close help panel',
+    description: 'Screen-reader label of the button that closes the info panel.',
+  },
+});
+
+/** The AppLayout aria labels in the UI's language: one object per locale, safe in a dependency list. */
+export const useAppLayoutLabels = (): AppLayoutProps.Labels => {
+  const intl = useIntl();
+  return useMemo(
+    () => ({
+      navigation: intl.formatMessage(appLayoutMessages.navigation),
+      navigationToggle: intl.formatMessage(appLayoutMessages.navigationToggle),
+      navigationClose: intl.formatMessage(appLayoutMessages.navigationClose),
+      notifications: intl.formatMessage(appLayoutMessages.notifications),
+      tools: intl.formatMessage(appLayoutMessages.tools),
+      toolsToggle: intl.formatMessage(appLayoutMessages.toolsToggle),
+      toolsClose: intl.formatMessage(appLayoutMessages.toolsClose),
+    }),
+    [intl],
+  );
+};
+
+/**
+ * The Pagination aria labels every table passes. Set under every locale: Cloudscape's own
+ * bundle has them in French but not under `en`, where the provider carries no messages.
+ */
+const paginationMessages = defineMessages<{
+  next: NoMessageValues;
+  previous: NoMessageValues;
+  page: { readonly pageNumber: number };
+}>({
+  next: {
+    id: 'common.pagination.next',
+    defaultMessage: 'Next page',
+    description: "Screen-reader label of the next-page button of a table's pagination.",
+  },
+  previous: {
+    id: 'common.pagination.previous',
+    defaultMessage: 'Previous page',
+    description: "Screen-reader label of the previous-page button of a table's pagination.",
+  },
+  page: {
+    id: 'common.pagination.page',
+    defaultMessage: 'Page {pageNumber, number} of all pages',
+    description: "Screen-reader label of a page button of a table's pagination. {pageNumber} is the page number.",
+  },
+});
+
+/** The Pagination aria labels in the UI's language: one object per locale, safe in a dependency list. */
+export const usePaginationLabels = (): PaginationProps.Labels => {
+  const intl = useIntl();
+  return useMemo(
+    () => ({
+      nextPageLabel: intl.formatMessage(paginationMessages.next),
+      previousPageLabel: intl.formatMessage(paginationMessages.previous),
+      pageLabel: (pageNumber: number): string => intl.formatMessage(paginationMessages.page, { pageNumber }),
+    }),
+    [intl],
+  );
 };
 
 /**
@@ -37,29 +132,86 @@ export interface ValueSourceLabel {
   panelTitle: string;
 }
 
+const valueSourceMessages = defineMessages<{
+  predicted: NoMessageValues;
+  groundTruth: NoMessageValues;
+  yourValue: NoMessageValues;
+  predictedPanel: NoMessageValues;
+  groundTruthPanel: NoMessageValues;
+}>({
+  predicted: {
+    id: 'common.labels.valueSource.predicted',
+    defaultMessage: 'Predicted:',
+    description:
+      "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is the model's prediction.",
+  },
+  groundTruth: {
+    id: 'common.labels.valueSource.groundTruth',
+    defaultMessage: 'Ground truth:',
+    description:
+      "Label before a field's value in the Visual Editor tab of the edit page's section editor, when the value is a test set's ground truth.",
+  },
+  yourValue: {
+    id: 'common.labels.valueSource.yourValue',
+    defaultMessage: 'Your value:',
+    description:
+      "Label before a field's value in the Visual Editor tab of the edit page's section editor, once the user has changed the value.",
+  },
+  predictedPanel: {
+    id: 'common.labels.valueSource.predictedPanel',
+    defaultMessage: 'Predicted Results',
+    description:
+      "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are the model's predictions.",
+  },
+  groundTruthPanel: {
+    id: 'common.labels.valueSource.groundTruthPanel',
+    defaultMessage: 'Ground truth',
+    description:
+      "Title of the values panel in the JSON Editor tab of the edit page's section editor, when the values are a test set's ground truth.",
+  },
+});
+
 /**
  * The value labels for a document's values: model predictions (no label source), or
  * test-set ground truth (any label source: draft, reviewed, synthetic or uploaded).
  */
-export const valueSourceLabel = (labelSource?: string | null): ValueSourceLabel =>
+export const valueSourceLabel = (intl: IntlShape, labelSource?: string | null): ValueSourceLabel =>
   labelSource
-    ? { value: 'Ground truth:', changed: 'Your value:', panelTitle: 'Ground truth' }
-    : { value: 'Predicted:', changed: 'Your value:', panelTitle: 'Predicted Results' };
+    ? {
+        value: intl.formatMessage(valueSourceMessages.groundTruth),
+        changed: intl.formatMessage(valueSourceMessages.yourValue),
+        panelTitle: intl.formatMessage(valueSourceMessages.groundTruthPanel),
+      }
+    : {
+        value: intl.formatMessage(valueSourceMessages.predicted),
+        changed: intl.formatMessage(valueSourceMessages.yourValue),
+        panelTitle: intl.formatMessage(valueSourceMessages.predictedPanel),
+      };
 
 /**
- * The edit screen's action that applies the changes: the button, its confirmation, the
- * banner and alert copy, and the help panel all name it with this one label.
+ * Labels named in more than one file. Process Changes is the edit screen's action that
+ * applies the changes: the button, its confirmation, the banner and alert copy, and the
+ * help panel all name it. Next alert is the control that moves the edit screen to the next
+ * low-confidence field.
  */
-export const PROCESS_CHANGES_LABEL = 'Process Changes';
+export const sharedLabelMessages = defineMessages<{ processChanges: NoMessageValues; nextAlert: NoMessageValues }>({
+  processChanges: {
+    id: 'common.labels.processChanges',
+    defaultMessage: 'Process Changes',
+    description: "Name of the edit page's action that saves the changes and processes them.",
+  },
+  nextAlert: {
+    id: 'common.labels.nextAlert',
+    defaultMessage: 'Next alert',
+    description: 'Button that moves to the next field with a confidence alert.',
+  },
+});
+
+/** English, for its reader not translated yet (Test Studio's annotation-edit-flags.ts) and for the direct edit model's English reasons. */
+export const PROCESS_CHANGES_LABEL = String(sharedLabelMessages.processChanges.defaultMessage);
 
 /**
  * Opening a test set's ground truth for editing, the same on the Test Sets list and the
  * test set's page: both size the review first (ReviewEffortModal).
  */
 export const EDIT_GROUND_TRUTH_LABEL = 'Edit ground truth';
-
-/** The control that moves the edit screen to the next low-confidence field. */
-export const NEXT_ALERT_LABEL = 'Next alert';
-
-/** The marker of an unread Inbox message (the table badge and the bell's recent list). */
-export const UNREAD_LABEL = 'Unread';

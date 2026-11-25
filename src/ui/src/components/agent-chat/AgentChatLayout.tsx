@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type MessageDescriptor, type MessageTag, type NoMessageValues } from 'react-intl';
 import {
   Container,
   Alert,
@@ -21,6 +21,8 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
+import { activatesWithoutAsking, newQuickStartProfileName } from './quickStartDiscoveryTarget';
+import { typedText, visibleChatText, withPanelContext } from './panelContext';
 import { SupportPromptGroup, LoadingBar } from '@cloudscape-design/chat-components';
 import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
@@ -38,13 +40,46 @@ import AgentChatHistoryDropdown from './AgentChatHistoryDropdown';
 import AgentToolComponent from './AgentToolComponent';
 import BedrockErrorMessage from './BedrockErrorMessage';
 import CreateIssueButton from '../common/create-issue-button';
+import { NEW_SESSION_NOTICE } from './session-opt-ins';
 import './AgentChatLayout.css';
 
 import type { ChatMessage } from '../../types/agent-chat';
 
 const logger = new ConsoleLogger('AgentChatLayout');
 
-const uiMessages = defineMessages<{ thirdPartyNotice: NoMessageValues; enableExternalMcpAgents: NoMessageValues }>({
+const uiMessages = defineMessages<{
+  thirdPartyNotice: NoMessageValues;
+  enableExternalMcpAgents: NoMessageValues;
+  sampleOpenFailed: NoMessageValues;
+  placeholder: NoMessageValues;
+  titleQuickStart: NoMessageValues;
+  titleChat: NoMessageValues;
+  placeholderQuickStart: NoMessageValues;
+  errorContent: { readonly error: string };
+  agentThinking: { readonly agentName: string };
+  loadingHistory: NoMessageValues;
+  working: NoMessageValues;
+  welcome: { readonly name: string; readonly span: MessageTag };
+  welcomeQuickStart: NoMessageValues;
+  welcomeChat: NoMessageValues;
+  welcomeQuickStartIntro: NoMessageValues;
+  quickStartHint: NoMessageValues;
+  suggestedPrompts: NoMessageValues;
+  attachDocuments: NoMessageValues;
+  analysisFailed: NoMessageValues;
+  filesRemove: { readonly index: number };
+  filesShowFewer: NoMessageValues;
+  filesShowMore: NoMessageValues;
+  filesErrorIcon: NoMessageValues;
+  documentsAttached: { readonly count: number };
+  stepWithDocuments: { readonly step: string; readonly count: number };
+  documentsAnalyzed: NoMessageValues;
+  viewDiscovery: NoMessageValues;
+  enableCodeIntelligence: NoMessageValues;
+  clearChat: NoMessageValues;
+  newSessionNotice: NoMessageValues;
+  attachedDocuments: { readonly count: number };
+}>({
   thirdPartyNotice: {
     id: 'agentChat.layout.thirdPartyNotice',
     defaultMessage:
@@ -57,7 +92,245 @@ const uiMessages = defineMessages<{ thirdPartyNotice: NoMessageValues; enableExt
     defaultMessage: 'Enable External MCP agents',
     description: 'Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers.',
   },
+  sampleOpenFailed: {
+    id: 'agentChat.layout.sampleOpenFailed',
+    defaultMessage: 'Could not open sample',
+    description: 'Error next to a sample-document link in a Quick Start answer when the sample could not be opened.',
+  },
+  placeholder: {
+    id: 'agentChat.layout.placeholder',
+    defaultMessage: 'Ask me anything about documents, errors, or IDP code base',
+    description: 'Placeholder of the Agent Chat message box. IDP is the name of the solution.',
+  },
+  titleQuickStart: {
+    id: 'agentChat.layout.titleQuickStart',
+    defaultMessage: 'Quick Start',
+    description: 'Heading of the chat while it runs Quick Start, which drafts a configuration for a document type.',
+  },
+  titleChat: {
+    id: 'agentChat.layout.titleChat',
+    defaultMessage: 'IDP Agent Companion Chat',
+    description: 'Heading of the Agent Chat page. IDP is the name of the solution; Agent Companion Chat is the name of the chat feature.',
+  },
+  placeholderQuickStart: {
+    id: 'agentChat.layout.placeholderQuickStart',
+    defaultMessage: 'Describe the documents you want to process, or attach examples to get started',
+    description: 'Placeholder of the Quick Start message box, where the user describes or attaches example documents.',
+  },
+  errorContent: {
+    id: 'agentChat.layout.errorContent',
+    defaultMessage: 'Error: {error}',
+    description: "Shown in the Agent Chat in place of an answer that failed. {error} is the server's error, in English.",
+  },
+  agentThinking: {
+    id: 'agentChat.layout.agentThinking',
+    defaultMessage: '{agentName} - Thinking...',
+    description:
+      'Heading of the section that shows an agent working in the Agent Chat, while it works. {agentName} is the name of the agent.',
+  },
+  loadingHistory: {
+    id: 'agentChat.layout.loadingHistory',
+    defaultMessage: 'Loading chat history...',
+    description: 'Shown over the Agent Chat messages while a previous conversation loads.',
+  },
+  working: {
+    id: 'agentChat.layout.working',
+    defaultMessage: 'Working on your request… this can take a minute.',
+    description: 'Shown in the Agent Chat under the last message while the agent prepares its answer.',
+  },
+  welcome: {
+    id: 'agentChat.layout.welcome',
+    defaultMessage: 'Welcome to <span>{name}</span>',
+    description:
+      'Greeting on the empty chat. {name} is Quick Start or Agent Companion Chat; the text inside <span> is shown in the accent colour.',
+  },
+  welcomeQuickStart: {
+    id: 'agentChat.layout.welcomeQuickStart',
+    defaultMessage: 'Quick Start',
+    description: 'Name shown in the greeting of the empty Quick Start chat ("Welcome to Quick Start").',
+  },
+  welcomeChat: {
+    id: 'agentChat.layout.welcomeChat',
+    defaultMessage: 'Agent Companion Chat',
+    description:
+      'Name shown in the greeting of the empty Agent Chat ("Welcome to Agent Companion Chat"). Agent Companion Chat is the name of the chat feature.',
+  },
+  welcomeQuickStartIntro: {
+    id: 'agentChat.layout.welcomeQuickStartIntro',
+    defaultMessage: "Describe the documents you want to process and I'll help you set up a configuration — no prior setup needed.",
+    description: 'Paragraph under the greeting of the empty Quick Start chat. "I" is the Quick Start assistant.',
+  },
+  quickStartHint: {
+    id: 'agentChat.layout.quickStartHint',
+    defaultMessage:
+      'Quick Start helps you author a configuration for your document type. Describe your documents or attach examples to get started.',
+    description: 'Hint under the Quick Start message box.',
+  },
+  suggestedPrompts: {
+    id: 'agentChat.layout.suggestedPrompts',
+    defaultMessage: 'Suggested prompts',
+    description: 'Screen-reader name of the group of suggested prompts shown on the empty chat.',
+  },
+  attachDocuments: {
+    id: 'agentChat.layout.attachDocuments',
+    defaultMessage: 'Attach documents',
+    description: 'Screen-reader label of the paper-clip button that attaches example documents to a Quick Start message.',
+  },
+  analysisFailed: {
+    id: 'agentChat.layout.analysisFailed',
+    defaultMessage: 'Document analysis failed',
+    description: 'Heading of the error under the Quick Start message box when discovery of the attached documents failed.',
+  },
+  filesRemove: {
+    id: 'agentChat.layout.files.remove',
+    defaultMessage: 'Remove file {index, number}',
+    description:
+      'Screen-reader label of the button that removes an attached document. {index} is the position of the file in the list, from 1.',
+  },
+  filesShowFewer: {
+    id: 'agentChat.layout.files.showFewer',
+    defaultMessage: 'Show fewer',
+    description: 'Button that collapses the list of attached documents under the Quick Start message box.',
+  },
+  filesShowMore: {
+    id: 'agentChat.layout.files.showMore',
+    defaultMessage: 'Show more',
+    description: 'Button that expands the list of attached documents under the Quick Start message box.',
+  },
+  filesErrorIcon: {
+    id: 'agentChat.layout.files.errorIcon',
+    defaultMessage: 'Error',
+    description: 'Screen-reader label of the error icon next to an attached document.',
+  },
+  documentsAttached: {
+    id: 'agentChat.layout.documentsAttached',
+    defaultMessage:
+      '{count, plural, one {# document attached — send your message to analyze it.} other {# documents attached — send your message to analyze them.}}',
+    description: 'Note under the Quick Start message box once documents are attached and before the message is sent.',
+  },
+  stepWithDocuments: {
+    id: 'agentChat.layout.stepWithDocuments',
+    defaultMessage: '{step} ({count, plural, one {# doc} other {# docs}})',
+    description:
+      'Progress of the discovery of the documents attached in Quick Start. {step} is the current step as reported, possibly in English; the count is the number of documents.',
+  },
+  documentsAnalyzed: {
+    id: 'agentChat.layout.documentsAnalyzed',
+    defaultMessage: 'Documents analyzed',
+    description: 'Shown under the Quick Start message box once discovery of the attached documents has finished.',
+  },
+  viewDiscovery: {
+    id: 'agentChat.layout.viewDiscovery',
+    defaultMessage: 'View full discovery details',
+    description: 'Link under the Quick Start message box to the page of the finished discovery job.',
+  },
+  enableCodeIntelligence: {
+    id: 'agentChat.layout.enableCodeIntelligence',
+    defaultMessage: 'Enable Code Intelligence Agent',
+    description: 'Checkbox under the Agent Chat input that lets the chat use the Code Intelligence Agent, the name of an optional agent.',
+  },
+  clearChat: {
+    id: 'agentChat.layout.clearChat',
+    defaultMessage: 'Clear chat',
+    description: 'Button under the chat that clears the conversation and starts a new one.',
+  },
+  newSessionNotice: {
+    id: 'agentChat.layout.newSessionNotice',
+    defaultMessage:
+      'Started a new conversation. Code Intelligence and External MCP agents are not used in a conversation that includes Analytics or Error Analyzer results.',
+    description:
+      'Notice above the Agent Chat after turning on an optional agent started a new conversation. Code Intelligence, External MCP, Analytics and Error Analyzer are agent names.',
+  },
+  attachedDocuments: {
+    id: 'agentChat.quickStart.attachedDocuments',
+    defaultMessage: 'Attached {count, plural, one {# document} other {# documents}}',
+    description:
+      'What the user sees as their own message in the Quick Start chat when they send attached example documents without typing anything. {count} is how many files they attached.',
+  },
 });
+
+/** The suggested prompts on the empty chat. The chip shows the message; the chat sends its English. */
+const chipMessages = defineMessages<{
+  capabilities: NoMessageValues;
+  recentDocumentsTable: NoMessageValues;
+  classificationPipeline: NoMessageValues;
+  recentErrors: NoMessageValues;
+  insuranceClaims: NoMessageValues;
+  invoices: NoMessageValues;
+  paystubs: NoMessageValues;
+  addDocumentType: NoMessageValues;
+}>({
+  capabilities: {
+    id: 'agentChat.layout.chip.capabilities',
+    defaultMessage: 'What capabilities do you have?',
+    description:
+      'Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  recentDocumentsTable: {
+    id: 'agentChat.layout.chip.recentDocumentsTable',
+    defaultMessage: 'Can you make a table of the documents uploaded in the last three days?',
+    description:
+      'Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  classificationPipeline: {
+    id: 'agentChat.layout.chip.classificationPipeline',
+    defaultMessage: 'Explain how the document classification pipeline works in the IDP accelerator',
+    description:
+      'Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  recentErrors: {
+    id: 'agentChat.layout.chip.recentErrors',
+    defaultMessage: 'Analyze recent errors in document processing',
+    description:
+      'Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  insuranceClaims: {
+    id: 'agentChat.layout.chip.insuranceClaims',
+    defaultMessage: 'Help me set up IDP for processing auto insurance claims',
+    description:
+      'Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  invoices: {
+    id: 'agentChat.layout.chip.invoices',
+    defaultMessage: 'I have invoices with vendor, amount, and due date — get me started',
+    description:
+      'Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  paystubs: {
+    id: 'agentChat.layout.chip.paystubs',
+    defaultMessage: 'Bootstrap a config for employee paystubs',
+    description:
+      'Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+  addDocumentType: {
+    id: 'agentChat.layout.chip.addDocumentType',
+    defaultMessage: 'Add a document type to one of my profiles',
+    description:
+      'Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only.',
+  },
+});
+
+interface SupportPrompt {
+  id: string;
+  message: MessageDescriptor;
+}
+
+const chatSupportPrompts: SupportPrompt[] = [
+  { id: 'GeneralAgent', message: chipMessages.capabilities },
+  { id: 'AnalyticsAgent', message: chipMessages.recentDocumentsTable },
+  { id: 'CodeIntelligenceAgent', message: chipMessages.classificationPipeline },
+  { id: 'ErrorAnalyzerAgent', message: chipMessages.recentErrors },
+];
+
+const quickStartSupportPrompts: SupportPrompt[] = [
+  { id: 'QuickStartInsurance', message: chipMessages.insuranceClaims },
+  { id: 'QuickStartInvoice', message: chipMessages.invoices },
+  { id: 'QuickStartPaystub', message: chipMessages.paystubs },
+  { id: 'QuickStartAddType', message: chipMessages.addDocumentType },
+];
+
+/** Renders a `<span>...</span>` element value: the accent-coloured name in the greeting. */
+const accentSpan = (chunks: React.ReactNode[]): React.JSX.Element => <span>{chunks}</span>;
 
 const sampleClient = generateClient();
 
@@ -91,7 +364,9 @@ const SampleDocLink = ({ s3key, children }: { s3key?: string; children?: React.R
       {failed && (
         <>
           {' '}
-          <StatusIndicator type="error">Could not open sample</StatusIndicator>
+          <StatusIndicator type="error">
+            <FormattedMessage {...uiMessages.sampleOpenFailed} />
+          </StatusIndicator>
         </>
       )}
     </>
@@ -119,7 +394,7 @@ interface AgentChatLayoutProps {
 
 const AgentChatLayout = ({
   title,
-  placeholder = 'Ask me anything about documents, errors, or IDP code base',
+  placeholder,
   agentConfig = {},
   className = '',
   showHeader = true,
@@ -148,44 +423,50 @@ const AgentChatLayout = ({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [completedJobId, setCompletedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const { versions, setActiveVersion, fetchVersions } = useConfigurationVersions();
+  const { setActiveVersion, fetchVersions } = useConfigurationVersions();
   const navigate = useNavigate();
 
-  const targetConfigVersion = useMemo(() => {
-    const active = versions.find((v) => v.isActive);
-    if (active && active.versionName !== 'default') {
-      return active.versionName;
-    }
-    return 'quickstart';
-  }, [versions]);
+  const discoveryTargetRef = useRef<string | null>(null);
 
   const handleUploadComplete = useCallback(
     (result: QuickStartUploadResult) => {
+      // The Quick Start agent reads this summary, so it stays English; it is sent hidden, in a panel-context block.
       const names = result.classNames.length ? result.classNames.join(', ') : 'document type(s)';
       const discoveryKind = result.totalDocuments === 1 ? 'Single-document' : 'Multi-document';
       const typeCount = result.clustersFound || result.classNames.length;
-      const summary =
+      const summaryFor = (activeness: 'already' | 'not') =>
         `I uploaded ${result.totalDocuments} document(s). ${discoveryKind} discovery inferred ` +
-        `${typeCount} document type(s): ${names}, saved and ready to use. Please summarize what was ` +
+        `${typeCount} document type(s): ${names}, saved as a new configuration profile. Please summarize what was ` +
         `found in plain language for a first-time user. Briefly explain, in one plain sentence, that ` +
         `this was saved as a reusable "configuration" that tells the system what to pull out of these ` +
         `documents (introduce the term gently, do not assume I already know it). Then ask whether I'd ` +
         `like to adjust any fields or start processing my documents. Keep it concise; save deeper ` +
         `configuration-version details for if I ask.\n\n` +
-        `[Discovery saved the schema to configuration profile "${result.configVersion}". Its fields ` +
+        `[Discovery saved the schema to a new configuration profile "${result.configVersion}", which is ${activeness} the active profile; if it is not, ask before I process documents whether to make it the active profile, and call activate_config_version only once I agree. Its fields ` +
         `are not shown here — call get_class_schema for version "${result.configVersion}" before ` +
         `answering questions about the fields or refining them.]`;
+      const send = (activated: boolean) =>
+        sendMessage(withPanelContext('', summaryFor(activated ? 'already' : 'not')), {
+          enableCodeIntelligence,
+          enableExternalMcpAgents,
+        });
       setAttachedFiles([]);
       setUploadError(null);
       setCompletedJobId(result.jobId);
-      if (result.configVersion === 'quickstart' && !versions.some((v) => v.versionName === 'quickstart' && v.isActive)) {
-        setActiveVersion('quickstart')
-          .then(() => fetchVersions())
-          .catch((e) => logger.error('Failed to activate quickstart version:', e));
-      }
-      sendMessage(summary, { enableCodeIntelligence, enableExternalMcpAgents });
+      void fetchVersions().then((current) => {
+        if (!current || !activatesWithoutAsking(current, result.configVersion)) {
+          send(false);
+          return;
+        }
+        setActiveVersion(result.configVersion)
+          .then(() => send(true))
+          .catch((e) => {
+            logger.error('Failed to activate the Quick Start profile:', e);
+            send(false);
+          });
+      });
     },
-    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions, versions],
+    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions],
   );
 
   const handleUploadError = useCallback((message: string) => {
@@ -260,7 +541,8 @@ const AgentChatLayout = ({
 
     if (hasFiles) {
       const filesToProcess = attachedFiles;
-      const version = targetConfigVersion || `bootstrap-${Date.now().toString(36)}`;
+      if (!discoveryTargetRef.current) discoveryTargetRef.current = newQuickStartProfileName(new Date());
+      const version = discoveryTargetRef.current;
       setCompletedJobId(null);
       setUploadError(null);
       setAttachedFiles([]);
@@ -269,15 +551,19 @@ const AgentChatLayout = ({
 
     let messageToSend: string;
     if (hasFiles) {
+      // The Quick Start agent reads this note, so it stays English.
       const isSingle = filesAttachedCount === 1 && !attachedFiles[0]?.name.toLowerCase().endsWith('.zip');
       const discoveryKind = isSingle ? 'single-document' : 'multi-document';
       const note =
         `[${filesAttachedCount} document(s) attached — ${discoveryKind} Discovery is now running on them ` +
         `in the background. Acknowledge it's processing and that you'll summarize the results when they ` +
         `arrive; do not ask me to upload again.]`;
-      messageToSend = prompt.trim() ? `${prompt.trim()}\n\n${note}` : note;
+      messageToSend = withPanelContext(
+        prompt.trim() || intl.formatMessage(uiMessages.attachedDocuments, { count: filesAttachedCount }),
+        note,
+      );
     } else {
-      messageToSend = prompt;
+      messageToSend = typedText(prompt);
     }
 
     updateAgentChatState({ inputValue: '' });
@@ -302,9 +588,11 @@ const AgentChatLayout = ({
     updateAgentChatState({ inputValue: event.detail.value });
   };
 
-  const effectiveTitle = title ?? (mode === 'quick_start' ? 'Quick Start' : 'IDP Agent Companion Chat');
+  const effectiveTitle = title ?? intl.formatMessage(mode === 'quick_start' ? uiMessages.titleQuickStart : uiMessages.titleChat);
   const effectivePlaceholder =
-    mode === 'quick_start' ? 'Describe the documents you want to process, or attach examples to get started' : placeholder;
+    mode === 'quick_start'
+      ? intl.formatMessage(uiMessages.placeholderQuickStart)
+      : (placeholder ?? intl.formatMessage(uiMessages.placeholder));
 
   const uploadInProgress = uploading || (!!uploadStatus && !['COMPLETED', 'FAILED'].includes(uploadStatus.status));
 
@@ -335,6 +623,7 @@ const AgentChatLayout = ({
   const handleSessionSelect = async (session: { sessionId: string }, sessionMessages: ChatMessage[]) => {
     try {
       setIsLoadingSession(true);
+      discoveryTargetRef.current = null;
       console.log('Loading chat session:', session.sessionId);
 
       await loadChatSession(session.sessionId, sessionMessages);
@@ -360,44 +649,6 @@ const AgentChatLayout = ({
     // The dropdown component handles the UI state, so we don't need to do anything here
   };
 
-  const chatSupportPrompts = [
-    {
-      id: 'GeneralAgent',
-      prompt: 'What capabilities do you have?',
-    },
-    {
-      id: 'AnalyticsAgent',
-      prompt: 'Can you make a table of the documents uploaded in the last three days?',
-    },
-    {
-      id: 'CodeIntelligenceAgent',
-      prompt: 'Explain how the document classification pipeline works in the IDP accelerator',
-    },
-    {
-      id: 'ErrorAnalyzerAgent',
-      prompt: 'Analyze recent errors in document processing',
-    },
-  ];
-
-  const quickStartSupportPrompts = [
-    {
-      id: 'QuickStartInsurance',
-      prompt: 'Help me set up IDP for processing auto insurance claims',
-    },
-    {
-      id: 'QuickStartInvoice',
-      prompt: 'I have invoices with vendor, amount, and due date — get me started',
-    },
-    {
-      id: 'QuickStartPaystub',
-      prompt: 'Bootstrap a config for employee paystubs',
-    },
-    {
-      id: 'QuickStartAddType',
-      prompt: 'Add a new document type to my existing configuration',
-    },
-  ];
-
   const supportPrompts = mode === 'quick_start' ? quickStartSupportPrompts : chatSupportPrompts;
 
   // Index of the last assistant message — the "Create GitHub issue" affordance
@@ -417,13 +668,17 @@ const AgentChatLayout = ({
       } else if (Array.isArray(message.content) && (message.content as unknown[])[0]) {
         const content = (message.content as unknown[])[0] as Record<string, unknown>;
         if (content?.error) {
-          contentText = `Error: ${content.error}`;
+          contentText = intl.formatMessage(uiMessages.errorContent, { error: String(content.error) });
         } else {
           contentText = (content?.text as string) || '';
         }
       }
 
       const isUser = message.role === 'user';
+      if (isUser) {
+        contentText = visibleChatText(contentText);
+        if (!contentText) return null;
+      }
 
       // Handle tool_use messages with collapsible section using sessionMessages
       if (message.messageType === 'tool_use' && message.toolUseData) {
@@ -445,9 +700,13 @@ const AgentChatLayout = ({
                       headingTagOverride="h5"
                       expanded={isExpanded}
                       onChange={({ detail }) => handleExpandedChange(agentMessageId, detail.expanded)}
-                      headerText={`${(message.toolUseData as Record<string, unknown>).agent_name}${
-                        message.isProcessing ? ' - Thinking...' : ''
-                      }`}
+                      headerText={
+                        message.isProcessing
+                          ? intl.formatMessage(uiMessages.agentThinking, {
+                              agentName: String((message.toolUseData as Record<string, unknown>).agent_name),
+                            })
+                          : String((message.toolUseData as Record<string, unknown>).agent_name)
+                      }
                     >
                       <div className="tool-usage-container">
                         {sessionMessages.map((sessionMsg: ChatMessage) => {
@@ -585,7 +844,7 @@ const AgentChatLayout = ({
         </div>
       );
     });
-  }, [messages, user, collapsedSections, handleExpandedChange, userInitial, lastAssistantIndex]);
+  }, [messages, user, collapsedSections, handleExpandedChange, userInitial, lastAssistantIndex, intl]);
 
   const chatContent = (
     <div className="chat-container">
@@ -597,7 +856,7 @@ const AgentChatLayout = ({
         )}
         {sessionNotice && (
           <Alert type="info" dismissible onDismiss={() => updateAgentChatState({ sessionNotice: null })}>
-            {sessionNotice}
+            {sessionNotice === NEW_SESSION_NOTICE ? <FormattedMessage {...uiMessages.newSessionNotice} /> : sessionNotice}
           </Alert>
         )}
 
@@ -631,7 +890,7 @@ const AgentChatLayout = ({
             >
               <Spinner size="large" />
               <Box fontSize="body-m" color="text-body-secondary">
-                Loading chat history...
+                <FormattedMessage {...uiMessages.loadingHistory} />
               </Box>
             </div>
           )}
@@ -639,11 +898,17 @@ const AgentChatLayout = ({
           {messages.length === 0 ? (
             <div className={`welcome-text ${welcomeAnimated ? 'animate-in' : ''}`}>
               <h2>
-                Welcome to <span>{welcomeName || (mode === 'quick_start' ? 'Quick Start' : 'Agent Companion Chat')}</span>
+                <FormattedMessage
+                  {...uiMessages.welcome}
+                  values={{
+                    name: welcomeName || intl.formatMessage(mode === 'quick_start' ? uiMessages.welcomeQuickStart : uiMessages.welcomeChat),
+                    span: accentSpan,
+                  }}
+                />
               </h2>
               {mode === 'quick_start' && (
                 <Box variant="p" color="text-body-secondary">
-                  Describe the documents you want to process and I&apos;ll help you set up a configuration — no prior setup needed.
+                  <FormattedMessage {...uiMessages.welcomeQuickStartIntro} />
                 </Box>
               )}
             </div>
@@ -657,7 +922,7 @@ const AgentChatLayout = ({
                       <Box color="text-body-secondary" fontSize="body-s" padding={{ bottom: 'xxs' }}>
                         <Spinner size="normal" />
                         <Box variant="span" padding={{ left: 'xs' }}>
-                          Working on your request… this can take a minute.
+                          <FormattedMessage {...uiMessages.working} />
                         </Box>
                       </Box>
                       <LoadingBar variant="gen-ai-masked" />
@@ -676,16 +941,17 @@ const AgentChatLayout = ({
             <SpaceBetween direction="horizontal" size="s" alignItems="center">
               <Box {...({ flex: '1' } as Record<string, unknown>)}>
                 <SupportPromptGroup
-                  ariaLabel="Suggested prompts"
+                  ariaLabel={intl.formatMessage(uiMessages.suggestedPrompts)}
                   alignment="horizontal"
                   items={supportPrompts.map((item) => ({
-                    text: item.prompt,
+                    text: intl.formatMessage(item.message),
                     id: item.id,
                   }))}
                   onItemClick={async ({ detail }) => {
                     const selectedPrompt = supportPrompts.find((prompt) => prompt.id === detail.id);
                     if (selectedPrompt) {
-                      updateAgentChatState({ inputValue: selectedPrompt.prompt });
+                      // The chip shows its label in the UI language; the agent receives the English.
+                      updateAgentChatState({ inputValue: String(selectedPrompt.message.defaultMessage) });
                     }
                   }}
                 />{' '}
@@ -713,7 +979,7 @@ const AgentChatLayout = ({
                         value={attachedFiles}
                         onChange={({ detail }) => setAttachedFiles(detail.value)}
                       >
-                        Attach documents
+                        {intl.formatMessage(uiMessages.attachDocuments)}
                       </FileInput>
                     </Box>
                   ) : undefined
@@ -722,7 +988,12 @@ const AgentChatLayout = ({
                   mode === 'quick_start' && (attachedFiles.length > 0 || uploadStatus || completedJobId || uploadError) ? (
                     <SpaceBetween size="xs">
                       {uploadError && (
-                        <Alert type="error" dismissible onDismiss={() => setUploadError(null)} header="Document analysis failed">
+                        <Alert
+                          type="error"
+                          dismissible
+                          onDismiss={() => setUploadError(null)}
+                          header={intl.formatMessage(uiMessages.analysisFailed)}
+                        >
                           {uploadError}
                         </Alert>
                       )}
@@ -733,32 +1004,38 @@ const AgentChatLayout = ({
                           showFileSize
                           onDismiss={({ detail }) => setAttachedFiles((prev) => prev.filter((_, i) => i !== detail.fileIndex))}
                           i18nStrings={{
-                            removeFileAriaLabel: (idx) => `Remove file ${idx + 1}`,
-                            limitShowFewer: 'Show fewer',
-                            limitShowMore: 'Show more',
-                            errorIconAriaLabel: 'Error',
+                            removeFileAriaLabel: (idx) => intl.formatMessage(uiMessages.filesRemove, { index: idx + 1 }),
+                            limitShowFewer: intl.formatMessage(uiMessages.filesShowFewer),
+                            limitShowMore: intl.formatMessage(uiMessages.filesShowMore),
+                            errorIconAriaLabel: intl.formatMessage(uiMessages.filesErrorIcon),
                           }}
                         />
                       )}
                       {attachedFiles.length > 0 && !uploadInProgress && (
                         <Box fontSize="body-s" color="text-body-secondary">
-                          {attachedFiles.length} document(s) attached — send your message to analyze them.
+                          <FormattedMessage {...uiMessages.documentsAttached} values={{ count: attachedFiles.length }} />
                         </Box>
                       )}
                       {uploadStatus && uploadInProgress && (
                         <StatusIndicator type="in-progress">
-                          {uploadStatus.currentStep || uploadStatus.status}
-                          {uploadStatus.totalDocuments ? ` (${uploadStatus.totalDocuments} docs)` : ''}
+                          {uploadStatus.totalDocuments
+                            ? intl.formatMessage(uiMessages.stepWithDocuments, {
+                                step: uploadStatus.currentStep || uploadStatus.status,
+                                count: uploadStatus.totalDocuments,
+                              })
+                            : uploadStatus.currentStep || uploadStatus.status}
                         </StatusIndicator>
                       )}
                       {completedJobId && !uploadInProgress && (
                         <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                          <StatusIndicator type="success">Documents analyzed</StatusIndicator>
+                          <StatusIndicator type="success">
+                            <FormattedMessage {...uiMessages.documentsAnalyzed} />
+                          </StatusIndicator>
                           <Link
                             onFollow={() => navigate(`${DISCOVERY_JOB_PATH}/${completedJobId}`)}
-                            ariaLabel="View full discovery details"
+                            ariaLabel={intl.formatMessage(uiMessages.viewDiscovery)}
                           >
-                            View full discovery details
+                            <FormattedMessage {...uiMessages.viewDiscovery} />
                           </Link>
                         </SpaceBetween>
                       )}
@@ -768,8 +1045,7 @@ const AgentChatLayout = ({
               />
               {mode === 'quick_start' ? (
                 <Box {...({ fontSize: 'body-s', color: 'text-status-info', flex: '1' } as Record<string, unknown>)}>
-                  Quick Start helps you author a configuration for your document type. Describe your documents or attach examples to get
-                  started.
+                  <FormattedMessage {...uiMessages.quickStartHint} />
                 </Box>
               ) : (
                 <SpaceBetween direction="horizontal" size="m" alignItems="center">
@@ -781,7 +1057,9 @@ const AgentChatLayout = ({
                     onChange={({ detail }) => setOptIn('enableCodeIntelligence', detail.checked)}
                     disabled={waitingForResponse}
                   >
-                    <Box fontSize="body-s">Enable Code Intelligence Agent</Box>
+                    <Box fontSize="body-s">
+                      <FormattedMessage {...uiMessages.enableCodeIntelligence} />
+                    </Box>
                   </Checkbox>
                   <Checkbox
                     checked={enableExternalMcpAgents}
@@ -809,6 +1087,7 @@ const AgentChatLayout = ({
                 iconName="refresh"
                 onClick={() => {
                   clearChat();
+                  discoveryTargetRef.current = null;
                   setWelcomeAnimated(false);
                   setTimeout(() => {
                     setWelcomeAnimated(true);
@@ -816,7 +1095,7 @@ const AgentChatLayout = ({
                 }}
                 disabled={waitingForResponse || isLoadingSession}
               >
-                Clear chat
+                <FormattedMessage {...uiMessages.clearChat} />
               </Button>
             )}
           </SpaceBetween>

@@ -3,20 +3,54 @@
 import React from 'react';
 import type { LinkProps } from '@cloudscape-design/components';
 import { Box, Button, Header, SpaceBetween } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import { InfoLink } from './info-link';
 
-/** The one empty-table text for Human Review and Home › Tasks tables. */
-export const NO_DATA_TEXT = 'No data!';
+const messages = defineMessages<{
+  filterCount: { readonly count: number };
+  noMatchTitle: NoMessageValues;
+  noMatchBody: NoMessageValues;
+  clearFilter: NoMessageValues;
+  noData: NoMessageValues;
+}>({
+  filterCount: {
+    id: 'common.table.filterCount',
+    defaultMessage: '{count, plural, one {# match} other {# matches}}',
+    description: "Count next to a table's text filter. {count} is the number of rows the filter matches.",
+  },
+  noMatchTitle: {
+    id: 'common.table.noMatch.title',
+    defaultMessage: 'No matches',
+    description: 'Heading a table shows when its filter matches no row.',
+  },
+  noMatchBody: {
+    id: 'common.table.noMatch.body',
+    defaultMessage: "We can't find a match.",
+    description: 'Text under the heading a table shows when its filter matches no row.',
+  },
+  clearFilter: {
+    id: 'common.table.noMatch.clear',
+    defaultMessage: 'Clear filter',
+    description: 'Button under the no-match text of a table that clears its filter.',
+  },
+  noData: {
+    id: 'common.table.noData',
+    defaultMessage: 'No data!',
+    description:
+      "Shown in a table that has no rows once loading has finished, where the table has no empty text of its own (a queue's Documents table, Review Management's Test Studio queues).",
+  },
+});
 
 /** Empty state for a table with no rows (after loading has finished). */
 export const NoDataState = (): React.JSX.Element => (
   <Box textAlign="center" color="inherit" padding="s">
-    {NO_DATA_TEXT}
+    <FormattedMessage {...messages.noData} />
   </Box>
 );
 
-export const getFilterCounterText = (count: number): string => `${count} ${count === 1 ? 'match' : 'matches'}`;
+/** The count next to a table's text filter, in the UI's language. */
+export const filterCounterText = (intl: IntlShape, count: number): string => intl.formatMessage(messages.filterCount, { count });
 /* prettier-ignore */
 const getHeaderCounterText = (items: unknown[] = [], selectedItems: unknown[] = []): string => (
   selectedItems && selectedItems.length > 0
@@ -56,22 +90,21 @@ export const TableHeader = (props: TableHeaderProps): React.JSX.Element => (
 );
 
 interface TableEmptyStateProps {
-  resourceName: string;
-  /** Replaces the default "No <resource>s" heading. */
-  title?: string;
-  /** Replaces the default "No <resource>s found." text; say what to do next. */
-  description?: string;
+  /** The heading, already in the UI's language ("No documents"). */
+  title: string;
+  /** The text under the heading, already in the UI's language; say what to do next. */
+  description: string;
   /** An optional call to action under the text. */
   action?: React.ReactNode;
 }
 
-export const TableEmptyState = ({ resourceName, title, description, action }: TableEmptyStateProps): React.JSX.Element => (
+export const TableEmptyState = ({ title, description, action }: TableEmptyStateProps): React.JSX.Element => (
   <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
     <SpaceBetween size="xxs">
       <div>
-        <b>{title ?? ` No ${resourceName.toLowerCase()}s`}</b>
+        <b>{title}</b>
         <Box variant="p" color="inherit">
-          {description ?? `No ${resourceName.toLowerCase()}s found.`}
+          {description}
         </Box>
       </div>
       {action}
@@ -87,12 +120,16 @@ export const TableNoMatchState = (props: TableNoMatchStateProps): React.JSX.Elem
   <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
     <SpaceBetween size="xxs">
       <div>
-        <b>No matches</b>
+        <b>
+          <FormattedMessage {...messages.noMatchTitle} />
+        </b>
         <Box variant="p" color="inherit">
-          We can&apos;t find a match.
+          <FormattedMessage {...messages.noMatchBody} />
         </Box>
       </div>
-      <Button onClick={props.onClearFilter}>Clear filter</Button>
+      <Button onClick={props.onClearFilter}>
+        <FormattedMessage {...messages.clearFilter} />
+      </Button>
     </SpaceBetween>
   </Box>
 );

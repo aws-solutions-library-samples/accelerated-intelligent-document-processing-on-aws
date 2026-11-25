@@ -113,7 +113,26 @@ class MultiDocDiscoveryResult(BaseModel):
     total_clusters: int = Field(default=0, description="Number of clusters found")
     noise_documents: int = Field(
         default=0,
-        description="Number of documents that couldn't be clustered (noise/outliers)",
+        description=(
+            "Number of documents clustering left in no class (noise/outliers): "
+            "their cluster was smaller than the minimum cluster size and was "
+            "dropped. Documents whose embedding failed are counted in "
+            "failed_embeddings instead"
+        ),
+    )
+    noise_document_keys: List[str] = Field(
+        default_factory=list,
+        description="Paths of the documents counted in noise_documents",
+    )
+    failed_embeddings: int = Field(
+        default=0,
+        description=(
+            "Number of documents whose embedding failed, so they were never clustered"
+        ),
+    )
+    failed_embedding_keys: List[str] = Field(
+        default_factory=list,
+        description="Paths of the documents counted in failed_embeddings",
     )
     config_version: Optional[str] = Field(
         default=None,

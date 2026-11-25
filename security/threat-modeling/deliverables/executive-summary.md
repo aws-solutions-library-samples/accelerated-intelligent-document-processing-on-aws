@@ -42,33 +42,33 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Category | Count |
 |----------|-------|
-| **Total threats identified** | **109** |
-| Critical risk (score 8-9) | 9 |
-| High risk (score 6-7) | 32 |
-| Medium risk (score 3-5) | 50 |
-| Low risk (score 1-2) | 18 |
+| **Total threats identified** | **123** |
+| Critical risk (score 8-9) | 8 |
+| High risk (score 6-7) | 33 |
+| Medium risk (score 3-5) | 63 |
+| Low risk (score 1-2) | 19 |
 
 ### 3.2 STRIDE Distribution
 
 | STRIDE Category | Count | Key Concern |
 |----------------|-------|-------------|
-| **Tampering** | 42 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output |
-| **Information Disclosure** | 42 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure |
-| **Elevation of Privilege** | 38 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
-| **Denial of Service** | 19 | Resource exhaustion, cost escalation, redaction loops, service dependency |
+| **Tampering** | 51 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output, routing that decides what is reviewed |
+| **Information Disclosure** | 49 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure, Terraform state on local disk |
+| **Elevation of Privilege** | 43 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
+| **Denial of Service** | 22 | Resource exhaustion, cost escalation, redaction loops, service dependency |
 | **Spoofing** | 17 | Token theft, caller-identity spoofing, credential compromise |
-| **Repudiation** | 5 | Insufficient audit trail, BDA opacity, review history that is not tamper-evident |
+| **Repudiation** | 7 | Insufficient audit trail, BDA opacity, review history that is not tamper-evident |
 
-> Counts sum to more than 109 because a threat may carry multiple STRIDE categories.
+> Counts sum to more than 123 because a threat may carry multiple STRIDE categories.
 
 ### 3.3 Mitigation Status
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 67 | 61% |
-| **Partially Mitigated** | 37 | 34% |
+| **Mitigated** | 63 | 51% |
+| **Partially Mitigated** | 55 | 45% |
 | **Open** (real gap, needs work) | **1** | **1%** |
-| **Accepted** | 4 | 4% |
+| **Accepted** | 4 | 3% |
 
 The one **Open** item is JOB.T02 (the Jobs API sits outside the automated
 authorization harness). CHAT.T03 and CHAT.T06 are Mitigated: the chat streaming
@@ -82,18 +82,17 @@ records no document owner, so a caller whose profile scope is unset reads any
 document through the resolver. The Open item is a code/config change; see
 [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
 
-**What changed since the 0.6.9 review.** Five issues this summary previously
-described as in flight have merged, and their effect differs per threat, so each is
-stated rather than grouped. **Closed and the threat with it:** #919, so `onError: fail`
-is terminal at all seven hook points (HOOK.T07, now Mitigated), and #928, so the API
-dispatcher denies by default (AUTH.T16 keeps its Partially Mitigated status on the
-remaining 403-mapping fallback). **Closed, threat downgraded not closed:** #927
-attaches a permissions boundary to the deployment service role and constrains the
-roles it may create, which is real containment, but the role's own `iam:*` grant is
-unchanged — SDK.T05 moves from Open to **Partially Mitigated** and is not fixed.
-**Closed, and the threats with it:** CHAT.T03 and CHAT.T06, by the chat streaming
-endpoint verifying the caller's Cognito ID token and recording an owner per chat
-session; see
+**Status of the recently merged fixes.** Their effect differs per threat, so each
+is stated rather than grouped. **Closed, and the threat with it:** #919, so `onError:
+fail` is terminal at all seven hook points (HOOK.T07, Mitigated). **Closed, threat
+kept Partially Mitigated:** #928, so the API dispatcher denies by default (AUTH.T16
+remains Partially Mitigated on the remaining 403-mapping fallback), and #927, which
+confines the deployment service role's IAM writes and `iam:PassRole` to names
+starting with the stack-name prefix and requires every role it creates to carry a
+permissions boundary; the role's service wildcards stay broad by design, so SDK.T05
+is Partially Mitigated at score 3. **Closed, and the threats with it:** CHAT.T03 and
+CHAT.T06, by the chat streaming endpoint verifying the caller's Cognito ID token and
+recording an owner per chat session; see
 [companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route).
 #921 (consistent log redaction, AUTH.T15) is likewise closed without changing that
 threat's status. The status columns in this model deliberately do not credit an unmerged fix, because a
@@ -104,7 +103,7 @@ out of date.
 
 ### 4.1 Prompt Injection (Highest Impact)
 
-Prompt injection remains the top threat vector across document processing (PM.T01), chat interactions (CHAT.T01), knowledge base retrieval (KB.T02), and discovery (RPT.T05). The system processes untrusted document content through LLM prompts, creating inherent injection risk.
+Prompt injection remains the top threat vector across document processing (PM.T01), chat interactions (CHAT.T01), knowledge base retrieval (KB.T02), and discovery (RPT.T05). The system processes untrusted document content through LLM prompts, creating inherent injection risk. PM.T01 is Partially Mitigated: the optional Bedrock Guardrail is not applied to the Classification, OCR or Assessment functions, and human review of low-confidence values is the backstop.
 
 **Mitigations**: Prompt engineering with guardrails, input/output tagging, Bedrock Guardrails, output schema validation, evaluation framework for accuracy monitoring, human review for critical documents.
 
@@ -144,10 +143,11 @@ work, so the harness remains what catches a missing one (AUTH.T16).
    (CHAT.T03, CHAT.T06)** — the endpoint verifies the caller's ID token and the
    session owner, and `make api-test` has cells for it that have not yet been run
    against a deployment
-2. **Narrow the deployment service role (SDK.T05)** — **issue #927** attached a
-   permissions boundary and constrained the roles it may create, but the role keeps
-   its own `iam:*` and broad service wildcards, so possession of it is still close
-   to possession of the account
+2. **Plan where Terraform state lives (SDK.T06)** — `idp-cli deploy --terraform`
+   writes `terraform.tfstate` unencrypted to a local working directory with no
+   backend, and that state holds account IDs, ARNs and secrets such as the MCP
+   client secrets; configure an encrypted, locked remote backend before the first
+   apply
 3. **Make per-object authorization structural (AUTH.T16)** — the
    dispatcher's default deny (**issue #928**, closed) covers the group floor only;
    scope, ownership and review-queue eligibility are hand-written per resolver, and
@@ -194,4 +194,4 @@ The threat model has been developed using:
 | [STRIDE Analysis](../threat-analysis/stride-analysis.md) | Full STRIDE analysis across all components |
 | [Risk Matrix](../risk-assessment/risk-matrix.md) | Complete risk register with scoring |
 | [Implementation Guide](implementation-guide.md) | Security controls implementation details |
-| [Threat ID Glossary](../threat-id-glossary.md) | All 109 threat IDs with cross-references |
+| [Threat ID Glossary](../threat-id-glossary.md) | All 123 threat IDs with cross-references |

@@ -10,6 +10,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -74,9 +75,11 @@ beforeEach(() => {
 
 const chooseEditGroundTruth = async () => {
   render(
-    <MemoryRouter>
-      <TestSets />
-    </MemoryRouter>,
+    <IntlProvider locale="en" defaultLocale="en">
+      <MemoryRouter>
+        <TestSets />
+      </MemoryRouter>
+    </IntlProvider>,
   );
   await screen.findByText('Invoices');
   const table = createWrapper(document.body).findTable()!;

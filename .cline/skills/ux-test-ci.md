@@ -1,1 +1,0 @@
-../../.claude/skills/ux-test-ci.md

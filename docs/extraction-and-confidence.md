@@ -22,7 +22,7 @@ its confidence, and its location together.
 >
 > - `extraction.confidence.{enabled, mode, model, list_batch_size, image, system_prompt, task_prompt, ...}` — confidence scoring (formerly the top-level `assessment` block).
 > - `extraction.geometry.{mode, task_prompt_bbox}` — field bounding boxes (formerly `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr`).
-> - `hitl.{enabled, confidence_threshold}` — human review routing (top-level).
+> - `hitl.{enabled, confidence_threshold}` — Review Routing: whether documents are held for review, and the confidence threshold (top-level).
 > - Existing pre-v0.6 configs are **migrated automatically on read** — no manual edit is required. See [Granular Assessment Retirement](migration-granular-retirement.md).
 
 ---
@@ -167,7 +167,9 @@ extraction:
 > configuration migration pins `mode` from it before merging onto the defaults. A
 > **full** configuration is different: it already carries `mode: simple`, so
 > editing only `agentic.enabled` to `true` in it leaves the document on the Simple
-> path, with no error. Set `mode: advanced` to choose Advanced extraction.
+> path. It is not an error, but `idp-cli config-validate`, `idp-cli config-upload`
+> and the SDK's `validate` warn about a true flag that the mode overrides. Set
+> `mode: advanced` to choose Advanced extraction.
 
 #### Supported models for agentic extraction
 
@@ -398,9 +400,11 @@ which makes the previewed saving a floor, not a ceiling.
 
 Agentic extraction automatically handles throttling and transient errors:
 
-- **Automatic retries**: Up to 7 retry attempts with exponential backoff (matching bedrock client behavior)
-- **Adaptive retry mode**: Intelligently adjusts retry timing based on error types
-- **Step Functions integration**: If retries are exhausted, `ThrottlingException` is propagated to Step Functions for workflow-level retry handling
+- **Automatic retries**: `invoke_agent_with_retry` retries throttling, timeouts and transient Bedrock errors — including an HTTP 500, 502, 503 or 504 and a bare 429 — with exponential backoff starting at 5 seconds
+- **Bounded by time, not attempts**: each sleep is capped (`AGENT_MAX_BACKOFF_SECONDS`), the sleeps together are capped (`AGENT_MAX_TOTAL_BACKOFF_SECONDS`; once spent the ladder stops and re-raises), and no sleep runs past the Lambda deadline. Both caps live in `idp_common.timeout_budget`
+- **One layer of retries**: the botocore client's own attempts are pinned to the shard time budget (`BOTOCORE_TOTAL_MAX_ATTEMPTS`), so a stalled request is not retried inside the client where the ladder and the deadline check cannot see it
+- **Resumes rather than re-sends**: a retry continues the conversation the failed attempt started, so the prompt is not appended twice and rows already mapped by the table tools are not emitted again
+- **Step Functions integration**: If retries are exhausted, the error is propagated to Step Functions for workflow-level retry handling
 - **No configuration needed**: Retry logic is transparent
 
 #### Deterministic table parsing
@@ -470,6 +474,15 @@ counted as extra items. Four bounds:
 > the default for any multi-page table document, and until
 > [issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
 > its agents were the only ones not receiving the block.
+
+> **`parse_table` reads the OCR itself.** The agent calls `parse_table` without
+> passing any text: the tool parses the section's own OCR text (each shard's own
+> pages, on the sharded path). So the table is parsed from exactly what OCR
+> produced, rather than from a copy the model writes out, which would cost as many
+> output tokens as the section holds and need not match the OCR. A copy whose
+> repeated page headers differ can turn off the recovery of a blank OCR header row
+> and count the header as rows. See the
+> [extraction module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#table-parsing-tool).
 
 > **Requires Markdown tables in the OCR output.** Table parsing only engages when
 > OCR emits Markdown pipe-tables — i.e. **Amazon Textract with the `TABLES`
@@ -955,6 +968,15 @@ may instead emit a worse value that fits the schema, so this is not a free
 accuracy win and it is not yet proven on real corpora. Measure completeness and
 field accuracy on your own documents before enabling it.
 
+**Why not Bedrock structured outputs.** Bedrock also offers structured outputs
+for Claude models, which guarantees the reply's shape rather than making it likely.
+The accelerator does not use it yet. No case has been found where forced tool use
+returns off-schema output that structured outputs would have prevented, and
+supporting it adds schema rewriting, a per-model gate and a configuration
+migration. The proposal and its measurements are in
+[PR #1935](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1935); it will be
+revisited if a head-to-head comparison shows a measurable benefit.
+
 **When it is skipped automatically.** Two different things can make forcing
 unavailable, and both fall back to the prompt with the reason recorded — so a
 before/after comparison can tell "forcing changed nothing" from "forcing never
@@ -1361,6 +1383,17 @@ extraction:
 > these values by hand against `config_library/pricing.yaml` when you change
 > them.
 
+**Scoring with a decision model.** `extraction.confidence.method` is `llm`
+(the default, the pass described above) or `decision_model`, which asks a deployed
+decision model one yes/no question per extracted value and takes the confidence
+from its answer distribution. It needs `mode: separate` — under `integrated` the
+extraction call scores its own values and no confidence pass runs, so the
+combination is refused — and an `extraction.confidence.decision_model.endpoint`.
+Because a decision model returns no bounding boxes, it also refuses
+`extraction.geometry.mode` `llm` and `llm_grounded`; use `ocr_only` (the default).
+Setup, the text window and cost are in
+[Decision Models](decision-models.md#3-or-use-it-for-extraction-confidence).
+
 **Behavior when disabled** (`enabled: false` or `mode: off`): the assessment
 Lambda is still invoked (minimal overhead) but returns immediately with logging
 "Assessment is disabled via configuration" — no LLM calls, no S3 operations.
@@ -1630,11 +1663,10 @@ extraction:
 > Transient failures (throttling, read timeouts, 5xx) are unchanged — they still
 > raise so Step Functions retries the section. ⚠️ Because confidence is absent on a
 > degraded section, HITL confidence routing and the UI threshold signals do not
-> apply to it; check the **Status** column of the Sections panel — that is where this
-> particular issue shows. It is written to the section record only, not into the
-> section's `result.json`, so unlike issues from a *successful* assessment run it
-> does **not** appear in the edit page's **Reports › Processing Report** (which renders
-> `metadata.processing_issues` from that file). Re-batching the oversized
+> apply to it; check the **Status** column of the Sections panel. The issue is also
+> written into the section's `result.json`, so the edit page's **Reports › Processing
+> Report** shows it and its Confidence stage reads *no confidence scores*. That write
+> is best effort; if it fails, the Status column still has the issue. Re-batching the oversized
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
 >
@@ -1985,11 +2017,30 @@ A field extraction found no value for raises no confidence alert. With review qu
 a *required* field with no value still sends its document to the Default queue while
 `hitl.route_missing_required_fields` is on (the default); see
 [Absent values and missing required fields](#absent-values-and-missing-required-fields).
-HITL is configured under the top-level `hitl` block in v0.6:
+
+Which documents are reviewed, and in which review queue, is decided by the profile's
+routing rules (see [Review Routing](./review-routing.md)). The built-in routing
+rules are the behaviour described here: a section whose extraction failed, a
+confidence alert, or a missing required field, sends the document to the Default
+queue. They are evaluated only while the
+**Review Routing** switch (`hitl.enabled`) is on, which it is in the profiles a new
+stack creates.
+
+**A section a reviewer confirmed raises no alert.** When a review is completed, each
+section's result records that it was reviewed, and the fields of a confirmed section
+no longer count as confidence alerts or missing required fields for routing, whatever
+their scores; a confirmed section whose extraction had failed no longer counts as a
+failed extraction either. That is why a document whose review was completed is not sent back to
+review by the same low score. Extracting the section again (a reprocess from
+extraction, **Re-extract Sections**) removes the record, and its fields raise alerts
+again.
+
+HITL is configured under the top-level `hitl` block in v0.6, shown in the Web UI as
+**Processing Settings → Review Routing (Optional)**:
 
 ```yaml
 hitl:
-  enabled: true
+  enabled: true                # the Review Routing switch
   confidence_threshold: 0.85   # fields below this are flagged for review
   route_missing_required_fields: true   # review queues: a required field with no value also holds the document
   notifications:
@@ -2005,7 +2056,7 @@ workflow and the review UI, see
 `hitl.notifications` sets how long [Inbox](web-ui.md#inbox) messages are kept and how
 many each user keeps. It is read from the **active** configuration profile, cached
 for about 60 seconds, applies to messages written after a change, and applies
-whether or not `hitl.enabled` is set. When a user goes over the cap, expired
+whether or not Review Routing (`hitl.enabled`) is on. When a user goes over the cap, expired
 messages are removed first, then the oldest read ones, and the oldest unread one
 only when every message is unread. See
 [Inbox message retention](configuration.md#inbox-message-retention) for the full
@@ -2088,12 +2139,12 @@ Each entry has the same shape as a confidence alert (`attributeName`, `confidenc
 carries the total as `MissingRequiredFieldCount`, and the Web UI shows it beside the
 confidence alerts: in Document Details, as a **Missing Required Fields** column in
 the sections table (hover the count for the field names), and as an optional column
-in the document list. In review-queue mode, with HITL enabled, the Default queue on
-and `hitl.route_missing_required_fields` on (the default), each missing required
+in the document list. In review-queue mode, with Review Routing on, the Default queue
+on and `hitl.route_missing_required_fields` on (the default), each missing required
 field is also a review reason, **Missing required: <field>**, so the document is
 held in the Default queue. Turn the setting off (**Configuration** ›
-**Human-in-the-Loop (HITL) Review** › **Review missing required fields**) to keep
-missing required fields informational. Legacy HITL, used while the Default queue is
+**Processing Settings** › **Review Routing (Optional)** › **Review missing required
+fields**) to keep missing required fields informational. Legacy HITL, used while the Default queue is
 off, does not trigger on them.
 
 In the document list, the **Missing Required Fields** column and the **Processing
@@ -2247,6 +2298,11 @@ document images appear, using the `{DOCUMENT_IMAGE}` placeholder.
 - **Without the placeholder**: no page images are attached to the prompt, which is
   sent as text only. This holds for extraction and confidence prompts alike.
 - **With the placeholder**: images are inserted exactly where `{DOCUMENT_IMAGE}` appears.
+- **With the placeholder more than once**: the prompt is refused, by extraction and
+  the confidence pass alike, and the section fails with `found N occurrences, but
+  exactly 1 is required`. Both sides of `{FEW_SHOT_EXAMPLES}` count, and so does a
+  per-class `x-aws-idp-extraction-task-prompt`. `idp-cli config-validate` reports
+  such a prompt before it is used.
 
 ```yaml
 extraction:
@@ -2620,6 +2676,50 @@ The rows that were extracted are still in the section's `result.json` and the
 section still points at it, so a partial result stays readable in the Visual
 Editor rather than being discarded with the failure.
 
+**A content-filter block fails only its own section.** When Amazon Bedrock's
+content filter withholds the extraction model's reply for a section (a
+`ValidationException` saying the output was blocked by the content filtering
+policy), extraction records an error-severity `extraction_failed` issue on that
+section, naming the block, and writes an empty result for it. Advanced mode
+regenerates a blocked reply a few times before giving up; Simple mode does not
+retry it. The section shows as **Failed** and has no extracted fields; the other
+sections keep their results and the document completes. The confidence pass
+reports the section as unscored with the same reason. Bedrock can also withhold a
+reply without an error, ending it with the stop reason `content_filtered`, or
+`guardrail_intervened` when the stack has a guardrail configured (the
+`BedrockGuardrailId` and `BedrockGuardrailVersion` stack parameters); the reply is
+then empty, cut short, or the guardrail's own message. Extraction, classification,
+the confidence pass and summarization handle that as the same block, and the issue
+names the stop reason. A guardrail can block the request before the model sees it,
+so its issue says the guardrail blocked the request or withheld the reply, and
+advises reviewing the guardrail's policies, since a different model meets the same
+guardrail. ⚠️ `guardrail_intervened` counts as a block only when the response's
+guardrail trace shows a policy that blocked: a guardrail that only masked
+sensitive information stops with the same reason, and its masked reply is used as
+the answer. In the confidence pass a withheld reply for one batch of list rows
+leaves only those rows unscored; the other batches keep their scores. The call that
+was withheld was still billed, and its tokens are counted in the document's
+metering. With Review Routing on
+(`hitl.enabled: true`), the failed section holds the document for review. With
+review queues, the built-in routing rule **Failed extractions**
+(`builtin-extraction-failed`, which tests the input `extraction_failed_count`) sends
+the document to the Default queue, and the review item carries an **Extraction
+failed** review reason on that section. A profile whose routing table no longer has
+that routing rule holds the document only when another of its routing rules matches
+it (see [The built-in routing rules](./review-routing.md#the-built-in-routing-rules)).
+When the Default queue is off, the section is marked pending review on the document
+page. The section has no fields and no confidence scores, so it raises no confidence
+alert; the required fields of its class are missing too, which is why the routing
+rule for failed extractions is tried first. With Review Routing off the document
+completes; find such documents by the section's **Failed**
+status, and expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
+handle a block on their own model call the same way: see
+[Classification](./classification.md#pages-classification-could-not-classify) and
+[Summarization Configuration](./configuration.md#summarization-configuration). This applies to extraction run inside the extraction function. A block
+inside one shard of a section sharded through the Distributed Map
+(`ExtractionShardMap`) still fails the document, as any failed shard does, and
+that includes a reply withheld by stop reason.
+
 **A transient failure is not marked.** A throttle or a read timeout is retried by
 the state machine, so flagging the section would show it failed for as long as that
 ladder runs and then clear itself. Only a failure that will not be retried is
@@ -2659,12 +2759,10 @@ summary rows, all sixty transactions — scores `5 / 38 = 0.13` on
 evidence. Under `warn` that is a spurious warning; under `fail` it is a lost
 document, and the long transaction list the check exists for passes cleanly.
 
-Nine fields of this shape ship in the config library — `account_summary`,
-`W2.codes`, `Payslip.FederalTaxes` / `StateTaxes` / `CityTaxes`,
-`Medical-Insurance-Invoice.Charges`, `PA-Procedure-Log.codes_without_documentation`
-(a declared *subset* by definition), `PA-Medical-History.chronic_conditions` — and
-of the narrow arrays in presets with `TABLES` on, only `Transactions` genuinely
-models table rows. Three further shapes produce the same spurious failure and are
+Several fields of this shape ship in the config library — `account_summary`,
+`W2.codes`, `Payslip.FederalTaxes` / `StateTaxes` / `CityTaxes` and
+`Medical-Insurance-Invoice.Charges` — and of the narrow arrays in presets with
+`TABLES` on, only `Transactions` genuinely models table rows. Three further shapes produce the same spurious failure and are
 tracked for narrowing: sibling lists whose property counts *differ* (the
 same-width grouping that stops Deposits and Withdrawals accusing each other keys
 on equality, so one extra property on one sibling disables it); a nested optional
@@ -3093,6 +3191,7 @@ the system automatically adds `confidence_threshold` from configuration.
 
 - [Human Review](human-review.md) — HITL workflow and review UI
 - [Few-Shot Examples](few-shot-examples.md) — building example sets
+- [Decision Models](decision-models.md) — `extraction.confidence.method: decision_model`
 - [Configuration Guide](configuration.md) — configuration schema details
 - [Granular Assessment Retirement](migration-granular-retirement.md) — v0.6 migration notes
 - [OpenAI GPT-5.x Models](openai-models.md) — non-agentic-only model support

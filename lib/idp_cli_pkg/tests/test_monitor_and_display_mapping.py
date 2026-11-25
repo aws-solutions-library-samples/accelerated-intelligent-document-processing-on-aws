@@ -52,7 +52,11 @@ from idp_cli import display as display_module
 from idp_sdk import IDPClient, ReviewStatus
 from idp_sdk.models import BatchStatus, DocumentBucket, classify_document_state
 from idp_sdk.models.base import IN_FLIGHT_DOCUMENT_STATES, DocumentState
-from idp_sdk.models.document import DocumentStatus
+from idp_sdk.models.document import (
+    DocumentStatus,
+    ReviewInfo,
+    ReviewPolicyFailure,
+)
 
 #: Every state in flight, derived from the shared authority in
 #: `idp_sdk.models.base` rather than listed here. A list here is what let the
@@ -209,6 +213,81 @@ class TestDisplayDictMapping:
         assert row["review_status"] == "rejected"
         assert type(row["review_status"]) is str
 
+    def test_a_routed_document_carries_its_queue_and_what_placed_it_there(self):
+        """The queue is the name people see, and `routed_by` is already a line of
+        text: display prints both and decides nothing."""
+        routed = doc("batch-1/a.pdf", review_status=ReviewStatus.IN_REVIEW)
+        routed.review = ReviewInfo(
+            status=ReviewStatus.IN_REVIEW,
+            queue="claims",
+            queue_name="Claims",
+            routed_by={"ruleId": "claims-over-1000", "ruleLabel": "Claims over 1000"},
+        )
+
+        status_data, _ = cli_module._batch_status_to_display_dicts(batch([routed]))
+
+        [row] = status_data["completed"]
+        assert row["review_queue"] == "Claims"
+        assert row["routed_by"] == "rule 'Claims over 1000'"
+
+    def test_the_queue_id_stands_in_when_no_name_is_recorded(self):
+        routed = doc("batch-1/a.pdf", review_status=ReviewStatus.IN_REVIEW)
+        routed.review = ReviewInfo(status=ReviewStatus.IN_REVIEW, queue="claims")
+
+        status_data, _ = cli_module._batch_status_to_display_dicts(batch([routed]))
+
+        [row] = status_data["completed"]
+        assert row["review_queue"] == "claims"
+        assert "routed_by" not in row
+        assert not {"routing_reason", "policy_failures", "policy_failure_count"} & set(
+            row
+        )
+
+    def test_a_routed_document_carries_its_reason_and_failed_policy_rules(self):
+        """The reason its reviewer reads and the policy rules it failed, as the
+        SDK returns them: display prints them and decides nothing."""
+        routed = doc("batch-1/a.pdf", review_status=ReviewStatus.IN_REVIEW)
+        routed.review = ReviewInfo(
+            status=ReviewStatus.IN_REVIEW,
+            queue="claims",
+            reason="Total 1200 is over 1000",
+            policy_failures=[
+                ReviewPolicyFailure(
+                    rule_id="claims.max_amount",
+                    policy="claims",
+                    name="max_amount",
+                    reason="The amount is over the policy limit.",
+                    pages=[2, 3],
+                )
+            ],
+            policy_failure_count=14,
+        )
+
+        status_data, _ = cli_module._batch_status_to_display_dicts(batch([routed]))
+
+        [row] = status_data["completed"]
+        assert row["routing_reason"] == "Total 1200 is over 1000"
+        assert row["policy_failures"] == [
+            {
+                "rule_id": "claims.max_amount",
+                "policy": "claims",
+                "name": "max_amount",
+                "reason": "The amount is over the policy limit.",
+                "pages": [2, 3],
+            }
+        ]
+        assert row["policy_failure_count"] == 14
+
+    def test_a_reason_alone_adds_no_policy_keys(self):
+        routed = doc("batch-1/a.pdf", review_status=ReviewStatus.IN_REVIEW)
+        routed.review = ReviewInfo(status=ReviewStatus.IN_REVIEW, reason="Check it")
+
+        status_data, _ = cli_module._batch_status_to_display_dicts(batch([routed]))
+
+        [row] = status_data["completed"]
+        assert row["routing_reason"] == "Check it"
+        assert "policy_failures" not in row and "policy_failure_count" not in row
+
     def test_a_completed_document_maps_every_field_display_reads(self):
         """All nine per-document keys, for the ordinary case.
 
@@ -263,6 +342,7 @@ class TestDisplayDictMapping:
             "failed": 0,
             "running": 0,
             "queued": 0,
+            "awaiting_review": 0,
             "all_complete": True,
             "success_rate": 100.0,
             "completion_percentage": 100.0,
@@ -1185,6 +1265,7 @@ class TestTheMonitorCallersThatDiscardTheCode:
             documents_queued=2,
             documents_failed=0,
             failed_documents=[],
+            results=[],
         )
         with (
             patch("idp_sdk.IDPClient", return_value=client),
@@ -1232,3 +1313,84 @@ class TestTheMonitorCallersThatDiscardTheCode:
 
         monitor.assert_called_once()
         assert run.exit_code == 0, run.output
+
+
+# ---------------------------------------------------------------------------
+# Documents awaiting human review (#2022)
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitingReview:
+    """`HITL_IN_PROGRESS`: processing stopped, waiting for a person.
+
+    The SDK counts such a document as settled, so `all_complete` ends the loop;
+    these tests hold the CLI side of that — the document is shown in its own
+    bucket rather than as running, and the run ends saying how many wait for
+    review and where to work them, with an exit code that does not claim every
+    document completed.
+    """
+
+    def _held_batch(self) -> BatchStatus:
+        return batch(
+            [
+                doc("batch-1/a.pdf", "COMPLETED", duration_seconds=2.0),
+                doc("batch-1/held.pdf", "HITL_IN_PROGRESS"),
+            ],
+            all_complete=True,
+        )
+
+    def test_a_held_document_maps_to_awaiting_review_not_running(self):
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            self._held_batch()
+        )
+
+        assert [d["document_id"] for d in status_data["awaiting_review"]] == [
+            "batch-1/held.pdf"
+        ]
+        assert status_data["running"] == []
+        assert stats["awaiting_review"] == 1
+        assert stats["running"] == 0
+        # Both documents' processing has stopped, so the run reads finished.
+        assert stats["completion_percentage"] == 100.0
+
+    def test_the_monitor_ends_and_says_where_to_review(
+        self, monkeypatch, pinned_console
+    ):
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        client, asked = monitored_client([self._held_batch()])
+
+        with pinned_console.capture() as captured:
+            exit_code = cli_module._monitor_progress(
+                client=client, batch_id="batch-1", refresh_interval=5
+            )
+        out = captured.get()
+
+        assert len(asked) == 1
+        assert clock.slept == []
+        assert "1 document(s) awaiting human review" in out
+        assert "batch-1/held.pdf" in out
+        assert display_module.REVIEW_LOCATION_HINT in out.replace("\n", " ")
+        # Not 0: "every document completed" is not yet true.
+        assert exit_code == 2
+
+    def test_a_failure_still_exits_one_alongside_a_held_document(self, monkeypatch):
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        client, _ = monitored_client(
+            [
+                batch(
+                    [
+                        doc("batch-1/bad.pdf", "FAILED", error="boom"),
+                        doc("batch-1/held.pdf", "HITL_IN_PROGRESS"),
+                    ],
+                    all_complete=True,
+                )
+            ]
+        )
+
+        exit_code = cli_module._monitor_progress(
+            client=client, batch_id="batch-1", refresh_interval=5
+        )
+
+        assert exit_code == 1

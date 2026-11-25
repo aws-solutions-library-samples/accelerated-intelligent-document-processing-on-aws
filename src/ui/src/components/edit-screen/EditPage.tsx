@@ -3,24 +3,28 @@
 //
 // The edit page, the same for every mode: it renders one EditModel (see edit-model.ts).
 // The layout and breadcrumbs, the load and error states, the bar (EditScreen), the
-// shared SectionEditor, the Edit | View switch, History, Skip's reason, Cancel, Refresh, the
-// Process Changes confirmation, Edit Page Grouping and the exit once the work is done are
-// all here, once. What applies, what each action does and what it says come from the
-// model, so this file holds no mode-specific code (pinned by
-// edit-page.no-mode-branching.test.ts).
+// shared SectionEditor, the Edit | View switch, History, the reason asked by Skip and by
+// Reject, Cancel, Refresh, the Process Changes confirmation (which for a review asks how it
+// ends: complete, or send back, and shows what each ending runs), Edit Page Grouping and
+// the exit once the work is done are all here, once. What applies, what each action does
+// and what it says come from the model, so this file holds no mode-specific code (pinned
+// by edit-page.no-mode-branching.test.ts).
 import React, { useState } from 'react';
 import { Button } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 
 import useAppContext from '../../contexts/app';
 import LoadState from '../common/LoadState';
 import ProcessChangesConfirmModal from '../common/ProcessChangesConfirmModal';
 import ReasonModal from '../common/ReasonModal';
 import FileViewer from '../document-viewer/FileViewer';
+import ReviewCompletionModal from '../review-queues/ReviewCompletionModal';
 import ReviewQueuesLayout from '../review-queues/ReviewQueuesLayout';
-import EditScreen, { EditDocumentEmpty } from './EditScreen';
+import EditScreen, { EditDocumentEmpty, skipMessage } from './EditScreen';
 import type { EditAction } from './EditScreen';
 import EditorHistoryModal from './EditorHistoryModal';
 import EditorNotices from './EditorNotices';
+import { editScreenSharedMessages } from './edit-messages';
 import type { EditExit, EditModel, EditReady } from './edit-model';
 import SectionEditor from './SectionEditor';
 import EditScreenToolsPanel from './tools-panel';
@@ -31,6 +35,29 @@ import useEditorSession from './use-editor-session';
 import type { EditorSession } from './use-editor-session';
 import usePageClassBoard from './use-page-class-board';
 
+const pageMessages = defineMessages<{
+  claim: NoMessageValues;
+  refreshDiscardHeader: NoMessageValues;
+  refreshDiscardConfirm: NoMessageValues;
+}>({
+  claim: {
+    id: 'editScreen.page.claim',
+    defaultMessage: 'Claim',
+    description: "Button in the edit page's notice that the fields are read-only, which assigns the item to the user so it can be edited.",
+  },
+  refreshDiscardHeader: {
+    id: 'editScreen.page.refreshDiscard.header',
+    defaultMessage: 'Discard your changes and reload?',
+    description: 'Title of the dialog the edit page shows when Refresh would lose unsaved changes.',
+  },
+  refreshDiscardConfirm: {
+    id: 'editScreen.page.refreshDiscard.confirm',
+    defaultMessage: 'Discard and reload',
+    description:
+      'Confirm button of the dialog that asks before Refresh loses unsaved changes: it discards them and reads the document again.',
+  },
+});
+
 interface EditPageProps {
   model: EditModel;
   /** The mode's editor session; a page that only shows a load or error state has none. */
@@ -38,6 +65,7 @@ interface EditPageProps {
 }
 
 const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element => {
+  const intl = useIntl();
   const ownSession = useEditorSession();
   const session = given ?? ownSession;
   const { setErrorMessage, setSuccessMessage } = useAppContext();
@@ -46,7 +74,10 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [askSkipReason, setAskSkipReason] = useState(false);
+  const [askRejectReason, setAskRejectReason] = useState(false);
   const [confirmProcess, setConfirmProcess] = useState(false);
+  // Why the last send-back did not go through; shown in the dialog, which stays open.
+  const [sendBackError, setSendBackError] = useState<string | null>(null);
   const { cancel, dialog: cancelDialog } = useEditCancel(session.controllerRef, ready?.cancelTo ?? '');
   const discard = useDiscardConfirm();
   // Bumped by Refresh, so the open section is read again; the section open then stays open.
@@ -66,25 +97,29 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
   const r = model.state;
   const controller = () => session.controllerRef.current;
 
-  /** Report a failed action where the model says, then let it recover. */
-  const failed = (action: EditAction) => (err: unknown) => {
+  /**
+   * Report a failed action where the model says (or, with `show`, where the caller
+   * says: a dialog that stays open shows its own failure), then let it recover.
+   */
+  const failed = (action: EditAction, show?: (message: string) => void) => (err: unknown) => {
     const message = r.failures.describe(action, err);
     if (message) {
-      if (r.failures.surface === 'notice') setError(message);
+      if (show) show(message);
+      else if (r.failures.surface === 'notice') setError(message);
       else setErrorMessage(message);
     }
     r.failures.after?.(action);
   };
 
   /** Run an action that may finish the work; leave once it has. */
-  const runToExit = async (action: EditAction, fn: () => Promise<EditExit | null>): Promise<boolean> => {
+  const runToExit = async (action: EditAction, fn: () => Promise<EditExit | null>, show?: (message: string) => void): Promise<boolean> => {
     let done: EditExit | null = null;
     const ok = await session.run(
       action,
       async () => {
         done = await fn();
       },
-      failed(action),
+      failed(action, show),
     );
     if (ok && done) exit(done);
     return ok;
@@ -95,11 +130,26 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
     setConfirmProcess(false);
   };
 
+  /** Send the document back from the review-completion dialog, which stays open if that fails. */
+  const runSendBack = async (note: string | undefined) => {
+    const { sendBack } = r;
+    if (!sendBack) return;
+    setSendBackError(null);
+    if (await runToExit('send-back', () => sendBack.run(note), setSendBackError)) setConfirmProcess(false);
+  };
+
   const confirmSkip = async (reason: string, note: string | undefined) => {
     const { skip } = r;
     if (!skip) return;
     await runToExit('skip', () => skip.run(reason, note));
     setAskSkipReason(false);
+  };
+
+  const confirmReject = async (reason: string, note: string | undefined) => {
+    const { reject } = r;
+    if (!reject) return;
+    await runToExit('reject', () => reject.run(reason, note));
+    setAskRejectReason(false);
   };
 
   const handleAction = async (action: EditAction) => {
@@ -111,6 +161,11 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
     if (action === 'skip') {
       // The reason is asked for first; confirmSkip does the skip.
       setAskSkipReason(true);
+      return;
+    }
+    if (action === 'reject') {
+      // The reason is asked for first; confirmReject does the reject.
+      setAskRejectReason(true);
       return;
     }
     if (action === 'save') {
@@ -152,7 +207,11 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
       };
       // Unsaved edits are lost by a reload: ask first.
       if (controller()?.isDirty())
-        discard.ask({ header: 'Discard your changes and reload?', confirmLabel: 'Discard and reload', onConfirm: () => void go() });
+        discard.ask({
+          header: pageMessages.refreshDiscardHeader,
+          confirmLabel: pageMessages.refreshDiscardConfirm,
+          onConfirm: () => void go(),
+        });
       else void go();
       return;
     }
@@ -190,6 +249,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
       );
       if (!saved) return;
     }
+    setSendBackError(null);
     setConfirmProcess(true);
   };
 
@@ -199,7 +259,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
   const readOnlyAction =
     bar.showClaim && r.claim ? (
       <Button loading={session.busy === 'claim'} disabled={session.busy !== null} onClick={() => void handleAction('claim')}>
-        Claim
+        <FormattedMessage {...pageMessages.claim} />
       </Button>
     ) : (
       editor?.readOnlyAction
@@ -223,6 +283,8 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
       reportSectionData={header.offerReport ? session.sectionData : undefined}
       summaryReportUri={header.summary?.reportUri}
       summaryUnavailableReason={header.summary?.unavailableReason}
+      ruleValidationReportUri={header.ruleValidation?.reportUri}
+      ruleValidationUnavailableReason={header.ruleValidation?.unavailableReason}
       actions={{
         ...bar,
         onShowHistory: bar.offerHistory ? () => setShowHistory(true) : undefined,
@@ -246,13 +308,26 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
           )}
           {cancelDialog}
           {discard.dialog}
-          {r.process.confirm && confirmProcess && (
+          {r.process.confirm && r.process.confirm.kind !== 'review-completion' && confirmProcess && (
             <ProcessChangesConfirmModal
               visible
               variant={r.process.confirm.kind === 'version' ? 'version' : 'reprocess'}
-              bdaMode={r.process.confirm.kind === 'reprocess' ? r.process.confirm.bdaMode : undefined}
+              objectKey={header.objectKey}
               busy={session.busy === 'process'}
               onConfirm={() => void runProcess()}
+              onCancel={() => setConfirmProcess(false)}
+            />
+          )}
+          {r.process.confirm?.kind === 'review-completion' && confirmProcess && (
+            <ReviewCompletionModal
+              visible
+              objectKey={r.process.confirm.objectKey}
+              cycleId={r.process.confirm.cycleId}
+              canSendBack={!!r.sendBack}
+              busy={session.busy === 'process' ? 'complete' : session.busy === 'send-back' ? 'send-back' : null}
+              error={sendBackError}
+              onComplete={() => void runProcess()}
+              onSendBack={(note) => void runSendBack(note)}
               onCancel={() => setConfirmProcess(false)}
             />
           )}
@@ -262,12 +337,25 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
               visible
               header={r.skip.header}
               reasons={r.skip.reasons}
-              confirmLabel="Skip"
+              confirmLabel={intl.formatMessage(skipMessage)}
               loading={session.busy === 'skip'}
               onDismiss={() => setAskSkipReason(false)}
               onConfirm={(reason, note) => void confirmSkip(reason, note)}
             >
               {r.skip.body}
+            </ReasonModal>
+          )}
+          {askRejectReason && r.reject && (
+            <ReasonModal
+              visible
+              header={r.reject.header}
+              reasons={r.reject.reasons}
+              confirmLabel={r.reject.confirmLabel}
+              loading={session.busy === 'reject'}
+              onDismiss={() => setAskRejectReason(false)}
+              onConfirm={(reason, note) => void confirmReject(reason, note)}
+            >
+              {r.reject.body}
             </ReasonModal>
           )}
         </>
@@ -310,7 +398,8 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             regroup={
               bar.showRegroup
                 ? {
-                    disabledReason: session.busy !== null ? 'Working…' : bar.regroupDisabledReason,
+                    disabledReason:
+                      session.busy !== null ? intl.formatMessage(editScreenSharedMessages.working) : bar.regroupDisabledReason,
                     loading: session.busy === 'regroup',
                     onClick: () => void handleAction('regroup'),
                   }

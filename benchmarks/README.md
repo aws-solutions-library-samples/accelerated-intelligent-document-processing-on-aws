@@ -64,6 +64,6 @@ python3 benchmarks/harness/aggregate.py --figures benchmarks/results/<release>/<
 make benchmark-release VERSION=0.6.0 PREV=0.5.16
 ```
 
-Or via the skill: `/run-benchmarks` (see `.claude/skills/run-benchmarks.md`).
+Or via the skill: `/run-benchmarks` (see `.claude/skills/run-benchmarks/SKILL.md`).
 
 See `matrices/METHODOLOGY.md` for the scientific design and scoring definitions.

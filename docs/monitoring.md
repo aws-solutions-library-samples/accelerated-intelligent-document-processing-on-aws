@@ -318,28 +318,28 @@ it is instrumented: five metrics in the stack's own namespace (`<StackName>`). T
 | `PrefixMappingConflict` | A mapping and the upload's own metadata disagreed, and one of them won | `Winner` (`prefix-mapping` or `metadata`) |
 | `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document at ingest | none |
 | `PrefixMappingLookupFailed` | The mapping set could not be read | none |
-| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists | none |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that does not exist, and the document was refused | none |
 
 All five publish only on the event, so no data means it has not happened.
 
 ⚠️ **Two of these do not mean quite what their names suggest, and both differences
 matter when you build a graph on them.** `PrefixMappingApplied` is published whenever a
 mapping *matched the key* — which includes the case where the conflict mode handed the
-decision to the upload's own metadata, and the case where the mapped profile turned out
-to be missing. So it counts documents a mapping was consulted for, not documents a
-mapping decided. For the latter, subtract both `PrefixMappingConflict` filtered to
-`Winner=metadata` and `PrefixMappingUnresolvable`. And `PrefixMappingConflict` is published
-only when the document *proceeded*: a refusal returns before it, so a refused document
-publishes `PrefixMappingRejected` alone and appears in neither of the other two. Summing
+decision to the upload's own metadata. So it counts documents a mapping was consulted
+for, not documents a mapping decided. For the latter, subtract `PrefixMappingConflict`
+filtered to `Winner=metadata`. And `PrefixMappingConflict` is published only when the
+document *proceeded*: a refusal returns before it, so a document refused by a "Refuse the
+conflict" mapping publishes `PrefixMappingRejected` alone, and one refused because its
+mapping names a missing profile publishes `PrefixMappingUnresolvable` alone. Summing
 conflicts to count disagreements therefore undercounts by exactly the refusals.
 
 **Three of the five are alarmed**, with different thresholds for different reasons.
 `PrefixMappingLookupFailed` and `PrefixMappingUnresolvable` alarm on the **first**
-occurrence: both mean documents are being processed under something *other* than what an
-admin configured, and neither is visible anywhere else — the documents succeed, report
-success, and carry extraction from the wrong configuration. This is the same shape as
-the stale-output purge above, a quiet failure whose only signal has to be a metric,
-because the document's own status is green. `PrefixMappingRejected` alarms on **volume**
+occurrence. The first means documents are being processed with no mapping applied: they
+succeed and report success, and the only per-document trace is a warning processing
+issue (`config_prefix_mapping_lookup_failed`), which is why the metric is what an
+operator is alerted by. The second means every document arriving at a mapped prefix is
+being refused until the mapping or its profile is fixed. `PrefixMappingRejected` alarms on **volume**
 instead, covered below.
 
 `PrefixMappingLookupFailed` is quiet by construction, because resolution deliberately
@@ -374,9 +374,9 @@ scope **even when a mapping was going to win**, which is why such an upload gets
 rather than silently having its choice overridden. Nothing is emitted for it, because
 nothing degraded: the refusal is the control working.
 
-`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
-been deleted. The document still processes — under the profile its upload named, or the
-active one — and the log line names which mapping is stale.
+`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that does
+not exist. The document is refused and recorded as Failed, with a reason naming the
+mapping's prefix and the missing profile, and the log line names which mapping is stale.
 `putConfigPrefixMapping` refuses a mapping naming something that does not exist, so this
 is always a *later* deletion rather than a typo at creation.
 
@@ -418,6 +418,45 @@ then sends it to the QueueSender dead-letter queue. The object remains in the In
 bucket, so once the cause is fixed (typically a KMS or policy change denying
 `dynamodb:GetItem` on the ConfigurationTable) re-upload the object or redrive the
 queue. A refused document appears in the document list as **Failed** with the reason.
+
+### Review Routing
+
+The Review Routing step (`RoutingFunction`) decides after policy rule validation
+whether a document is held in a review queue (see
+[Review Routing](review-routing.md)). It publishes these metrics in the stack's
+namespace:
+
+| Metric | Published when | What to do |
+|---|---|---|
+| `RoutingDecisions` (dimension `Decision`: `hold`, `continue`, `rejected`) | Every decision | The share of `hold` is the share of documents sent to review |
+| `RoutingStaleReference` | A routing rule referred to something that could not be read for the document: a class the profile no longer has, a policy rule result when policy rule validation left no summary, a section result that could not be read | Check the routing rule against the profile's classes and Policy Schema; **Test on a document** on the Routing Rules tab names the reference |
+| `RoutingPlacementLimit` | A reviewed document was sent to a queue again more times in a row than `routing.max_consecutive_placements` allows, and continued without another review | Add `reviewed = false` to the routing rule that keeps matching, or raise the limit |
+| `RoutingReasonFallback` (dimension `Cause`: `no_reason`, `render_error`) | A document was given the generated reason: its routing rule has no reason of its own (`no_reason`), or that reason could not be filled in for the document (`render_error`) | `no_reason` is informational; write a reason on the routing rule to replace the generated text. For `render_error`, find the routing rule in the `event=routing_reason_render_failed` log line and check its placeholders |
+
+Each decision is also one log line, `event=routing_decision decision=… reason=… rule=…
+queue=… reason_source=…`, in `/<StackName>-PATTERNSTACK-<id>/lambda/RoutingFunction`.
+`reason` says why the step decided as it did. A document that was not held because
+routing rules are not evaluated is logged with one of:
+
+| `reason` | Why no document is held |
+|---|---|
+| `hitl_off` | Review Routing is off in the document's configuration profile (`hitl.enabled`) |
+| `default_queue_off` | The Default review queue is missing or disabled |
+| `no_review_store` | The stack has no review queues (a headless deployment) |
+| `test_studio` | The document belongs to a Test Studio run |
+
+The other values are listed in
+[Logs and metrics](review-routing.md#logs-and-metrics). `reason_source` is `admin` or
+`fallback` for a held document, and the reason the reviewer reads is never logged:
+it can hold extracted values. A routing table that cannot be evaluated is logged as
+`event=routing_evaluation_failed` with the error, and the document goes to the
+Default queue rather than past review.
+
+The step that applies a completed review (`ApplyReviewChangesFunction`) logs to
+`/<StackName>-PATTERNSTACK-<id>/lambda/ApplyReviewChangesFunction`. Both names come
+from the nested pattern stack, so list on the `/<StackName>-PATTERNSTACK` prefix to
+find them. Both functions are on the pattern dashboard's Lambda widgets with the
+other processing functions.
 
 ### Confidence Assessment Degraded
 
@@ -678,6 +717,8 @@ The solution creates centralized logging across all components:
 - `/aws/lambda/OCRFunction`: OCR processing logs and errors
 - `/aws/lambda/ClassificationFunction`: Classification processing logs
 - `/aws/lambda/ExtractionFunction`: Extraction processing logs
+- `/<StackName>-PATTERNSTACK-<id>/lambda/RoutingFunction`: Review Routing decisions, one line per document
+- `/<StackName>-PATTERNSTACK-<id>/lambda/ApplyReviewChangesFunction`: The step that applies a completed review
 - `/aws/lambda/TrackingFunction`: Document tracking and status logs
 - The REST API's access logs and the dispatcher Lambda's log group: Web UI API activity (the dispatcher is the single entry point for every UI query and mutation)
 
@@ -727,6 +768,53 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
 - **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
+
+### `ManageApiGatewayAccountSettings` — one deployment per Region owns the API Gateway logging role
+
+API Gateway writes REST API stage logs (the access log and the `ERROR`-level
+execution log above) through a CloudWatch role named in the API Gateway
+**account settings**. That is one setting per AWS account and Region, not per
+API, and API Gateway refuses to create a stage with access logging until it is
+set. So at `LogLevel` `INFO` or `DEBUG` a deployment creates an IAM role with the
+`AmazonAPIGatewayPushToCloudWatchLogs` managed policy and points the Region's
+setting at it (`ApiGatewayCloudWatchRole` and `ApiGatewayAccount` in
+`nested/api-resolvers/template.yaml`). At `WARN` or `ERROR` it creates neither and
+the parameter has no effect.
+
+Every deployment that does this points the setting at its **own** role, so two
+deployments in one Region overwrite each other's setting. Logging keeps working,
+because every role grants the same policy, but the Region's logging then depends
+on whichever deployment wrote last, and a Terraform deployment reports the other
+deployment's write as drift on every plan and sets it back on every apply.
+
+The `ManageApiGatewayAccountSettings` parameter (default `true`) decides whether a
+deployment manages the setting. With `true` it behaves as described above. With
+`false` it creates neither the role nor the setting; its stage still has access
+and execution logging configured, and it uses whatever role the Region already
+has. Nothing else in the stack uses that role.
+
+- **Let one deployment per Region manage it**, and deploy every other deployment
+  in that Region with `ManageApiGatewayAccountSettings=false`. The default keeps
+  an existing stack unchanged on update.
+- **A `false` deployment needs the setting to exist already.** At `INFO` or
+  `DEBUG`, if the Region has no API Gateway CloudWatch role set, creating its API
+  stage fails with *CloudWatch Logs role ARN must be set in account settings to
+  enable logging*. Deploy the managing deployment first, or set the role yourself
+  (API Gateway console, **Settings**, or `aws apigateway update-account`).
+- **Deleting the managing deployment leaves the setting working.** Both the role
+  and the setting are retained on stack deletion (`DeletionPolicy: Retain`), and
+  so on switching a stack from `true` to `false`, so the setting keeps naming the
+  retained role and the remaining deployments keep logging. What breaks logging
+  for everyone in the Region is deleting that retained role afterwards.
+- **To hand ownership to another deployment**, update that deployment to
+  `ManageApiGatewayAccountSettings=true` (it creates its own role and points the
+  setting at it), then update or delete the old owner. Only after the setting
+  names the new owner's role is it safe to delete the old owner's retained role.
+  Check which role the setting names with `aws apigateway get-account`.
+
+The same parameter exists in the Terraform module as the variable
+`manage_api_gateway_account_settings`; `idp-cli deploy` takes it as
+`--parameters ManageApiGatewayAccountSettings=false`.
 
 ## X-Ray Tracing
 
@@ -1293,7 +1381,7 @@ against 6) to have any effect: if the BDA bound is the larger of the two, the
 execution-level bound fires first and the document simply ends `TIMED_OUT`, instead of
 the BDA step failing with a catchable `States.Timeout` that the pipeline can record.
 
-In BDA mode (`use_bda: true`) the `BDA_InvokeDataAutomation` step uses the Step
+In BDA mode (`use_bda: true`) the `InvokeDataAutomationStep` step uses the Step
 Functions `.waitForTaskToken` integration: it blocks until something outside the
 state machine returns the token. The return path is
 BDA job → EventBridge (`BDAEventRule`) → `BDACompletionFunction` → task token

@@ -67,9 +67,9 @@ Some tests build the path by joining components
 ``src_dir`` joined with ``"extraction_function/index.py"``), and a module named
 only that way is not in the set below. Collecting ``Path`` join chains with an AST
 pass would close that, and is deliberately not done: every module the sweep does
-not reach was imported through this file's own child program, the ones that fail a
-region-free import are ``bda_completion_function`` and ``bda_invoke_function``, and
-**no test refers to either of them by any spelling of its path** — so coverage is complete with respect to the defects that
+not reach was imported through this file's own child program, the one that fails a
+region-free import is ``bda_completion_function``, and
+**no test refers to it by any spelling of its path** — so coverage is complete with respect to the defects that
 exist, and the AST pass would buy machinery rather than findings. Narrow the claim,
 not the ambition.
 """

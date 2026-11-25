@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Stdlib-only and in this package, so it belongs to neither import tier below: it
 # cannot fail to import and nothing has to be stubbed for it.
@@ -50,6 +50,11 @@ _IMPORT_ERROR: Optional[ImportError] = None
 # cannot be stubbed to None: the stub itself would blow up during import with
 # `AttributeError: 'NoneType' object has no attribute 'group'` long before any
 # handler could explain what went wrong. So report and exit here instead.
+#
+# `idp_common.models` is tier 1 for the same reason: the status choices of
+# `delete-documents --status-filter` and `status --object-status` are its
+# `DOCUMENT_STATUS_VALUES`, derived from the `Status` enum and shared with the
+# SDK's `status_filter` check. It imports only the standard library.
 try:
     import boto3
     import click
@@ -57,6 +62,8 @@ try:
     from rich.live import Live
     from rich.markup import escape
     from rich.table import Table
+
+    from idp_common.models import DOCUMENT_STATUS_VALUES
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
     print(f"Underlying import error: {exc}", file=sys.stderr)
@@ -73,6 +80,7 @@ except ImportError as exc:
 # use of a None stub would surface as an unrelated AttributeError far from the
 # real cause.
 try:
+    from idp_common.run_plan import steps as run_steps
     from idp_sdk import IDPClient
     from idp_sdk.models import DocumentBucket, classify_document_state
 
@@ -84,6 +92,7 @@ except ImportError as exc:
         DocumentBucket = None
         classify_document_state = None
         display = None
+        run_steps = None
 
 # Configure logging
 logging.basicConfig(
@@ -450,17 +459,30 @@ TEMPLATE_URLS = {
 
 
 def _resolve_region(region: Optional[str]) -> str:
-    if region:
-        return region
-    import boto3
+    """``--region``, else the Region boto3 resolves; refuses when there is none.
 
-    found = boto3.session.Session().region_name  # type: ignore
+    ``idp_sdk.resolve_region``: ``--region``, then boto3's Region, then
+    ``AWS_REGION``. The answer is passed to the SDK client explicitly, which is
+    what makes an ``AWS_REGION``-only shell work although boto3 does not read it.
+    """
+    from idp_sdk import resolve_region
+
+    found = resolve_region(region)
     if not found:
         raise ValueError(
-            "Region could not be determined. Please specify --region or "
-            "configure AWS_DEFAULT_REGION"
+            "Region could not be determined. Please specify --region, or set "
+            "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
         )
     return found
+
+
+def _region_or_exit(region: Optional[str]) -> str:
+    """``_resolve_region``, printing its refusal and exiting 1 instead of raising."""
+    try:
+        return _resolve_region(region)
+    except ValueError as e:
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
 
 
 def _deploy_terraform(
@@ -473,10 +495,13 @@ def _deploy_terraform(
     terraform_dir: Optional[str],
     terraform_bin: str,
     unsupported: List[str],
+    module_version: Optional[str] = None,
     headless: bool = False,
     govcloud: bool = False,
     assume_role_arn: Optional[str] = None,
     allow_replace_retained: bool = False,
+    tags: Optional[Dict[str, str]] = None,
+    terraform_state: Optional[str] = None,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -526,8 +551,11 @@ def _deploy_terraform(
                 )
             pointer_url = default_terraform_pointer_url(TEMPLATE_URLS[region], variant)
             kind = f"{variant} " if variant else ""
+            which = (
+                f"version {module_version} of the" if module_version else "the latest"
+            )
             console.print(
-                f"[bold]Using the latest {kind}Terraform module for {region}[/bold]"
+                f"[bold]Using {which} {kind}Terraform module for {region}[/bold]"
             )
         additional = parse_parameters(
             parameters,
@@ -543,10 +571,13 @@ def _deploy_terraform(
             parameters=additional,
             module_url=module_url,
             pointer_url=pointer_url,
+            module_version=module_version,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
             assume_role_arn=assume_role_arn,
             allow_replace_retained=allow_replace_retained,
+            tags=tags,
+            terraform_state=terraform_state or "local",
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -566,6 +597,67 @@ def _deploy_terraform(
         sys.exit(1)
 
 
+_KMS_KEY_TYPES = ("AWS::KMS::Key", "aws_kms_key", "awscc_kms_key")
+
+
+def _print_retained_kms_keys(
+    key_ids: List[str],
+    stack_id: Optional[str] = None,
+    supplied_key_arn: Optional[str] = None,
+) -> None:
+    """Say that the deployment's KMS key was kept, what it costs and how to
+    schedule its deletion. With no ``key_ids``, say how to find the key.
+
+    A stack deployed with ``CustomerManagedKmsKeyArn`` created no key: its data
+    is encrypted with the supplied one, which is the customer's and may protect
+    other data too, so nothing here may suggest deleting it."""
+    if supplied_key_arn:
+        console.print(
+            "[bold]KMS key:[/bold] this stack encrypted its data with the key you "
+            "supplied (CustomerManagedKmsKeyArn). The stack did not create it and "
+            "did not delete it, and whatever data the stack wrote that still "
+            "exists stays encrypted with it:"
+        )
+        console.print(f"    - {supplied_key_arn}")
+        console.print(
+            "    Keep it while any of that data is needed; managing it is up to you."
+        )
+        return
+    console.print(
+        "[bold]KMS key kept:[/bold] the key that encrypts the retained buckets is "
+        "retained so their data stays readable. It costs about $1 a month ($3 "
+        "once automatic rotation has run twice)."
+    )
+    if key_ids:
+        for key_id in key_ids:
+            console.print(f"    - {key_id}")
+    else:
+        console.print(
+            "    Its id is the KMSMasterKeyID of a retained bucket's default "
+            "encryption:"
+        )
+        console.print(
+            "  [cyan]aws s3api get-bucket-encryption --bucket <retained-bucket-name>"
+            "[/cyan]"
+        )
+        if stack_id:
+            console.print("    or the CustomerManagedEncryptionKey row of:")
+            console.print(
+                f"  [cyan]aws cloudformation list-stack-resources --stack-name "
+                f"{stack_id}[/cyan]"
+            )
+    console.print(
+        "    Once no retained data encrypted with it is needed, delete those "
+        "buckets, then schedule the key's deletion (7 to 30 days; it can be "
+        "cancelled until then):"
+    )
+    for key_id in key_ids or ["<key-id>"]:
+        console.print(
+            f"  [cyan]aws kms schedule-key-deletion --key-id {key_id} "
+            "--pending-window-in-days 7[/cyan]"
+        )
+
+
 def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
     labels = {
         "s3_buckets": "S3 Buckets",
@@ -574,16 +666,47 @@ def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
         "other": "Other",
     }
     entries = {k: (retained or {}).get(k) or [] for k in labels}
+    service_groups = (retained or {}).get("service_log_groups") or []
     if not any(entries.values()):
         console.print("No resources were retained.")
-        return
-    console.print("[bold]Retained resources (kept, as CloudFormation would):[/bold]")
-    for key, label in labels.items():
-        if entries[key]:
-            console.print(f"  • {label}: {len(entries[key])}")
-            for r in entries[key]:
-                console.print(f"    - {r.get('physical_id') or r.get('logical_id')}")
-    console.print("Delete them manually if no longer needed.")
+    else:
+        console.print(
+            "[bold]Retained resources (kept, as CloudFormation would):[/bold]"
+        )
+        for key, label in labels.items():
+            if entries[key]:
+                console.print(f"  • {label}: {len(entries[key])}")
+                for r in entries[key]:
+                    name = r.get("physical_id") or r.get("logical_id")
+                    console.print(f"    - {r.get('display_name') or name}")
+    if service_groups:
+        console.print(
+            "[bold]Log groups AWS services created for the deployment's resources, "
+            "left behind (CloudFormation leaves them too):[/bold]"
+        )
+        for g in service_groups:
+            if g.get("shared"):
+                streams = ", ".join(g.get("log_streams") or [])
+                console.print(
+                    f"    - {g['physical_id']} (shared by every Glue crawler in "
+                    f"the Region; delete only this deployment's log streams: "
+                    f"{streams})"
+                )
+            else:
+                console.print(f"    - {g['physical_id']}")
+        console.print(
+            "    Each exists only if its resource ran at least once; the service "
+            "creates it with no retention, so it is kept until deleted."
+        )
+    if any(entries.values()) or service_groups:
+        console.print("Delete them manually if no longer needed.")
+    kms_keys = [
+        r.get("physical_id") or r.get("logical_id")
+        for r in entries["other"]
+        if r.get("type") in _KMS_KEY_TYPES
+    ]
+    if kms_keys:
+        _print_retained_kms_keys(kms_keys)
 
 
 def _delete_terraform(
@@ -603,7 +726,9 @@ def _delete_terraform(
         console.print(f"Deployment: [cyan]{stack_name}[/cyan]")
         console.print(f"Region: {region}")
         console.print(
-            "Every bucket that will be destroyed is emptied first, then `destroy` runs."
+            "Every bucket that will be destroyed is emptied first, except the "
+            "custom-resource bridge buckets, which `destroy` empties after the "
+            "custom resources are deleted; then `destroy` runs."
         )
         console.print("[bold red]This action cannot be undone.[/bold red]")
         console.print("━" * 60)
@@ -734,7 +859,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.15")
+@click.version_option(version="0.6.16")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -798,9 +923,9 @@ def cli():
     # root template dropped EnableHITL in v0.4.11 — now says so instead of failing
     # at CreateStack with an undeclared-parameter error.
     help=(
-        "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
-        "stack parameter: enable it in the Web UI under Configuration → "
-        "Human-in-the-Loop (HITL) Review, or in the config YAML."
+        "Deprecated and refused if 'true'. Human review is a configuration setting, "
+        "not a stack parameter: enable it in the Web UI under Configuration → "
+        "Processing Settings → Review Routing, or in the config YAML."
     ),
 )
 @click.option(
@@ -813,7 +938,10 @@ def cli():
     help=(
         "Stack tags as key=value,key2=value2. Propagated by CloudFormation "
         "to all taggable resources and nested stacks. On update, providing "
-        "tags replaces the stack's tag set; omitting them preserves existing tags."
+        "tags replaces the stack's tag set; omitting them preserves existing tags. "
+        "With --terraform, the module tags every taggable resource the same way, "
+        "and omitting them keeps the tags of the previous deploy from "
+        "--terraform-dir."
     ),
 )
 @click.option("--wait", is_flag=True, help="Wait for stack operation to complete")
@@ -888,6 +1016,17 @@ def cli():
     ),
 )
 @click.option(
+    "--terraform-module-version",
+    default=None,
+    metavar="X.Y.Z",
+    help=(
+        "Deploy this published Terraform module version instead of the latest, "
+        "looked up in the region's idp-terraform-versions.json index and held to "
+        "its sha256 (used with --terraform; combines with --headless/--govcloud, "
+        "not with --terraform-module-url or --from-code)"
+    ),
+)
+@click.option(
     "--terraform-dir",
     default=None,
     help=(
@@ -922,6 +1061,18 @@ def cli():
         "the earlier name (used with --terraform)"
     ),
 )
+@click.option(
+    "--terraform-state",
+    type=click.Choice(["local", "s3"], case_sensitive=False),
+    default=None,
+    help=(
+        "Where Terraform keeps the deployment's state (used with --terraform). "
+        "local (the default): terraform.tfstate in --terraform-dir. s3: an "
+        "encrypted, versioned bucket idp-tf-<stack-name>-<account>-<region>, "
+        "created if missing and kept on delete, locked with the DynamoDB table "
+        "idp-tf-lock-<stack-name>; a directory with a local state is refused"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -948,10 +1099,12 @@ def deploy(
     no_validate_template: bool,
     terraform: bool,
     terraform_module_url: Optional[str],
+    terraform_module_version: Optional[str],
     terraform_dir: Optional[str],
     terraform_bin: str,
     terraform_assume_role_arn: Optional[str],
     terraform_allow_replace_retained: bool,
+    terraform_state: Optional[str],
 ):
     """
     Deploy or update IDP stack from command line
@@ -989,10 +1142,21 @@ def deploy(
       # Deploy with Terraform (root configuration in ./idp-terraform/my-idp)
       idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com
 
+      # Deploy a specific published Terraform module version
+      idp-cli deploy --terraform --terraform-module-version 0.6.15 --stack-name my-idp
+
       # Build and deploy with Terraform from a local checkout
       idp-cli deploy --terraform --from-code . --stack-name my-idp --admin-email user@example.com
     """
     if terraform:
+        if terraform_module_version and (from_code or terraform_module_url):
+            console.print(
+                "[red]✗ Error: --terraform-module-version selects a published "
+                "module; it cannot be combined with "
+                + ("--from-code" if from_code else "--terraform-module-url")
+                + ".[/red]"
+            )
+            sys.exit(1)
         if from_code and terraform_module_url:
             console.print(
                 "[red]✗ Error: --from-code builds and publishes its own Terraform "
@@ -1000,17 +1164,7 @@ def deploy(
             )
             sys.exit(1)
         if from_code:
-            build_region = region
-            if not build_region:
-                import boto3
-
-                build_region = boto3.session.Session().region_name  # type: ignore
-                if not build_region:
-                    console.print(
-                        "[red]✗ Error: Region could not be determined. Please specify "
-                        "--region or configure AWS_DEFAULT_REGION.[/red]"
-                    )
-                    sys.exit(1)
+            build_region = _region_or_exit(region)
             if headless and govcloud:
                 console.print(
                     "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
@@ -1037,7 +1191,6 @@ def deploy(
             "--template-url": template_url,
             "--template-file": template_file,
             "--custom-config": custom_config,
-            "--tags": tags,
             "--role-arn": role_arn,
             "--no-rollback": no_rollback,
             "--log-level": log_level,
@@ -1049,6 +1202,7 @@ def deploy(
             parameters=parameters,
             region=region,
             module_url=terraform_module_url,
+            module_version=terraform_module_version,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
             unsupported=[k for k, v in ignored.items() if v],
@@ -1056,8 +1210,23 @@ def deploy(
             govcloud=govcloud,
             assume_role_arn=terraform_assume_role_arn,
             allow_replace_retained=terraform_allow_replace_retained,
+            # As on the CloudFormation path, no tags (or only blank segments)
+            # keeps the deployment's tags.
+            tags=_parse_tags(tags) or None,
+            terraform_state=terraform_state,
         )
         return
+    if terraform_module_version:
+        console.print(
+            "[red]✗ Error: --terraform-module-version is used with --terraform.[/red]"
+        )
+        sys.exit(1)
+    if terraform_state:
+        console.print(
+            "[red]✗ Error: --terraform-state is used with --terraform; a "
+            "CloudFormation stack keeps no Terraform state.[/red]"
+        )
+        sys.exit(1)
     if terraform_assume_role_arn:
         console.print(
             "[red]✗ Error: --terraform-assume-role-arn is used with --terraform; "
@@ -1089,22 +1258,14 @@ def deploy(
             # template" at CreateStack, with nothing created.
             console.print(
                 "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
-                "  HITL became a configuration setting in v0.4.11. Enable it in the "
-                "Web UI under Configuration → Human-in-the-Loop (HITL) Review, or "
-                "in the config YAML passed to --custom-config."
+                "  Human review became a configuration setting in v0.4.11. Enable it "
+                "in the Web UI under Configuration → Processing Settings → Review "
+                "Routing, or in the config YAML passed to --custom-config."
             )
             sys.exit(1)
 
-        # Auto-detect region if not provided
-        if not region:
-            import boto3
-
-            session = boto3.session.Session()  # type: ignore
-            region = session.region_name
-            if not region:
-                raise ValueError(
-                    "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
-                )
+        # `--region`, else boto3's Region, else `AWS_REGION`; refuses when none.
+        region = _resolve_region(region)
 
         # Handle deployment from local code
         template_path = None
@@ -1727,6 +1888,15 @@ def delete(
         # Get bucket information
         console.print(f"[bold blue]Analyzing stack: {stack_name}[/bold blue]")
         bucket_info = client.stack.get_bucket_info()
+        # Read before the stack is gone: a supplied key is reported as the
+        # customer's, never as one to schedule for deletion.
+        stack_parameters = client.stack.get_parameters()
+        supplied = (
+            stack_parameters.get("CustomerManagedKmsKeyArn")
+            if isinstance(stack_parameters, dict)
+            else None
+        )
+        supplied_key_arn = supplied if isinstance(supplied, str) and supplied else None
 
         # Show warning with bucket details
         console.print()
@@ -1937,6 +2107,13 @@ def delete(
                         console.print(f"  • {error['type']}: {error['resource']}")
                         console.print(f"    Error: {error['error']}")
 
+                if cleanup_result.get("kms_keys_retained") or supplied_key_arn:
+                    console.print()
+                    _print_retained_kms_keys(
+                        cleanup_result.get("kms_keys_retained") or [],
+                        supplied_key_arn=supplied_key_arn,
+                    )
+
                 console.print()
 
             except Exception as e:
@@ -1956,6 +2133,10 @@ def delete(
             )
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
+            console.print()
+            _print_retained_kms_keys(
+                [], stack_id=result.stack_id, supplied_key_arn=supplied_key_arn
+            )
             console.print()
 
         if deletion_failed:
@@ -1987,8 +2168,12 @@ def delete(
 )
 @click.option(
     "--status-filter",
-    type=click.Choice(["FAILED", "COMPLETED", "PROCESSING", "QUEUED"]),
-    help="Only delete documents with this status (use with --batch-id or --pattern)",
+    type=click.Choice(DOCUMENT_STATUS_VALUES),
+    help=(
+        "Only delete documents whose current status is exactly this value "
+        "(use with --batch-id or --pattern). A document still being processed "
+        "carries the name of its current step, such as OCR or EXTRACTING"
+    ),
 )
 @click.option(
     "--dry-run",
@@ -2030,10 +2215,10 @@ def delete_documents_cmd(
           --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf"
 
       # Delete all documents in a batch
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60
 
       # Delete only failed documents in a batch
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123 --status-filter FAILED
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60 --status-filter FAILED
 
       # Delete documents matching a wildcard pattern
       idp-cli delete-documents --stack-name my-stack --pattern "batch-123/*.pdf"
@@ -2042,7 +2227,7 @@ def delete_documents_cmd(
       idp-cli delete-documents --stack-name my-stack --pattern "*invoice*" --status-filter FAILED
 
       # Dry run to see what would be deleted
-      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123 --dry-run
+      idp-cli delete-documents --stack-name my-stack --batch-id cli-batch-20250123-091500-2b8e4d60 --dry-run
 
       # Force delete without confirmation
       idp-cli delete-documents --stack-name my-stack --document-ids "batch-123/doc1.pdf" --force
@@ -2230,6 +2415,34 @@ def delete_documents_cmd(
         sys.exit(1)
 
 
+def _read_attribute_options(
+    attribute_pairs: Tuple[str, ...], attributes_file: Optional[str]
+) -> Dict[str, Any]:
+    """The `--attributes-file` object overlaid by each `--attribute key=value`.
+
+    Values given as pairs are strings. A key given twice as a pair is refused
+    rather than silently resolved. Raises ValueError (or OSError for the file).
+    """
+    attributes: Dict[str, Any] = {}
+    if attributes_file:
+        with open(attributes_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"{attributes_file}: must hold a JSON object")
+        attributes.update(data)
+    seen = set()
+    for pair in attribute_pairs:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise ValueError(f"--attribute {pair!r} is not in key=value form")
+        key = key.strip()
+        if key in seen:
+            raise ValueError(f"--attribute {key!r} is given more than once")
+        seen.add(key)
+        attributes[key] = value
+    return attributes
+
+
 def _process_impl(
     stack_name: str,
     manifest: Optional[str],
@@ -2248,9 +2461,32 @@ def _process_impl(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int] = None,
+    attribute_pairs: Tuple[str, ...] = (),
+    attributes_file: Optional[str] = None,
 ):
     """Implementation for process and run_inference commands"""
     try:
+        # Caller-supplied document attributes (#1851): `--attributes-file`, then
+        # each `--attribute key=value` on top. Only the input syntax is checked
+        # here; the SDK validates the set against the attribute rules and refuses
+        # an invalid one before anything is uploaded.
+        attributes = None
+        if attribute_pairs or attributes_file:
+            if test_set:
+                console.print(
+                    "[red]✗ Error: --attribute/--attributes-file cannot be used "
+                    "with --test-set[/red]"
+                )
+                sys.exit(1)
+            try:
+                attributes = _read_attribute_options(attribute_pairs, attributes_file)
+            except (OSError, ValueError) as e:
+                console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+                sys.exit(1)
+        # Passed only when given, so a submission without attributes makes exactly
+        # the SDK call it always did.
+        attribute_kwargs = {"attributes": attributes} if attributes is not None else {}
+
         # Validate mutually exclusive options
         if not manifest and not directory and not s3_uri and not test_set:
             console.print(
@@ -2344,6 +2580,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif directory:
                 result = client.batch.process(
@@ -2355,6 +2592,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -2366,6 +2604,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             else:
                 raise ValueError("No input source specified")
@@ -2484,6 +2723,23 @@ def _process_impl(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def process(
     stack_name: str,
     manifest: Optional[str],
@@ -2502,6 +2758,8 @@ def process(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Process documents
@@ -2570,37 +2828,90 @@ def process(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
+def _start_step_choices() -> List[str]:
+    """What `--step` accepts: the step ids, the alias `ocr`, and `resume`.
+
+    Read from `idp_common.run_plan.steps`, the one declaration of the pipeline's
+    steps, so this module holds no step list of its own. Empty when the packages
+    are not installed: `main()` then reports that before any command runs.
+    """
+    return list(run_steps.start_values()) if run_steps else []
+
+
+def _skippable_step_choices() -> List[str]:
+    """What `--skip` accepts: the steps a run can leave out."""
+    return list(run_steps.optional_step_ids()) if run_steps else []
+
+
+def _reprocess_options(command):
+    """The options `reprocess` and its deprecated alias `rerun-inference` share."""
+    options = [
+        click.option("--stack-name", required=True, help="CloudFormation stack name"),
+        click.option(
+            "--step",
+            required=True,
+            type=click.Choice(_start_step_choices()),
+            help=(
+                "Pipeline step to start at. 'ocr' is the beginning; 'resume' "
+                "starts each document at the first step it has no output for"
+            ),
+        ),
+        click.option(
+            "--skip",
+            multiple=True,
+            type=click.Choice(_skippable_step_choices()),
+            help="Optional step to leave out of the run (repeat for several)",
+        ),
+        click.option(
+            "--profile",
+            help=(
+                "Configuration profile to process the documents under "
+                "(default: the profile each document was processed with)"
+            ),
+        ),
+        click.option(
+            "--revision",
+            type=int,
+            help="Revision of --profile to process the documents under",
+        ),
+        click.option(
+            "--document-ids",
+            help="Comma-separated list of document IDs to reprocess",
+        ),
+        click.option(
+            "--batch-id",
+            help="Batch ID to get document IDs from (alternative to --document-ids)",
+        ),
+        click.option("--force", is_flag=True, help="Skip confirmation prompt"),
+        click.option(
+            "--monitor", is_flag=True, help="Monitor progress until completion"
+        ),
+        click.option(
+            "--refresh-interval",
+            default=5,
+            type=int,
+            help="Seconds between status checks (default: 5)",
+        ),
+        click.option("--region", help="AWS region (optional)"),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
 @cli.command(name="reprocess")
-@click.option("--stack-name", required=True, help="CloudFormation stack name")
-@click.option(
-    "--step",
-    required=True,
-    type=click.Choice(["classification", "extraction"]),
-    help="Pipeline step to rerun from",
-)
-@click.option(
-    "--document-ids",
-    help="Comma-separated list of document IDs to reprocess",
-)
-@click.option(
-    "--batch-id",
-    help="Batch ID to get document IDs from (alternative to --document-ids)",
-)
-@click.option("--force", is_flag=True, help="Skip confirmation prompt")
-@click.option("--monitor", is_flag=True, help="Monitor progress until completion")
-@click.option(
-    "--refresh-interval",
-    default=5,
-    type=int,
-    help="Seconds between status checks (default: 5)",
-)
-@click.option("--region", help="AWS region (optional)")
+@_reprocess_options
 def reprocess(
     stack_name: str,
     step: str,
+    skip: tuple,
+    profile: Optional[str],
+    revision: Optional[int],
     document_ids: Optional[str],
     batch_id: Optional[str],
     force: bool,
@@ -2609,31 +2920,46 @@ def reprocess(
     region: Optional[str],
 ):
     """
-    Reprocess documents from a specific step
-    
-    Reprocesses documents already in InputBucket, leveraging existing OCR data.
-    
-    Steps:
-      - classification: Reruns classification and all subsequent steps
-      - extraction: Reruns extraction and assessment (keeps classification)
-    
+    Process documents again, starting at a step
+
+    The stack decides, for each document, whether it can start at the step,
+    clears the outputs the run will produce again and queues it. A document
+    that cannot be processed again is reported with the reason and does not
+    stop the others.
+
+    A run produces the output of its start step and of every later step again.
+    The outputs of the earlier steps are kept and read. --skip leaves an
+    optional step out: its existing output is kept.
+
+    Not every step exists in both processing modes: 'assessment' is a Pipeline
+    mode step, and in BDA mode 'classification' and 'extraction' mean the
+    beginning.
+
     Document ID Format: Use the S3 key format (e.g., "batch-id/document.pdf")
-    
+
     Examples:
-    
-      # Rerun classification for specific documents
+
+      # Start again at classification for specific documents
       idp-cli reprocess \\
           --stack-name my-stack \\
           --step classification \\
           --document-ids "batch-123/doc1.pdf,batch-123/doc2.pdf" \\
           --monitor
-      
-      # Rerun extraction for all documents in a batch
+
+      # Run extraction again for a batch, without summarization and evaluation
       idp-cli reprocess \\
           --stack-name my-stack \\
           --step extraction \\
-          --batch-id cli-batch-20251015-143000 \\
+          --skip summarization --skip evaluation \\
+          --batch-id cli-batch-20251015-143000-7f3a9c1e \\
           --monitor
+
+      # Finish documents that stopped part-way, under a profile revision
+      idp-cli reprocess \\
+          --stack-name my-stack \\
+          --step resume \\
+          --profile claims --revision 4 \\
+          --batch-id cli-batch-20251015-143000-7f3a9c1e
     """
     # Call the shared implementation directly. `rerun_inference` is the
     # `click.Command` the decorator stack leaves behind, not a function, so
@@ -2647,6 +2973,9 @@ def reprocess(
         monitor,
         refresh_interval,
         region,
+        skip=skip,
+        profile=profile,
+        revision=revision,
     )
 
 
@@ -2727,6 +3056,23 @@ def reprocess(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def run_inference(
     stack_name: str,
     manifest: Optional[str],
@@ -2745,6 +3091,8 @@ def run_inference(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Run inference on a batch of documents
@@ -2773,37 +3121,19 @@ def run_inference(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
 @cli.command(name="rerun-inference")
-@click.option("--stack-name", required=True, help="CloudFormation stack name")
-@click.option(
-    "--step",
-    required=True,
-    type=click.Choice(["classification", "extraction"]),
-    help="Pipeline step to rerun from",
-)
-@click.option(
-    "--document-ids",
-    help="Comma-separated list of document IDs to reprocess",
-)
-@click.option(
-    "--batch-id",
-    help="Batch ID to get document IDs from (alternative to --document-ids)",
-)
-@click.option("--force", is_flag=True, help="Skip confirmation prompt")
-@click.option("--monitor", is_flag=True, help="Monitor progress until completion")
-@click.option(
-    "--refresh-interval",
-    default=5,
-    type=int,
-    help="Seconds between status checks (default: 5)",
-)
-@click.option("--region", help="AWS region (optional)")
+@_reprocess_options
 def rerun_inference(
     stack_name: str,
     step: str,
+    skip: tuple,
+    profile: Optional[str],
+    revision: Optional[int],
     document_ids: Optional[str],
     batch_id: Optional[str],
     force: bool,
@@ -2824,7 +3154,73 @@ def rerun_inference(
         monitor,
         refresh_interval,
         region,
+        skip=skip,
+        profile=profile,
+        revision=revision,
     )
+
+
+def _mode_name(mode: str) -> str:
+    return "BDA mode" if mode == run_steps.BDA else "Pipeline mode"
+
+
+def _print_cleared_and_kept(
+    cleared: List[str], kept: List[str], left_out: List[str]
+) -> None:
+    """One mode's inventory: what the run produces again, and what it reads."""
+    console.print("[bold]What will be cleared and produced again:[/bold]")
+    for name in cleared:
+        console.print(f"  • {name}")
+    console.print()
+    console.print("[bold]What will be kept:[/bold]")
+    for name in kept:
+        console.print(f"  • {name}")
+    for name in left_out:
+        console.print(f"  • {name} (skipped)")
+    if not kept and not left_out:
+        console.print("  • Nothing: the run starts at the beginning")
+
+
+def _describe_reprocess(step: str, skip: tuple) -> None:
+    """Say what a reprocess from ``step`` clears and keeps, before it is confirmed.
+
+    The inventory is the planned steps of the run (``planned.describe_start``),
+    per processing mode. Which mode a document is in is the stack's to say, so
+    both are shown: the first output has a different name in each, so the two
+    never read the same.
+    """
+    from idp_common.run_plan.planned import describe_start
+
+    console.print(f"[bold yellow]⚠️  Rerun Step: {step}[/bold yellow]")
+    console.print("━" * 60)
+    if step == run_steps.RESUME:
+        console.print(
+            "Each document starts at the first step it has no output for. "
+            "What it already has is kept; that step and the later ones run."
+        )
+        if skip:
+            console.print(f"Left out of the run: {', '.join(skip)}")
+        console.print("━" * 60)
+        console.print()
+        return
+
+    for index, mode in enumerate(run_steps.MODES):
+        if index:
+            console.print()
+        console.print(f"[bold cyan]{_mode_name(mode)}[/bold cyan]")
+        try:
+            description = describe_start(step, mode, skip=skip)
+        except run_steps.StepNotInMode:
+            console.print(
+                f"  The step '{step}' does not exist in {_mode_name(mode)}: "
+                "such a document is refused"
+            )
+            continue
+        _print_cleared_and_kept(
+            description.cleared, description.kept, description.left_out
+        )
+    console.print("━" * 60)
+    console.print()
 
 
 # Implementation moved from rerun_inference - now used by re_process
@@ -2837,6 +3233,9 @@ def _rerun_inference_impl(
     monitor: bool,
     refresh_interval: int,
     region: Optional[str],
+    skip: tuple = (),
+    profile: Optional[str] = None,
+    revision: Optional[int] = None,
 ):
     try:
         # Validate mutually exclusive options
@@ -2850,6 +3249,10 @@ def _rerun_inference_impl(
             console.print(
                 "[red]✗ Error: Cannot specify both --document-ids and --batch-id[/red]"
             )
+            sys.exit(1)
+
+        if revision is not None and not profile:
+            console.print("[red]✗ Error: --revision needs --profile[/red]")
             sys.exit(1)
 
         from idp_sdk import IDPClient
@@ -2879,31 +3282,9 @@ def _rerun_inference_impl(
             reprocess_doc_ids = doc_id_list
             reprocess_batch_id = None  # Pass explicit list so SDK doesn't re-fetch
 
-        # Show what will be cleared based on step
+        # Show what will be cleared and kept, from the step list
         console.print()
-        console.print(f"[bold yellow]⚠️  Rerun Step: {step}[/bold yellow]")
-        console.print("━" * 60)
-
-        if step == "classification":
-            console.print("[bold]What will be cleared:[/bold]")
-            console.print("  • All page classifications")
-            console.print("  • All document sections")
-            console.print("  • All extraction results")
-            console.print()
-            console.print("[bold]What will be kept:[/bold]")
-            console.print("  • OCR data (pages, images, text)")
-        else:  # extraction
-            console.print("[bold]What will be cleared:[/bold]")
-            console.print("  • Section extraction results")
-            console.print("  • Section attributes")
-            console.print()
-            console.print("[bold]What will be kept:[/bold]")
-            console.print("  • OCR data (pages, images, text)")
-            console.print("  • Page classifications")
-            console.print("  • Document sections structure")
-
-        console.print("━" * 60)
-        console.print()
+        _describe_reprocess(step, skip)
 
         # Confirmation unless --force
         if not force:
@@ -2923,21 +3304,38 @@ def _rerun_inference_impl(
                 step=step,
                 document_ids=reprocess_doc_ids,
                 batch_id=reprocess_batch_id,
+                skip=list(skip),
+                version=profile,
+                revision=revision,
             )
 
-        # Show results
+        # Show results: the counts, then each document's own
         console.print()
         if result.documents_queued > 0:
             console.print(
                 f"[green]✓ Queued {result.documents_queued} documents for {step} reprocessing[/green]"
             )
+            for queued in result.results:
+                if queued.queued:
+                    console.print(
+                        f"  • {escape(queued.document_id)}: starts at "
+                        f"{queued.start_step or step}"
+                    )
 
         if result.documents_failed > 0:
             console.print(
                 f"[red]✗ Failed to queue {result.documents_failed} documents[/red]"
             )
             for failed in result.failed_documents:
-                console.print(f"  • {failed['object_key']}: {failed['error']}")
+                reason = failed.get("reason")
+                console.print(
+                    f"  • {escape(failed['object_key'])}: {escape(failed['error'])}"
+                    + (
+                        f" ({escape(reason)})"
+                        if reason and reason != failed["error"]
+                        else ""
+                    )
+                )
 
         console.print()
 
@@ -2961,7 +3359,11 @@ def _rerun_inference_impl(
 @click.option("--document-id", help="Single document ID (alternative to --batch-id)")
 @click.option(
     "--object-status",
-    help="Filter by object status (e.g., COMPLETED, FAILED, QUEUED, RUNNING)",
+    type=click.Choice(DOCUMENT_STATUS_VALUES),
+    help=(
+        "Filter by document status (e.g., COMPLETED, FAILED, QUEUED, RUNNING, "
+        "EXTRACTING). Default: every status"
+    ),
 )
 @click.option("--wait", is_flag=True, help="Wait for all documents to complete")
 @click.option(
@@ -3014,7 +3416,7 @@ def status(
       --document-id: Check status of a single document
 
     Optional filters and display options:
-      --object-status: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING)
+      --object-status: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING, ...)
       --show-details: Show detailed document information
       --get-time: Calculate timing statistics
       --include-metering: Include Lambda metering data (requires --get-time)
@@ -3069,45 +3471,21 @@ def status(
             # Use TrackingTableSearcher for PK substring search
             searcher = TrackingTableSearcher(stack_name=stack_name, region=region)
 
-            # Default to searching all statuses if not specified
-            if object_status:
-                # Search with specific status filter
-                search_results = searcher.search_by_pk_and_status(
-                    pk=batch_id, object_status=object_status
-                )
-            else:
-                # Search across all statuses by doing multiple searches
-                # This ensures we get all documents matching the PK substring
-                all_statuses = [
-                    "COMPLETED",
-                    "FAILED",
-                    "QUEUED",
-                    "RUNNING",
-                    "PROCESSING",
-                ]
-                all_items = []
-
+            # With no --object-status, one scan selects every record that carries a
+            # status. It used to run one scan per status in a hand-written list,
+            # which held `PROCESSING` (no record carries it) and none of the step
+            # statuses, so a document mid-pipeline was left out of the result and
+            # out of --wait.
+            if not object_status:
                 err_console.print(
                     f"[yellow]Searching for documents with PK containing '{batch_id}'...[/yellow]"
                 )
-
-                for status in all_statuses:
-                    results = searcher.search_by_pk_and_status(
-                        pk=batch_id, object_status=status
-                    )
-                    if results.get("success") and results.get("items"):
-                        all_items.extend(results["items"])
-
-                search_results = {
-                    "success": True,
-                    "count": len(all_items),
-                    "items": all_items,
-                    "pk": batch_id,
-                    "object_status": "ALL",
-                }
-
+            search_results = searcher.search_by_pk_and_status(
+                pk=batch_id, object_status=object_status or None
+            )
+            if not object_status and search_results.get("success"):
                 err_console.print(
-                    f"[green]✓ Found {len(all_items)} matching documents[/green]"
+                    f"[green]✓ Found {search_results.get('count', 0)} matching documents[/green]"
                 )
 
             if not search_results.get("success"):
@@ -3159,10 +3537,16 @@ def status(
 
         # Handle timing statistics display (only for batch-id searches)
         if get_time and batch_id:
-            console.print()
             timing_stats = searcher.calculate_timing_statistics(
                 search_results, include_metering=include_metering
             )
+            if output_format == "json" and not wait:
+                # The statistics dict is the payload. This branch used to render
+                # the Rich tables whatever `--format` said, so `--get-time
+                # --format json` never produced JSON at all.
+                emit_json(timing_stats)
+                sys.exit(0)
+            console.print()
             searcher.display_timing_statistics(timing_stats)
 
             # If not waiting, we're done
@@ -3326,7 +3710,7 @@ def download_results(
     Examples:
 
       # Download all results for a batch
-      idp-cli download-results --stack-name my-stack --batch-id cli-batch-20251015-143000 --output-dir ./results/
+      idp-cli download-results --stack-name my-stack --batch-id cli-batch-20251015-143000-7f3a9c1e --output-dir ./results/
 
       # Download only extraction results (sections)
       idp-cli download-results --stack-name my-stack --batch-id <id> --output-dir ./results/ --file-types sections
@@ -4320,8 +4704,10 @@ def _batch_status_to_display_dicts(batch_status):
     Convert a BatchStatus Pydantic model to the legacy dict format expected by display.py.
 
     display.py functions (create_live_display, show_final_summary, etc.) consume:
-      status_data = {"completed": [...], "running": [...], "queued": [...], "failed": [...], "total": N}
+      status_data = {"completed": [...], "running": [...], "queued": [...], "failed": [...],
+                     "awaiting_review": [...], "total": N}
       stats       = {"total": N, "completed": N, "failed": N, "running": N, "queued": N,
+                     "awaiting_review": N,
                      "all_complete": bool, "success_rate": float (0-100),
                      "completion_percentage": float, "avg_duration_seconds": float}
     """
@@ -4329,6 +4715,7 @@ def _batch_status_to_display_dicts(batch_status):
     running_docs = []
     queued_docs = []
     failed_docs = []
+    awaiting_review_docs = []
 
     total_duration = 0.0
     duration_count = 0
@@ -4346,6 +4733,27 @@ def _batch_status_to_display_dicts(batch_status):
             # in_review / complete / rejected (review queues); None if never routed.
             "review_status": getattr(doc.review_status, "value", doc.review_status),
         }
+        review = getattr(doc, "review", None)
+        if review is not None:
+            # The queue as people know it, and what placed the document there.
+            # Left out when the stack does not record them.
+            queue = review.queue_name or review.queue
+            if queue:
+                doc_dict["review_queue"] = queue
+            routed_by = display.routed_by_text(review.routed_by)
+            if routed_by:
+                doc_dict["routed_by"] = routed_by
+            # What the reviewer reads, and the policy rules the document failed.
+            if review.reason:
+                doc_dict["routing_reason"] = review.reason
+            if review.policy_failure_count or review.policy_failures:
+                doc_dict["policy_failures"] = [
+                    failure.model_dump() for failure in review.policy_failures
+                ]
+                # Of every failed policy rule; the list holds the first of them.
+                doc_dict["policy_failure_count"] = max(
+                    review.policy_failure_count, len(review.policy_failures)
+                )
         # The producer's own verdict wins when it recorded one, and
         # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
         # -- answers when it did not. The chain this replaced named eleven
@@ -4373,6 +4781,8 @@ def _batch_status_to_display_dicts(batch_status):
                 duration_count += 1
         elif bucket is DocumentBucket.FAILED:
             failed_docs.append(doc_dict)
+        elif bucket is DocumentBucket.AWAITING_REVIEW:
+            awaiting_review_docs.append(doc_dict)
         elif bucket is DocumentBucket.RUNNING:
             running_docs.append(doc_dict)
         else:
@@ -4383,6 +4793,7 @@ def _batch_status_to_display_dicts(batch_status):
     failed = len(failed_docs)
     running = len(running_docs)
     queued = len(queued_docs)
+    awaiting_review = len(awaiting_review_docs)
 
     status_data = {
         "total": total,
@@ -4390,10 +4801,15 @@ def _batch_status_to_display_dicts(batch_status):
         "running": running_docs,
         "queued": queued_docs,
         "failed": failed_docs,
+        "awaiting_review": awaiting_review_docs,
     }
 
     avg_duration = total_duration / duration_count if duration_count > 0 else 0.0
-    completion_pct = (completed + failed) / total * 100.0 if total > 0 else 0.0
+    # Processing has stopped for a document awaiting review, so it counts towards
+    # completion; a batch the monitor ends on then reads 100% rather than stalling.
+    completion_pct = (
+        (completed + failed + awaiting_review) / total * 100.0 if total > 0 else 0.0
+    )
     # SDK returns success_rate as 0.0–1.0; display expects 0–100
     success_rate = batch_status.success_rate * 100.0
 
@@ -4403,6 +4819,7 @@ def _batch_status_to_display_dicts(batch_status):
         "failed": failed,
         "running": running,
         "queued": queued,
+        "awaiting_review": awaiting_review,
         "all_complete": batch_status.all_complete,
         "success_rate": success_rate,
         "completion_percentage": completion_pct,
@@ -4493,7 +4910,7 @@ def _monitor_progress(
                 # "gives time for documents to be picked up by the queue and
                 # tracked in DynamoDB" -- and it could never fire: it was reached
                 # only via `has_terminal_docs or waited_long_enough`, and
-                # `all_complete` is `completed + failed == total`, so for any
+                # `all_complete` was then `completed + failed == total`, so for any
                 # non-empty batch `all_complete` already implies
                 # `has_terminal_docs` and the first operand always won. The wait
                 # it described never happened once.
@@ -4504,6 +4921,10 @@ def _monitor_progress(
                 # than `NOT_FOUND_GRACE_SECONDS`, so it does not count towards
                 # `all_complete` and this loop keeps polling without having to
                 # second-guess the counts it is handed.
+                #
+                # A document awaiting human review is settled for this purpose:
+                # its workflow has ended and only a reviewer moves it on, so the
+                # monitor ends and the final summary says where to work it (#2022).
                 if stats["all_complete"]:
                     break
 
@@ -5456,7 +5877,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat, rule_validation and routing; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5490,7 +5911,7 @@ def config_create(
       min:  classification, extraction (simplest); switches
             summarization and evaluation off and leaves confidence scoring on
       core: min + ocr, with summarization and evaluation left at their defaults
-      all:  every section except hitl, chat and rule_validation. Uploaded
+      all:  every section except hitl, chat, rule_validation and routing. Uploaded
             unedited, every setting it writes resets the deployment's value
             to the default (summarization and evaluation switch back on where
             a preset turned them off; prompts left out keep their own)
@@ -5504,7 +5925,7 @@ def config_create(
       # Generate minimal config to stdout
       idp-cli config-create
 
-      # Generate a config with every section except hitl, chat and rule_validation
+      # Generate a config with every section except hitl, chat, rule_validation and routing
       idp-cli config-create --features all --output full-config.yaml
 
       # Include full prompts (verbose)
@@ -5674,11 +6095,7 @@ def config_validate(
             console.print("[green]✓ Pydantic validation passed[/green]")
 
             # Show warnings
-            if result.warnings:
-                console.print()
-                console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result.warnings:
-                    console.print(f"  ⚠ {warning}")
+            _print_config_warnings(result.warnings)
 
             # Check for document classes
             if result.class_count:
@@ -5718,11 +6135,7 @@ def config_validate(
             # which of the two the author wrote. On this path `warnings` holds these
             # findings and nothing else, since every other check runs only after the
             # configuration validates, so there is no duplication with the block above.
-            if result.warnings:
-                console.print()
-                console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result.warnings:
-                    console.print(f"  ⚠ {warning}")
+            _print_config_warnings(result.warnings)
             sys.exit(1)
 
     except FileNotFoundError as e:
@@ -5734,6 +6147,134 @@ def config_validate(
     except Exception as e:
         logger.error(f"Error validating config: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
+
+
+def _print_config_warnings(warnings: list[str]) -> None:
+    """Print validation warnings for `config-validate` and `config-upload`.
+
+    Each warning is escaped. Warnings quote what the user wrote (a key path, a
+    `fallback_class` value), so text such as `[bold]` would otherwise be swallowed
+    as a style tag, misnaming the key, and a `[/x]` would raise and turn a valid
+    configuration into exit 1.
+    """
+    if not warnings:
+        return
+    console.print()
+    console.print("[bold yellow]Warnings:[/bold yellow]")
+    for warning in warnings:
+        console.print(f"  ⚠ {escape(warning)}")
+
+
+@cli.command(name="config-routing-export")
+@click.option(
+    "--config-file",
+    "-f",
+    required=True,
+    type=click.Path(exists=True),
+    help="Configuration file (YAML or JSON) whose routing section is exported",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(),
+    help="File to write the DMN XML to ('-' writes it to stdout)",
+)
+@click.option(
+    "--dmn-version",
+    type=click.Choice(["1.5", "1.3"]),
+    default="1.5",
+    show_default=True,
+    help="DMN version to write",
+)
+def config_routing_export(config_file: str, output: str, dmn_version: str):
+    """
+    Write a configuration's review routing table as a DMN file
+
+    Reads the routing section of a configuration file and writes it as a DMN
+    decision table, which a DMN editor can open. The conversion is local: no
+    stack is read and no AWS call is made.
+
+    Examples:
+
+      # Export the routing table of a configuration file
+      idp-cli config-routing-export --config-file ./config.yaml --output routing.dmn
+
+      # Write DMN 1.3, for a tool that does not read 1.5
+      idp-cli config-routing-export -f ./config.yaml -o routing.dmn --dmn-version 1.3
+    """
+    try:
+        from idp_sdk import IDPClient
+
+        xml = IDPClient().config.routing_to_dmn(config_file, dmn_version=dmn_version)
+        if output == "-":
+            emit_raw(xml)
+            return
+        Path(output).write_text(xml, encoding="utf-8")
+        console.print(f"[green]✓ Wrote the routing table as DMN to {output}[/green]")
+    except Exception as e:
+        logger.error(f"Error exporting the routing table: {e}", exc_info=True)
+        err_console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+        sys.exit(1)
+
+
+@cli.command(name="config-routing-import")
+@click.option(
+    "--dmn-file",
+    required=True,
+    type=click.Path(exists=True),
+    help="DMN file that holds a review routing decision table",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(),
+    help=(
+        "Configuration file to write the routing section to: YAML, or JSON when "
+        "the name ends in .json ('-' writes YAML to stdout)"
+    ),
+)
+def config_routing_import(dmn_file: str, output: str):
+    """
+    Read a DMN file as a review routing section
+
+    Writes a configuration file that holds only the routing section. Upload it
+    with config-upload to replace a profile's routing table; the queues its rules
+    name are checked against the stack then. The conversion is local: no stack is
+    read and no AWS call is made.
+
+    Examples:
+
+      # Read a DMN file and upload the routing table to a profile
+      idp-cli config-routing-import --dmn-file routing.dmn --output routing.yaml
+      idp-cli config-upload --stack-name my-stack \\
+          --config-file routing.yaml --config-profile claims
+    """
+    try:
+        import yaml
+
+        from idp_sdk import IDPClient
+
+        section = IDPClient().config.routing_from_dmn(
+            Path(dmn_file).read_text(encoding="utf-8")
+        )
+        if output.endswith(".json"):
+            text = json.dumps(section, indent=2) + "\n"
+        else:
+            text = yaml.safe_dump(section, sort_keys=False)
+        if output == "-":
+            emit_raw(text)
+            return
+        Path(output).write_text(text, encoding="utf-8")
+        rules = len(section["routing"]["tables"][0]["rules"])
+        console.print(
+            f"[green]✓ Wrote the routing section ({rules} rule(s)) to {output}[/green]"
+        )
+    except Exception as e:
+        logger.error(f"Error importing the routing table: {e}", exc_info=True)
+        err_console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
         sys.exit(1)
 
 
@@ -5849,6 +6390,10 @@ def config_upload(
             console.print(
                 f"[red]✗ Failed to upload configuration: {result.error}[/red]"
             )
+            # Printed on a refusal too: an unread key is often why a value the
+            # author set did not take, and the finding names the field it was meant
+            # to be. `config-validate` does the same on its failing branch.
+            _print_config_warnings(result.warnings)
             if result.error and "Validation" in result.error:
                 console.print(
                     "[yellow]Use --no-validate to skip validation (not recommended)[/yellow]"
@@ -5856,6 +6401,10 @@ def config_upload(
             sys.exit(1)
 
         console.print("[green]✓ Configuration uploaded successfully[/green]")
+        # Warnings are non-fatal: the configuration was stored and the exit code
+        # stays 0. They are the findings `config-validate` prints for the same file,
+        # which this command used to drop.
+        _print_config_warnings(result.warnings)
         console.print()
         if config_version:
             action = "created" if result.version_created else "updated"
@@ -7586,8 +8135,19 @@ def multi_discover(
 
     if result.noise_documents > 0:
         console.print(
-            f"[yellow]⚠ {result.noise_documents} documents failed embedding[/yellow]"
+            f"[yellow]⚠ {result.noise_documents} documents were left in no class "
+            "(their cluster was too small and was dropped as noise)[/yellow]"
         )
+        for key in result.noise_document_keys:
+            console.print(f"[yellow]    {escape(key)}[/yellow]")
+
+    if result.failed_embeddings > 0:
+        console.print(
+            f"[yellow]⚠ {result.failed_embeddings} documents failed embedding "
+            "and were not clustered[/yellow]"
+        )
+        for key in result.failed_embedding_keys:
+            console.print(f"[yellow]    {escape(key)}[/yellow]")
 
     if result.config_version:
         console.print(
@@ -7866,8 +8426,7 @@ def test_result(
       # Save results to file
       idp-cli test-result --stack-name my-stack --test-run-id fake-w2-20260409-123456 --wait --output-dir ./results
     """
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Use SDK to get test result
@@ -8007,10 +8566,8 @@ def test_compare(
         --test-run-ids "run1,run2,run3" --output-dir ./comparisons
     """
     import csv
-    from datetime import datetime, timezone
 
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Parse test run IDs. Blank segments are dropped, so a trailing comma no
@@ -8050,20 +8607,24 @@ def test_compare(
         # Save to files if output-dir specified
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            # One id for both files, unique even when two comparisons are saved
+            # to the same directory within one second.
+            from idp_sdk import generate_timestamped_id
+
+            comparison_id = generate_timestamped_id("comparison")
 
             # Save JSON (reconstruct result dict for compatibility)
             result_data = {
                 "metrics": metrics,
                 "configs": configs,
             }
-            json_file = os.path.join(output_dir, f"comparison-{timestamp}.json")
+            json_file = os.path.join(output_dir, f"{comparison_id}.json")
             with open(json_file, "w") as f:
                 json.dump(result_data, f, indent=2, default=str)
             console.print(f"[green]✓ Comparison JSON saved to: {json_file}[/green]")
 
             # Save CSV (metrics only)
-            csv_file = os.path.join(output_dir, f"comparison-{timestamp}.csv")
+            csv_file = os.path.join(output_dir, f"{comparison_id}.csv")
             with open(csv_file, "w", newline="") as f:
                 writer = csv.writer(f)
 
@@ -8252,8 +8813,7 @@ def abort_test_run(
       idp-cli abort-test-run --stack-name my-stack \\
         --test-run-ids "run1" --force
     """
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Parse test run IDs. Blank segments are dropped, which is what makes the
@@ -8356,13 +8916,13 @@ def abort_test_run(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Existing configuration profile to source catalog classes from / merge into; --config-version is the former name and still works",
+    help="Existing configuration profile whose classes are searched for a template to adapt (nothing is written to it); --config-version is the former name and still works",
 )
 @click.option(
     "--target-profile",
     "--target-version",
     "target_version",
-    help="Name of the configuration profile to create (default: bootstrap-<class>); --target-version is the former name and still works",
+    help="Configuration profile to create or add the class to (default: bootstrap-<class>; default and stack-managed profiles are refused); --target-version is the former name and still works",
 )
 @click.option(
     "--count", "-c", default=3, show_default=True, help="Documents to generate"
@@ -8519,6 +9079,16 @@ cli.add_command(_tenancy_group)
 from .mcp import mcp as _mcp_group  # noqa: E402
 
 cli.add_command(_mcp_group)
+
+# `idp-cli fit-check`, likewise.
+from .fit_check import fit_check as _fit_check_command  # noqa: E402
+
+cli.add_command(_fit_check_command)
+
+# `idp-cli review-queues ...`, likewise.
+from .review_queues import review_queues as _review_queues_group  # noqa: E402
+
+cli.add_command(_review_queues_group)
 
 # `idp-cli terraform ...` (Terraform-only commands) likewise.
 from .terraform import configure as _configure_terraform  # noqa: E402

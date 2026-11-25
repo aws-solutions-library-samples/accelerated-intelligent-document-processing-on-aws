@@ -1384,7 +1384,14 @@ def test_a_document_the_wait_never_read_is_reported_as_not_seen_to_finish(
     monkeypatch.setattr(abort, "time", real_time)
     monkeypatch.setattr(abort, "ABORT_BATCH_SIZE", 1)
     monkeypatch.setattr(abort, "ABORT_INVOKE_CONCURRENCY", 1)
-    monkeypatch.setattr(abort, "ABORT_WAIT_BUDGET_SECONDS", 3)
+    # a.pdf is waited for only if its invoke bound (connect + read) ends by
+    # deadline - pause, measured from the moment the handler sets its deadline,
+    # with the run read in between. Budget 4 and pause 1 leave 2.3s for that
+    # read; budget 3 and pause 2 left 0.3s, which a loaded CI runner exceeded,
+    # sending a.pdf unanswered too. c's send still outlasts the grace (ending
+    # 3.2s in), so the premise below is unchanged.
+    monkeypatch.setattr(abort, "ABORT_WAIT_BUDGET_SECONDS", 4)
+    monkeypatch.setattr(abort, "METRICS_START_PAUSE_SECONDS", 1)
     monkeypatch.setattr(abort, "ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(abort, "ABORT_INVOKE_READ_TIMEOUT_SECONDS", 0.5)
     run = stack["run_id"]
@@ -1401,7 +1408,7 @@ def test_a_document_the_wait_never_read_is_reported_as_not_seen_to_finish(
     def handler(event, context):
         (key,) = event["arguments"]["objectKeys"]
         if key.endswith("c.pdf"):
-            release.wait(5)
+            release.wait(10)
         if key.endswith("a.pdf"):
             document = workflow.document_service.get_document(key)
             document.status = Status.ABORTED

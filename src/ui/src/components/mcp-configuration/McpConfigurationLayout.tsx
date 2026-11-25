@@ -42,6 +42,8 @@ import {
   updateMcpCredential,
 } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { formatDateTime, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 const logger = new ConsoleLogger('McpConfigurationLayout');
 
@@ -148,7 +150,7 @@ const messages = defineMessages<{
   revoke: NoMessageValues;
   tableHeader: NoMessageValues;
   findCredentials: NoMessageValues;
-  matches: { readonly count: string };
+  matches: { readonly count: number };
   name: NoMessageValues;
   role: NoMessageValues;
   all: NoMessageValues;
@@ -545,7 +547,7 @@ const messages = defineMessages<{
   },
   matches: {
     id: 'mcp.configuration.matches',
-    defaultMessage: '{count} matches',
+    defaultMessage: '{count, plural, one {# match} other {# matches}}',
     description: 'Number of credentials the filter matches. {count} is the number.',
   },
   name: {
@@ -714,7 +716,7 @@ const STATUS_TYPE: Record<string, 'success' | 'stopped' | 'error' | 'warning'> =
   revoked: 'error',
 };
 
-const formatDate = (value?: string | null): string => (value ? new Date(value).toLocaleString() : '—');
+const formatDate = (value: string | null | undefined, locale: Locale): string => (value ? formatDateTime(new Date(value), locale) : '—');
 
 /**
  * The Quick "Service-to-service OAuth" fields for one issued credential, one
@@ -845,6 +847,7 @@ export const IssuedSecretModal = ({ issued, onDismiss }: { issued: McpCredential
 
 const McpConfigurationLayout = (): React.JSX.Element => {
   const intl = useIntl();
+  const { locale } = useFormatters();
   const { awsConfig } = useAppContext();
   const { settings } = useSettingsContext();
   const { isAdmin, loading: roleLoading } = useUserRole();
@@ -1198,7 +1201,7 @@ const McpConfigurationLayout = (): React.JSX.Element => {
           <TextFilter
             {...filterProps}
             filteringPlaceholder={intl.formatMessage(messages.findCredentials)}
-            countText={intl.formatMessage(messages.matches, { count: String(filteredItemsCount ?? 0) })}
+            countText={intl.formatMessage(messages.matches, { count: filteredItemsCount ?? 0 })}
           />
         }
         pagination={<Pagination {...paginationProps} />}
@@ -1226,9 +1229,9 @@ const McpConfigurationLayout = (): React.JSX.Element => {
           {
             id: 'expires',
             header: intl.formatMessage(messages.expires),
-            cell: (c) => (c.expiresAt ? formatDate(c.expiresAt) : intl.formatMessage(messages.expiresNever)),
+            cell: (c) => (c.expiresAt ? formatDate(c.expiresAt, locale) : intl.formatMessage(messages.expiresNever)),
           },
-          { id: 'lastUsed', header: intl.formatMessage(messages.lastUsed), cell: (c) => formatDate(c.lastUsedAt) },
+          { id: 'lastUsed', header: intl.formatMessage(messages.lastUsed), cell: (c) => formatDate(c.lastUsedAt, locale) },
           { id: 'createdBy', header: intl.formatMessage(messages.createdBy), cell: (c) => c.createdBy ?? '—' },
         ]}
       />

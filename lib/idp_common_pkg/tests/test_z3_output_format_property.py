@@ -80,6 +80,7 @@ class TestOutputFormat:
                 document_text,
                 config,
                 rule_json=None,
+                policy_rule_id=None,
             ):
                 return {
                     "policy_type": policy_type,
@@ -91,7 +92,13 @@ class TestOutputFormat:
                 }
 
             async def mock_llm(
-                rule, user_history, policy_type, config, extraction_results=None
+                rule,
+                user_history,
+                policy_type,
+                config,
+                extraction_results=None,
+                policy_rule_id=None,
+                z3_rule_id=None,
             ):
                 return {
                     "policy_type": policy_type,

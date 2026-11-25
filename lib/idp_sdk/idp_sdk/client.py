@@ -115,6 +115,8 @@ class IDPClient:
         tenancy: TenancyOperation - Tenant declarations, access policies, audit
         terraform: TerraformOperation - Terraform-only operations (moving a
             genai-idp-terraform deployment onto the built-in module)
+        review_queues: ReviewQueueOperation - Production review queues (list,
+            create, update, delete)
     """
 
     def __init__(
@@ -131,10 +133,13 @@ class IDPClient:
                        Optional for config and manifest operations.
                        Can be overridden per-operation if needed.
             region: AWS region (e.g., 'us-east-1', 'us-west-2').
-                   If not specified, uses boto3's default region resolution:
-                   1. AWS_DEFAULT_REGION environment variable
-                   2. AWS config file (~/.aws/config)
-                   3. EC2 instance metadata (if running on EC2)
+                   If not specified, uses the Region boto3's default session
+                   resolves: AWS_DEFAULT_REGION, then the ``region`` of the
+                   selected profile in the AWS config file, or a Region given
+                   to ``boto3.setup_default_session``. boto3 does not take the
+                   Region from EC2 instance metadata. Operations that work out
+                   the Region before calling AWS then fall back to AWS_REGION
+                   (see ``idp_sdk.resolve_region``).
 
         Examples:
             Initialize with stack name:
@@ -163,9 +168,11 @@ class IDPClient:
             DiscoveryOperation,
             DocumentOperation,
             EvaluationOperation,
+            FitCheckOperation,
             ManifestOperation,
             McpOperation,
             PublishOperation,
+            ReviewQueueOperation,
             SearchOperation,
             StackOperation,
             TenancyOperation,
@@ -183,12 +190,14 @@ class IDPClient:
         self.testing: TestingOperation = TestingOperation(self)
         self.search: SearchOperation = SearchOperation(self)
         self.evaluation: EvaluationOperation = EvaluationOperation(self)
+        self.fit_check: FitCheckOperation = FitCheckOperation(self)
         self.assessment: AssessmentOperation = AssessmentOperation(self)
         self.publish: PublishOperation = PublishOperation(self)
         self.chat: ChatOperation = ChatOperation(self)
         self.tenancy: TenancyOperation = TenancyOperation(self)
         self.mcp: McpOperation = McpOperation(self)
         self.terraform: TerraformOperation = TerraformOperation(self)
+        self.review_queues: ReviewQueueOperation = ReviewQueueOperation(self)
 
     @property
     def stack_name(self) -> Optional[str]:

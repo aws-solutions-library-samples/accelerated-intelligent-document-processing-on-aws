@@ -1230,7 +1230,7 @@ _UPLOAD_FROM_COMPUTER = (
     '    uid=4_5 button "Configuration Profile" expandable haspopup="listbox"',
     '    uid=4_6 button "Choose files"',
     '    uid=4_7 StaticText "Drop files to upload"',
-    '    uid=4_8 button "Upload (1 files)"',
+    '    uid=4_8 button "Upload (1 file)"',
 )
 _UPLOAD_SAMPLE = (
     '    uid=4_1 heading "Upload Documents" level="2"',
@@ -1243,7 +1243,7 @@ _UPLOAD_SAMPLE = (
 _UPLOAD_SOURCES = (
     "'Choose files'",
     "'Process sample'",
-    "`Upload ${",
+    "one {Upload (# file)}",
     "Optional folder prefix (e.g., invoices/2024)",
 )
 
@@ -1284,8 +1284,12 @@ def test_the_merged_side_navigation_still_offers_the_upload_link_as_a_route() ->
     it a route of the app rather than a control the page handles."""
     text = (UI_SOURCE / NAVIGATION_SOURCE).read_text(encoding="utf-8")
     assert (
-        "{ type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` }"
-        in text
+        "{ type: 'link', text: intl.formatMessage(messages.uploadDocuments), "
+        "href: `#${UPLOAD_DOCUMENT_PATH}` }"
+    ) in text
+    assert re.search(
+        r"uploadDocuments: \{\s*id: '[\w.]+',\s*defaultMessage: 'Upload Documents',",
+        text,
     )
 
 
@@ -1306,7 +1310,7 @@ def test_the_upload_page_still_refuses_its_own_commit_controls() -> None:
     assert local.control_of(uid_of(local, "link", "Browse catalog")) is None
     assert local.control_of("4_2") is None
     assert local.control_of("4_6") == ("commit_point", "Choose files")
-    assert local.control_of("4_8") == ("commit_point", "Upload (1 files)")
+    assert local.control_of("4_8") == ("commit_point", "Upload (1 file)")
     assert local.pressed("enter") == (
         "commit_point",
         "Enter in Optional folder prefix (e.g., invoices/2024)",
@@ -1639,7 +1643,7 @@ def test_the_relay_forwards_a_followed_link_and_refuses_the_page_it_opens(
     assert reply_text(refused) == story_relay.COMMIT_POINT_TEXT
     assert (rig.last()["refused"], rig.last()["label"]) == (
         "commit_point",
-        "Upload (1 files)",
+        "Upload (1 file)",
     )
     clicks = [call for call in rig.tool_calls() if call["name"] == "click"]
     assert [call["arguments"]["uid"] for call in clicks] == [UPLOAD_LINK]
@@ -1791,8 +1795,11 @@ _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
 #: The edit page's read-only notice, which offers Claim beside the bar's own.
 _EDIT_PAGE = "components/edit-screen/EditPage.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
-#: The edit screen names Process Changes with one shared constant (common/labels.ts).
-_PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
+#: The dialog Process Changes opens on a review item: complete the review, or send
+#: the document back.
+_COMPLETION = "components/review-queues/ReviewCompletionModal.tsx"
+#: The edit screen names Process Changes with one shared message (common/labels.ts).
+_PROCESS_CHANGES = "sharedLabelMessages.processChanges"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
 _MCP = "components/mcp-configuration/McpConfigurationLayout.tsx"
@@ -1826,6 +1833,16 @@ _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
 #: unaccounted one; every control listed must still be in its file and refused.
 MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "AbortTestRuns": (Shipped("components/test-studio/AbortTestModal.tsx", "Abort"),),
+    "SelectActiveTenant": (
+        Shipped(
+            "components/tenant-selection/TenantSelectionGate.tsx", "Confirm tenant"
+        ),
+        Shipped(
+            "components/tenant-selection/useTenantSwitcher.tsx",
+            "Confirm switch",
+            inside_dialog=True,
+        ),
+    ),
     "AbortWorkflow": (
         Shipped("components/common/AbortWorkflowModal.tsx", "Abort"),
         Shipped(_TABLE, "Abort"),
@@ -1870,11 +1887,14 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_DETAIL_ACTIONS, "Start Review"),
     ),
     "ClaimReviewItem": (
-        Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
-        Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
+        Shipped(
+            _QUEUE, "Claim (2)", source="counted(intl.formatMessage(messages.claim)"
+        ),
+        Shipped(_QUEUE, "Claim", source="text: intl.formatMessage(messages.claim)"),
         Shipped(_FRAME, "Claim"),
         Shipped(_EDIT_PAGE, "Claim"),
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+        Shipped(_FRAME, "Reject"),
         Shipped(_FRAME, "Save"),
         Shipped(
             _PRODUCTION_MODEL,
@@ -1896,6 +1916,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "ClearReadInboxMessages": (Shipped(_INBOX, "Clear read", inside_dialog=True),),
     "CompleteReviewItem": (
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+        Shipped(_COMPLETION, "Complete review", inside_dialog=True),
     ),
     "CompleteSectionReview": (
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
@@ -1931,14 +1952,14 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/document-agents-layout/AgentQueryInput.tsx",
             "Delete query: What is in this document?",
-            source="`Delete query: ${displayText}`",
+            source="defaultMessage: 'Delete query: {query}'",
         ),
     ),
     "DeleteChatSession": (
         Shipped(
             "components/agent-chat/AgentChatHistoryDropdown.tsx",
             "Delete chat session: Where do I start?",
-            source="`Delete chat session: ${displayText}`",
+            source="defaultMessage: 'Delete chat session: {title}'",
         ),
     ),
     "DeleteConfigPrefixMapping": (Shipped(_MAPPINGS, "Delete"),),
@@ -1988,7 +2009,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/user-management/UserManagementLayout.tsx", "Delete"),
     ),
     "ForceReleaseReviewItem": (
-        Shipped(_SUPERVISOR, "Unassign", source='label="Unassign"', inside_dialog=True),
+        Shipped(
+            _SUPERVISOR,
+            "Unassign",
+            source="defaultMessage: 'Unassign'",
+            inside_dialog=True,
+        ),
     ),
     "GenerateDraftLabels": (
         Shipped(
@@ -2022,7 +2048,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_INBOX, "Mark as unread"),
     ),
     "MoveReviewItem": (
-        Shipped(_SUPERVISOR, "Move", source='label="Move"', inside_dialog=True),
+        Shipped(
+            _SUPERVISOR, "Move", source="defaultMessage: 'Move'", inside_dialog=True
+        ),
     ),
     # Draft-first: Process Changes opens the version, confirmed in its dialog while no
     # draft version is open, and at once when one is.
@@ -2037,11 +2065,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
-        Shipped(_BREAKER, "Pause", source="confirmLabel: 'Pause'"),
+        Shipped(_BREAKER, "Pause", source="defaultMessage: 'Pause'"),
     ),
     "ProbeCircuitBreaker": (
         Shipped(_BREAKER, "Probe recovery"),
-        Shipped(_BREAKER, "Probe", source="confirmLabel: 'Probe'"),
+        Shipped(_BREAKER, "Probe", source="defaultMessage: 'Probe'"),
     ),
     "ProcessChanges": (
         Shipped(
@@ -2062,6 +2090,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "PutTenant": (Shipped(_TENANTS, "Save tenant"),),
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
     "ReextractTestSetDocument": (Shipped(_SLOTS, "Re-extract", source="'Re-extract'"),),
+    "RejectReviewItem": (Shipped(_FRAME, "Reject"),),
     "ReleaseReview": (Shipped(_REVIEW_MENU, "Release Review", role="menuitem"),),
     "ReleaseReviewItem": (Shipped(_FRAME, "Skip"),),
     "RemoveDocumentsFromTestSet": (
@@ -2075,7 +2104,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "RemoveReviewItem": (
-        Shipped(_SUPERVISOR, "Remove", source='label="Remove"', inside_dialog=True),
+        Shipped(
+            _SUPERVISOR, "Remove", source="defaultMessage: 'Remove'", inside_dialog=True
+        ),
     ),
     "ReprocessDocument": (
         Shipped("components/common/ReprocessDocumentModal.tsx", "Reprocess"),
@@ -2096,7 +2127,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "ResumeCircuitBreaker": (
         Shipped(_BREAKER, "Resume processing"),
-        Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
+        Shipped(_BREAKER, "Resume", source="defaultMessage: 'Resume'"),
     ),
     "RevokeMcpCredential": (
         Shipped(_MCP, "Revoke", source="'Revoke'", inside_dialog=True),
@@ -2146,6 +2177,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
         Shipped(_CONFIG, "Confirm Activate"),
     ),
+    "SendBackReviewItem": (Shipped(_COMPLETION, "Send back", inside_dialog=True),),
     "SendToReview": (Shipped(_SEND_TO_REVIEW, "Send to review", inside_dialog=True),),
     "SkipAllSectionsReview": (
         Shipped(_DETAIL_ACTIONS, "Skip All Reviews", inside_dialog=True),
@@ -2226,7 +2258,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/discovery/DiscoveryPanel.tsx", "Start Discovery"),
     ),
     "UploadDocument": (
-        Shipped(_UPLOAD, "Upload (1 files)", source="`Upload ${"),
+        Shipped(_UPLOAD, "Upload (1 file)", source="one {Upload (# file)}"),
         Shipped(_EDIT_TEXT, "Save and Reprocess", inside_dialog=True),
         Shipped(
             "components/pages-panel/PageTextEditorModal.tsx",
@@ -2246,10 +2278,6 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
 #: Mutations the UI declares that no shipped control sends, each with what makes
 #: that so; the suite checks each one has no caller outside ``src/ui/src/graphql``.
 MUTATIONS_WITHOUT_A_GUARDED_CONTROL: dict[str, str] = {
-    "RejectReviewItem": (
-        "declared among the UI's operations and called by none of its components "
-        "or hooks"
-    ),
     "RenewReviewLease": (
         "declared among the UI's operations and called by none of its components "
         "or hooks"
@@ -2497,6 +2525,11 @@ CLAIM_CALL_SITES: dict[tuple[str, str], tuple[Shipped, ...]] = {
     (_PRODUCTION_MODEL, "useProductionItemEditModel.state.process.run"): (
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
     ),
+    # Only a held item can be rejected, so Reject assigns an unassigned one to the
+    # Admin first, as Process Changes does.
+    (_PRODUCTION_MODEL, "useProductionItemEditModel.state.reject.run"): (
+        Shipped(_FRAME, "Reject"),
+    ),
     (_PRODUCTION_MODEL, "useProductionItemEditModel.state.claim"): (
         Shipped(_FRAME, "Claim"),
         Shipped(_EDIT_PAGE, "Claim"),
@@ -2506,8 +2539,10 @@ CLAIM_CALL_SITES: dict[tuple[str, str], tuple[Shipped, ...]] = {
         Shipped(_EDIT_PAGE, "Claim"),
     ),
     (_QUEUE, "ReviewQueuePage.claim"): (
-        Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
-        Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
+        Shipped(
+            _QUEUE, "Claim (2)", source="counted(intl.formatMessage(messages.claim)"
+        ),
+        Shipped(_QUEUE, "Claim", source="text: intl.formatMessage(messages.claim)"),
     ),
     (_QUEUE, "ReviewQueuePage.claimNext"): (Shipped(_QUEUE, "Next item"),),
     (_ANNOTATE, "AnnotationQueuePage.handleClaim"): (
@@ -2776,7 +2811,11 @@ def test_the_side_navigation_is_the_one_landmark_the_web_ui_names_so() -> None:
     the name the guard follows links in, and holds the one shared navigation there;
     no other text in the web UI is that name, so no other landmark can carry it."""
     labels = (UI_SOURCE / LAYOUT_LABELS_SOURCE).read_text(encoding="utf-8")
-    label = re.search(r"^\s*navigation: '([^']*)',$", labels, re.M)
+    # The name is the English of the `navigation` message, which the layouts read in
+    # the UI's language.
+    label = re.search(
+        r"^\s*navigation: \{[^}]*?^\s*defaultMessage: '([^']*)',$", labels, re.M
+    )
     assert label is not None, labels
     assert story_relay.plain(label.group(1)) in story_relay.SIDE_NAVIGATION_NAMES
     named = [
@@ -2802,6 +2841,10 @@ def test_the_side_navigation_is_the_one_landmark_the_web_ui_names_so() -> None:
         given = len(re.findall(r"\bappLayoutLabels\b", text))
         if not given:
             continue
+        # Read once, in the UI's language, by the layout's own hook call; every other
+        # mention passes them as they are.
+        assert text.count("const appLayoutLabels = useAppLayoutLabels();") == 1, path
+        given -= 1
         assert text.count("ariaLabels={appLayoutLabels}") == given, path
         # The shared navigation, optionally told which entry to highlight (the edit page).
         mounted = len(

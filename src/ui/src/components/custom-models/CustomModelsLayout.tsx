@@ -19,6 +19,7 @@ import {
   Link,
   Pagination,
 } from '@cloudscape-design/components';
+import { useFormatters } from '../../i18n/format';
 
 // Types
 interface FinetuningJob {
@@ -83,6 +84,7 @@ const getStatusBadgeColor = (status: string): 'blue' | 'green' | 'red' | 'grey' 
 };
 
 const CustomModelsLayout = (): React.JSX.Element => {
+  const { formatDateTime } = useFormatters();
   const [jobs, setJobs] = useState<FinetuningJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedJobs, setSelectedJobs] = useState<FinetuningJob[]>([]);
@@ -324,7 +326,7 @@ const CustomModelsLayout = (): React.JSX.Element => {
   // Format date
   const formatDate = (dateString?: string) => {
     if (!dateString) return '-';
-    return new Date(dateString).toLocaleString();
+    return formatDateTime(new Date(dateString));
   };
 
   // Get model display name

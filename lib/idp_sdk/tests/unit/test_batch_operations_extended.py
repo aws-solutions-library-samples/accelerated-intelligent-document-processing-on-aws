@@ -18,7 +18,7 @@ list from the test-set bucket, and ``_get_document_metadata``, which mirrors an
 What shaped these tests:
 
 **The exception type is the contract, and where the ``try`` starts decides it.**
-Argument validation happens *before* the ``try`` in ``process``, ``reprocess`` and
+Argument validation happens *before* the ``try`` in ``process`` and
 ``delete_documents``, so an ``IDPConfigurationError`` propagates as itself; anything
 raised inside becomes an ``IDPProcessingError``. The same applies to
 ``resolve_config_profile``, which raises a plain ``ValueError`` from before the
@@ -29,11 +29,13 @@ written against it.
 Every test here runs inside ``moto.mock_aws`` against a real CloudFormation stack,
 real S3 buckets and a real DynamoDB table, so ``BatchProcessor`` is constructed the
 way production constructs it and the operations that only forward arguments are
-checked by what actually lands in S3. ``ProgressMonitor``, ``AssessmentAnalyzer``,
-``RerunProcessor`` and ``WorkflowStopper`` are mocked: all four reach AWS services
-moto cannot usefully fake here (Lambda invoke needs Docker, Step Functions needs a
-running state machine), and for those the assertions are on the arguments they were
-handed and on the model built from what they returned.
+checked by what actually lands in S3. ``ProgressMonitor``, ``AssessmentAnalyzer``
+and ``WorkflowStopper`` are mocked: all three reach AWS services moto cannot
+usefully fake here (Lambda invoke needs Docker, Step Functions needs a running
+state machine), and for those the assertions are on the arguments they were handed
+and on the model built from what they returned. ``reprocess`` and ``rerun`` ask the
+stack's reprocess resolver and are covered in
+``tests/unit/test_reprocess_server_path.py``.
 
 **Configuration pinning is followed all the way to the object.** ``process``
 decides per source method, by inspecting its signature, whether to pass
@@ -56,6 +58,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from idp_common.models import DOCUMENT_STATUS_VALUES
 from idp_sdk import IDPClient
 from idp_sdk.exceptions import (
     IDPConfigurationError,
@@ -68,7 +71,6 @@ from idp_sdk.models import (
     BatchListResult,
     BatchProcessResult,
     DocumentBucket,
-    RerunStep,
 )
 from idp_sdk.operations.batch import _batch_started_at
 
@@ -771,108 +773,6 @@ class TestProcessTestSet:
 
 @pytest.mark.unit
 @pytest.mark.batch
-class TestReprocess:
-    """Re-running documents from a chosen pipeline step."""
-
-    def test_neither_documents_nor_a_batch_is_a_configuration_error(self, client):
-        with pytest.raises(
-            IDPConfigurationError, match="either document_ids or batch_id"
-        ):
-            client.batch.reprocess(step="extraction")
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_explicit_document_ids_are_forwarded_with_monitoring_off(
-        self, processor_cls, client
-    ):
-        """The SDK call is synchronous and returns counts; monitoring belongs to
-        the caller, so ``monitor=False`` is part of the contract."""
-        processor = Mock()
-        processor.rerun_documents.return_value = {
-            "documents_queued": 2,
-            "documents_failed": 1,
-            "failed_documents": [{"document_id": "c.pdf", "error": "boom"}],
-        }
-        processor_cls.return_value = processor
-
-        result = client.batch.reprocess(
-            step=RerunStep.EXTRACTION, document_ids=["a.pdf", "b.pdf", "c.pdf"]
-        )
-
-        processor.rerun_documents.assert_called_once_with(
-            document_ids=["a.pdf", "b.pdf", "c.pdf"], step="extraction", monitor=False
-        )
-        processor.get_batch_document_ids.assert_not_called()
-        assert result.documents_queued == 2
-        assert result.documents_failed == 1
-        assert result.failed_documents == [{"document_id": "c.pdf", "error": "boom"}]
-        assert result.step is RerunStep.EXTRACTION
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_a_batch_id_is_expanded_into_its_documents(self, processor_cls, client):
-        processor = Mock()
-        processor.get_batch_document_ids.return_value = ["b/a.pdf", "b/b.pdf"]
-        processor.rerun_documents.return_value = {"documents_queued": 2}
-        processor_cls.return_value = processor
-
-        result = client.batch.reprocess(step="classification", batch_id="b")
-
-        processor.get_batch_document_ids.assert_called_once_with("b")
-        processor.rerun_documents.assert_called_once_with(
-            document_ids=["b/a.pdf", "b/b.pdf"], step="classification", monitor=False
-        )
-        assert result.documents_failed == 0
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_explicit_documents_win_over_a_batch_id(self, processor_cls, client):
-        processor = Mock()
-        processor.rerun_documents.return_value = {"documents_queued": 1}
-        processor_cls.return_value = processor
-
-        client.batch.reprocess(
-            step="extraction", document_ids=["only.pdf"], batch_id="b"
-        )
-
-        processor.get_batch_document_ids.assert_not_called()
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_a_step_that_is_not_a_pipeline_step_is_rejected(
-        self, processor_cls, client
-    ):
-        """``RerunStep(step_str)`` is constructed inside the ``try``, so an unknown
-        step surfaces as an ``IDPProcessingError`` even though it is really a bad
-        argument. Pinned so the type is on record."""
-        processor = Mock()
-        processor.rerun_documents.return_value = {"documents_queued": 1}
-        processor_cls.return_value = processor
-
-        with pytest.raises(IDPProcessingError, match="Reprocess failed"):
-            client.batch.reprocess(step="nonsense", document_ids=["a.pdf"])
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_a_processor_failure_becomes_a_processing_error(
-        self, processor_cls, client
-    ):
-        processor_cls.side_effect = RuntimeError("no state machine")
-
-        with pytest.raises(IDPProcessingError, match="no state machine"):
-            client.batch.reprocess(step="extraction", document_ids=["a.pdf"])
-
-    @patch("idp_sdk._core.rerun_processor.RerunProcessor")
-    def test_rerun_is_the_deprecated_spelling_of_reprocess(self, processor_cls, client):
-        processor = Mock()
-        processor.rerun_documents.return_value = {"documents_queued": 1}
-        processor_cls.return_value = processor
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = client.batch.rerun(step="extraction", document_ids=["a.pdf"])
-
-        assert any(item.category is DeprecationWarning for item in caught)
-        assert result.documents_queued == 1
-
-
-@pytest.mark.unit
-@pytest.mark.batch
 class TestGetDocumentIds:
     """Reading a batch's document list without starting anything."""
 
@@ -1426,6 +1326,51 @@ class TestDeleteDocuments:
         with pytest.raises(IDPResourceNotFoundError, match="Required resources"):
             client.batch.delete_documents(batch_id="b", stack_name=BARE_STACK)
 
+    @pytest.mark.parametrize(
+        "status_filter",
+        [
+            "PROCESSING",
+            "PENDING_UPLOAD",
+            "IN_PROGRESS",
+            "failed",
+            # Built from the set rather than listed, so a guard that enumerates
+            # the spellings above cannot pass for one that checks membership.
+            DOCUMENT_STATUS_VALUES[0] + " ",
+            "".join(DOCUMENT_STATUS_VALUES),
+        ],
+    )
+    def test_a_status_no_document_carries_is_refused_before_any_scan(
+        self, client, status_filter
+    ):
+        """No tracking record's ``ObjectStatus`` holds any of these (PROCESSING
+        is in no enum, the other two are Jobs API statuses, and statuses are
+        stored upper-case), so accepting one would scan, match nothing and report
+        zero deletions as a success (#2199)."""
+        with patch("idp_common.delete_documents.get_documents_by_pattern") as select:
+            with patch.object(
+                client, "_get_stack_resources", wraps=client._get_stack_resources
+            ) as lookup:
+                with pytest.raises(
+                    IDPConfigurationError, match="Unknown status_filter"
+                ):
+                    client.batch.delete_documents(
+                        pattern="b/*.pdf", status_filter=status_filter
+                    )
+
+        lookup.assert_not_called()
+        select.assert_not_called()
+
+    @pytest.mark.parametrize("status_filter", DOCUMENT_STATUS_VALUES)
+    def test_every_document_status_reaches_the_selector(self, client, status_filter):
+        """The accepted set is the one the CLI offers, so a status the pipeline
+        writes (OCR, EXTRACTING, ...) is never refused."""
+        with patch("idp_common.delete_documents.get_documents_by_batch") as select:
+            select.return_value = []
+
+            client.batch.delete_documents(batch_id="b", status_filter=status_filter)
+
+        assert select.call_args.kwargs["status_filter"] == status_filter
+
     def test_selecting_nothing_deletes_nothing_and_says_so(self, client):
         """A pattern matching no document must not reach the deleter at all, and
         must still report success — an empty selection is not an error."""
@@ -1536,7 +1481,7 @@ RESULT_JSON = {
 
 def _completed_monitor():
     monitor = Mock()
-    monitor.get_batch_status.side_effect = lambda ids: {"completed": list(ids)}
+    monitor.get_batch_status.side_effect = lambda ids, **_: {"completed": list(ids)}
     return monitor
 
 
@@ -1877,12 +1822,25 @@ class TestGetConfidence:
 
     @patch("idp_sdk._core.assessment_analyzer.AssessmentAnalyzer")
     @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
-    def test_a_document_with_no_assessment_yet_reads_as_processing(
-        self, monitor_cls, analyzer_cls, client, s3
+    @pytest.mark.parametrize(
+        "bucket, reported",
+        [
+            ("queued", "QUEUED"),
+            ("running", "RUNNING"),
+            ("failed", "FAILED"),
+            ("completed", "COMPLETED"),
+        ],
+    )
+    def test_a_document_with_no_assessment_reports_its_tracked_status(
+        self, monitor_cls, analyzer_cls, client, s3, bucket, reported
     ):
-        """An absent assessment file is the normal state mid-run, so it is
-        reported as PROCESSING rather than as an error."""
-        monitor_cls.return_value = _completed_monitor()
+        """An absent assessment file is the normal state mid-run, and also after
+        a failure or for a configuration with no assessment, so the row carries
+        the status the tracking record holds rather than an error, and never
+        PROCESSING, which no document carries (#2199)."""
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {bucket: ["b/a.pdf"]}
+        monitor_cls.return_value = monitor
         analyzer = Mock()
         analyzer.get_confidence.side_effect = FileNotFoundError("not written yet")
         analyzer_cls.return_value = analyzer
@@ -1890,8 +1848,39 @@ class TestGetConfidence:
 
         page = client.batch.get_confidence("b")
 
-        assert page["documents"][0]["status"] == "PROCESSING"
-        assert page["documents"][0]["attributes"] == {}
+        monitor.get_batch_status.assert_called_once_with(
+            ["b/a.pdf"], batch_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        assert page["documents"] == [
+            {"document_id": "b/a.pdf", "attributes": {}, "status": reported}
+        ]
+
+    @patch("idp_sdk._core.assessment_analyzer.AssessmentAnalyzer")
+    def test_a_document_with_no_tracking_row_yet_reads_queued_as_in_get_status(
+        self, analyzer_cls, client, s3
+    ):
+        """Right after submission a document may have neither an assessment file
+        nor a tracking row. The real monitor reports it queued only when told when
+        the batch started, as `get_status` tells it; without that it read FAILED
+        here while `get_status` counted it queued (#2199)."""
+        from idp_sdk._core.progress_monitor import ProgressMonitor
+
+        analyzer = Mock()
+        analyzer.get_confidence.side_effect = FileNotFoundError("not written yet")
+        analyzer_cls.return_value = analyzer
+        _store_batch(
+            s3, "b", ["b/a.pdf"], timestamp=datetime.now(timezone.utc).isoformat()
+        )
+        untracked = [{"document_id": "b/a.pdf", "status": "NOT_FOUND"}]
+
+        with patch.object(
+            ProgressMonitor, "_batch_query_documents", return_value=untracked
+        ):
+            page = client.batch.get_confidence("b")
+            status = client.batch.get_status("b")
+
+        assert (status.queued, status.failed) == (1, 0)
+        assert page["documents"][0]["status"] == "QUEUED"
 
     @patch("idp_sdk._core.assessment_analyzer.AssessmentAnalyzer")
     @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
@@ -2065,3 +2054,100 @@ class TestBatchListResultSequenceProtocol:
     def test_an_out_of_range_index_still_raises(self):
         with pytest.raises(IndexError):
             self._result()[5]
+
+
+@pytest.mark.unit
+@pytest.mark.batch
+class TestGetStatusAwaitingReview:
+    """A document held for human review is reported, counted and settles the batch.
+
+    `get_status` used to copy four hand-named buckets into `documents`, so a
+    bucket the monitor filled under any other name would vanish from the list
+    while still being in `total` (#2022).
+    """
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_held_document_is_listed_counted_and_bucketed(
+        self, monitor_cls, client, s3
+    ):
+        _store_batch(s3, "b", ["b/a.pdf", "b/held.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [{"document_id": "b/a.pdf", "status": "COMPLETED"}],
+            "running": [],
+            "queued": [],
+            "failed": [],
+            "awaiting_review": [
+                {"document_id": "b/held.pdf", "status": "HITL_IN_PROGRESS"}
+            ],
+            "all_complete": True,
+            "total": 2,
+        }
+        monitor.calculate_statistics.return_value = {
+            "total": 2,
+            "completed": 1,
+            "failed": 0,
+            "running": 0,
+            "queued": 0,
+            "awaiting_review": 1,
+            "success_rate": 100.0,
+            "all_complete": True,
+        }
+        monitor_cls.return_value = monitor
+
+        status = client.batch.get_status("b")
+
+        assert status.awaiting_review == 1
+        assert status.all_complete is True
+        assert status.in_progress == 0
+        held = [d for d in status.documents if d.document_id == "b/held.pdf"]
+        assert len(held) == 1
+        assert held[0].bucket is DocumentBucket.AWAITING_REVIEW
+
+
+@pytest.mark.unit
+@pytest.mark.batch
+class TestSingleDocumentStatusForAHeldDocument:
+    """Results and confidence listings name a held document's status (#2022).
+
+    Before #2022 `HITL_IN_PROGRESS` was an in-flight state, so both reported a
+    held document as RUNNING. It now has its own bucket, and the bucket-keyed
+    table these read is asserted to cover every bucket so none falls through to
+    UNKNOWN.
+    """
+
+    def test_the_status_table_covers_every_bucket(self):
+        from idp_sdk.operations.batch import _SINGLE_DOCUMENT_STATUS_BY_BUCKET
+
+        buckets = [bucket for bucket, _ in _SINGLE_DOCUMENT_STATUS_BY_BUCKET]
+        assert sorted(buckets) == sorted(DocumentBucket)
+        assert len(buckets) == len(set(buckets))
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_get_results_reports_a_held_document_as_held(self, monitor_cls, client, s3):
+        _store_batch(s3, "b", ["b/a.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {"awaiting_review": ["b/a.pdf"]}
+        monitor_cls.return_value = monitor
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["status"] == "HITL_IN_PROGRESS"
+        assert document["fields"] is None
+
+    @patch("idp_sdk._core.assessment_analyzer.AssessmentAnalyzer")
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_get_confidence_reports_a_held_document_as_held(
+        self, monitor_cls, analyzer_cls, client, s3
+    ):
+        _store_batch(s3, "b", ["b/a.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {"awaiting_review": ["b/a.pdf"]}
+        monitor_cls.return_value = monitor
+        analyzer = Mock()
+        analyzer.get_confidence.return_value = {"attributes": {}}
+        analyzer_cls.return_value = analyzer
+
+        page = client.batch.get_confidence("b")
+
+        assert page["documents"][0]["status"] == "HITL_IN_PROGRESS"

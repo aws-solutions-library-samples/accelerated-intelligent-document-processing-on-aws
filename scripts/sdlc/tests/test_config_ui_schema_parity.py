@@ -116,24 +116,53 @@ EXEMPT_SUBTREES: dict[str, str] = {
     ),
     "classification.split_then_classify.section_classification.embeddings": (
         "Declared for embeddings classification (#1329), not implemented: "
-        "section_classification.method offers only 'llm'."
-    ),
-    "classification.split_then_classify.section_classification.decision_model": (
-        "Declared for an external classifier endpoint (#1329), not implemented: "
-        "section_classification.method offers only 'llm'."
-    ),
-    "classification.split_then_classify.section_classification.low_confidence": (
-        "Applies only to a non-LLM section classification method, none of which "
-        "is implemented yet (#1329)."
+        "section_classification.method does not offer 'embeddings'."
     ),
     "rule_validation.z3_value_extraction": (
         "Notebook/standalone only — the deployed pipeline uses "
         "orchestrator._extract_z3_values_from_facts with fact_extraction settings."
     ),
+    "routing": (
+        "Edited in the Routing tab of the configuration page, not in the generated "
+        "form: a routing table is an ordered list of rules with its own editor, "
+        "test panel and DMN import and export."
+    ),
 }
 
 #: Individual fields that should never have a control.
 NOT_USER_SETTABLE: dict[str, str] = {
+    # --- section classification by a decision model (#1656) -------------
+    "extraction.confidence.decision_model.backend": (
+        "One accepted value, 'lambda'; a control would offer a single choice."
+    ),
+    "extraction.confidence.decision_model.price_per_request": (
+        "Not read: decision-model cost comes from the decision_model/<function> "
+        "entry in pricing.yaml, priced by GB-second like any Lambda."
+    ),
+    "extraction.confidence.decision_model.function_memory_mb": (
+        "Metering input that must equal the deployed function's memory; it is a "
+        "property of the deployment, not a tuning choice, so it is YAML-only."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.backend": (
+        "One accepted value, 'lambda'; a control would offer a single choice."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.score_calibration": (
+        "One accepted value, 'none'; 'softmax' and 'per_class_thresholds' are "
+        "declared and refused until implemented."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.label_map": (
+        "A map of model label to class, for a model trained on its own label set. "
+        "The configuration editor has no map control, and the decider is asked "
+        "with the configured class names, so it needs none; YAML-only."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.price_per_request": (
+        "Not read: decision-model cost comes from the decision_model/<function> "
+        "entry in pricing.yaml, priced by GB-second like any Lambda."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.function_memory_mb": (
+        "Metering input that must equal the deployed function's memory; it is a "
+        "property of the deployment, not a tuning choice, so it is YAML-only."
+    ),
     # --- record plumbing / metadata -------------------------------------
     "config_type": "Record discriminator written by the config layer, not a setting.",
     "config_format_version": (
@@ -670,6 +699,46 @@ def test_the_reasoning_effort_picklist_default_is_the_one_the_code_substitutes()
     )
 
 
+def _config_class_owning(path: str) -> type:
+    """The pydantic model whose field the dotted UI-schema ``path`` names.
+
+    Walks ``IDPConfig`` one segment at a time. A segment the config does not
+    declare fails here, naming it, rather than quietly dropping the control out of
+    the check that uses this.
+    """
+    cls = _models.IDPConfig
+    parts = path.split(".")
+    for index, part in enumerate(parts):
+        field = cls.model_fields.get(part)
+        assert field is not None, (
+            f"{path}: {cls.__name__} declares no field {part!r}, so the UI control "
+            "cannot be matched to the config it edits"
+        )
+        if index == len(parts) - 1:
+            return cls
+        candidates = [field.annotation, *typing.get_args(field.annotation)]
+        nested = [
+            c
+            for c in candidates
+            if isinstance(c, type) and issubclass(c, _models.BaseModel)
+        ]
+        assert nested, f"{path}: {cls.__name__}.{part} is not a nested config model"
+        cls = nested[0]
+    return cls
+
+
+def _clearing_substitutes_the_default(path: str) -> bool:
+    """Whether an empty value at ``path`` is replaced by DEFAULT_CLASSIFICATION_MODEL.
+
+    That substitution is ``default_empty_model``, a validator on the LLM call
+    configs. A model field on a config without it (the embeddings labeler's, whose
+    empty value means its own Region default) falls back to something else, so the
+    help naming the classification default would be wrong there.
+    """
+    owner = _config_class_owning(path)
+    return "default_empty_model" in owner.__pydantic_decorators__.field_validators
+
+
 def test_the_model_field_help_names_the_default_the_code_falls_back_to():
     """Clearing a call's model substitutes a model, so the help must name that one.
 
@@ -685,7 +754,15 @@ def test_the_model_field_help_names_the_default_the_code_falls_back_to():
     wrong answer in the editor.
     """
     default = _models.DEFAULT_CLASSIFICATION_MODEL
-    controls = _classification_controls("model")
+    controls = {
+        path: control
+        for path, control in _classification_controls("model").items()
+        if _clearing_substitutes_the_default(path)
+    }
+    assert controls, (
+        "no classification model control resolves to a config field that carries "
+        "default_empty_model, so this check would pass by reading nothing"
+    )
     silent = sorted(
         path
         for path, control in controls.items()

@@ -82,7 +82,7 @@ def _discovery_with_shipped_defaults(config: IDPConfig) -> RulesDiscovery:
     """A RulesDiscovery on the shipped defaults, with Bedrock stubbed out."""
     discovery = RulesDiscovery(
         input_bucket="placeholder",
-        input_prefix="medicare_respiratory_pa_packet.pdf",
+        input_prefix="bank-statement-review-policy.pdf",
         region="us-east-1",
         config=config,
     )
@@ -108,7 +108,7 @@ def test_shipped_defaults_produce_rules_the_runtime_can_evaluate(tmp_path):
     config = load_shipped_rule_discovery_config()
     discovery = _discovery_with_shipped_defaults(config)
 
-    policy = tmp_path / "medicare_respiratory_pa_packet.pdf"
+    policy = tmp_path / "bank-statement-review-policy.pdf"
     policy.write_bytes(b"%PDF-1.4 stub")
 
     result = discovery.discovery_rules_from_document_local(str(policy))

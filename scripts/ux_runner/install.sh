@@ -10,9 +10,9 @@
 # sha256 recorded below for this architecture, the Python packages against the
 # digests requirements.txt records (pip --require-hashes), the npm packages
 # against package-lock.json's integrity hashes, and apt's packages against its
-# repositories' signatures. The one exception is npm's upgrade of itself to
-# NPM_VERSION, which is checked only against what the npm registry publishes for
-# that version. The job runs this with none of its secrets in the environment,
+# repositories' signatures. npm is the copy the Node tarball bundles, so it is
+# covered by the tarball's digest, and it is the same npm .node_setup uses. The
+# job runs this with none of its secrets in the environment,
 # which keeps them out of a package script's reach by accident, not from a
 # hostile one: that runs as root beside the job's shell. The checks above are
 # what guard against that.
@@ -31,13 +31,12 @@ umask 022
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${UX_RUNNER_PREFIX:-/opt/ux-runner}"
-NODE_VERSION="v22.14.0"            # = .gitlab-ci.yml .node_setup (pinned by a test)
-NPM_VERSION="11.1.0"               # = .gitlab-ci.yml .node_setup (pinned by a test)
+NODE_VERSION="v26.13.1"            # = .gitlab-ci.yml .node_setup (pinned by a test)
 # The sha256 of node-<NODE_VERSION>-linux-<arch>.tar.xz for each architecture, from
 # https://nodejs.org/dist/<NODE_VERSION>/SHASUMS256.txt. Moving NODE_VERSION, with
 # .node_setup, means taking both of these again from that release's file.
-NODE_SHA256_X64="69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec"
-NODE_SHA256_ARM64="08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050"
+NODE_SHA256_X64="5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864"
+NODE_SHA256_ARM64="89e1853138db51e8b82d3e98ba9c0d3f2956a28e5e55ea1b7e12d25aae92d5dd"
 # Chrome for Testing: the current Stable that ships both linux64 and linux-arm64,
 # and the sha256 of each platform's zip at that version. To move the pin, take the
 # Stable version from
@@ -94,12 +93,11 @@ apt-get install -y --no-install-recommends ca-certificates curl git unzip xz-uti
     fonts-dejavu-core fonts-noto-color-emoji fonts-liberation
 
 # Node, the same tarball .node_setup uses, checked against the recorded digest
-# before anything in it is extracted
+# before anything in it is extracted. Its bundled npm is used as is.
 if [ "$(node --version 2>/dev/null || true)" != "$NODE_VERSION" ]; then
   curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o "$WORK/node.tar.xz"
   echo "${NODE_SHA256}  $WORK/node.tar.xz" | sha256sum -c -
   tar -xJf "$WORK/node.tar.xz" -C /usr/local --strip-components=1
-  npm install -g "npm@${NPM_VERSION}"
 fi
 node --version
 

@@ -502,10 +502,12 @@ that is observability only, with no effect on what the model sees.
 > note telling the shard that its text already holds only its own pages (header block
 > included, so `parse_table` keeps the column headers) and that the block's table and
 > row totals are section-wide, so parsing fewer rows is correct for a shard.
-> The single-pass text is byte-identical to what produced the numbers on this page —
-> a unit test asserts the block against the pre-refactor literal — so those numbers
-> remain valid as the pre-change baseline. **The token saving on the sharded path is
-> unmeasured**: confirming it needs the `advscale` arm re-run before and after on a
+> The numbers on this page were measured with an instruction that told the agent to
+> pass its pages' text to `parse_table`. The block has since changed: `parse_table`
+> parses the section's own OCR text, and the block tells the agent to call it with no
+> `table_text` (a unit test pins the current wording). These numbers remain valid as
+> the baseline from before that change, not as a measurement of the current text.
+> **The token saving on the sharded path is unmeasured**: confirming it needs the `advscale` arm re-run before and after on a
 > live stack. The expected direction (fewer Extraction output tokens, recall
 > unchanged at 1.000) is inferred from the 1,512,506 → 681,222 output-token drop
 > measured below for the analogous single-pass fix, not observed for this change.

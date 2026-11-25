@@ -9,6 +9,7 @@
 // which opens the item while the document is in review.
 import React, { useCallback, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { defineMessages, useIntl } from 'react-intl';
 
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
 import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
@@ -21,6 +22,21 @@ import useUserRole from '../hooks/use-user-role';
 import { queuePageTrail } from '../components/review-queues/breadcrumbs';
 import RequireRole from './RequireRole';
 import { MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditPath, productionQueuePath } from './constants';
+
+const messages = defineMessages<{ testSetCrumb: { readonly name: string } }>({
+  testSetCrumb: {
+    id: 'routes.reviewQueues.testSetCrumb',
+    defaultMessage: 'Test set: {name}',
+    description: 'Breadcrumb of a test set’s queue page, after Review Management or Home › Queues. {name} is the test set’s name.',
+  },
+});
+
+/** The Cognito groups that open Review Management (group names, not display text). */
+const ADMIN_ROLES = ['Admin'] as const;
+/** The Cognito groups that open a test set's items and its queue page (group names, not display text). */
+const TEST_SET_ROLES = ['Admin', 'Annotator', 'Author'] as const;
+/** The Cognito groups that open a Production queue's page (group names, not display text). */
+const QUEUE_ROLES = ['Admin', 'Annotator', 'Reviewer'] as const;
 
 /**
  * A Production item's former route, which Inbox messages (kept up to a year) and copied
@@ -53,7 +69,8 @@ const TestSetQueuePage = (): React.JSX.Element => {
   const onName = useCallback((name: string) => setLoaded({ id: testSetId, name }), [testSetId]);
   const name = loaded?.id === testSetId ? loaded.name : testSetId;
   const { isAdmin } = useUserRole();
-  const trail = queuePageTrail(!!isAdmin, { text: `Test set: ${name}`, href: '#' }, 'test');
+  const intl = useIntl();
+  const trail = queuePageTrail(!!isAdmin, { text: intl.formatMessage(messages.testSetCrumb, { name }), href: '#' }, 'test', intl);
   return (
     <ReviewQueuesLayout trail={trail} tools={<QueueToolsPanel />}>
       <AnnotationWorkspace key={testSetId} onName={onName} />
@@ -68,7 +85,8 @@ const ProductionQueuePage = (): React.JSX.Element => {
   const onName = useCallback((name: string) => setLoaded({ id: queue, name }), [queue]);
   const name = loaded?.id === queue ? loaded.name : queue;
   const { isAdmin } = useUserRole();
-  const trail = queuePageTrail(!!isAdmin, { text: name, href: '#' }, 'production');
+  const intl = useIntl();
+  const trail = queuePageTrail(!!isAdmin, { text: name, href: '#' }, 'production', intl);
   return (
     <ReviewQueuesLayout trail={trail} tools={<QueueToolsPanel />}>
       <ReviewQueuePage onName={onName} />
@@ -86,7 +104,7 @@ const LegacyProductionQueueRedirect = (): React.JSX.Element => {
 const AdminOnly = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const { isAdmin, isQueueWorker, loading } = useUserRole();
   if (!loading && !isAdmin && isQueueWorker) return <Navigate to={MY_TASKS_PATH} replace />;
-  return <RequireRole roles={['Admin']}>{children}</RequireRole>;
+  return <RequireRole roles={ADMIN_ROLES}>{children}</RequireRole>;
 };
 
 const ReviewManagementRoutes = (): React.JSX.Element => (
@@ -117,7 +135,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId/items/:objectKey"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
+          <RequireRole roles={TEST_SET_ROLES}>
             <TestSetItemPage />
           </RequireRole>
         }
@@ -126,7 +144,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="queues/:queue"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Reviewer']}>
+          <RequireRole roles={QUEUE_ROLES}>
             <ProductionQueuePage />
           </RequireRole>
         }
@@ -134,7 +152,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="queues/:profile/:queue"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Reviewer']}>
+          <RequireRole roles={QUEUE_ROLES}>
             <LegacyProductionQueueRedirect />
           </RequireRole>
         }
@@ -142,7 +160,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
+          <RequireRole roles={TEST_SET_ROLES}>
             <TestSetQueuePage />
           </RequireRole>
         }
