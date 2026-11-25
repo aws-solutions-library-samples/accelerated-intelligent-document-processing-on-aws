@@ -5,10 +5,10 @@
 | Field | Value |
 |-------|-------|
 | **Document Version** | 3.4 |
-| **Last Updated** | 2026-11-09 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 120 |
+| **Total Threats Identified** | 123 |
 
 ## 1. Risk Scoring Methodology
 
@@ -141,9 +141,11 @@
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
 | CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Mitigated** — no route reads an identity from the request body |
 | FEAT.T04 | Stale or Downgraded Feature Bundle Served to Users | **3** | Feature Platform | Partially Mitigated |
+| FEAT.T06 | An Extension Builds Third-Party Code and Model Weights into an In-Account Image | **3** | Feature Platform | Partially Mitigated |
 | HITL.T02 | Reviewer-Controlled Drafts Become the Document's Final Output | **3** | Review Queues | Partially Mitigated |
 | HITL.T04 | Resolvers Serving Annotator Operations Hold Write Grants on Authorization and Workflow State | **3** | Review Queues | Partially Mitigated |
 | HITL.T05 | Bulk Skip All Reviews Releases Unreviewed Output at Scale | **3** | Review Queues | Partially Mitigated |
+| HITL.T06 | Routing Rules and Run Options Decide Which Documents a Person Reviews | **3** | Review Queues | Partially Mitigated |
 | HOOK.T03 | Inference Hook Result Tampering | **3** | Lambda Hooks | Mitigated |
 | HOOK.T05 | Privilege Escalation via Hook IAM Role | **3** | Lambda Hooks | Mitigated |
 | HOOK.T08 | Decision Model Answers Set Classification and Confidence Without an Independent Check | **3** | Lambda Hooks | Partially Mitigated |
@@ -181,6 +183,7 @@
 | KB.T03 | Vector Store Data Exposure | **2** | Knowledge Base | Partially Mitigated |
 | MCP.T06 | AgentCore Gateway Lifecycle Attacks | **2** | MCP Integration | Mitigated |
 | PM.T07 | Few-Shot Example Poisoning | **2** | Pipeline Mode | Mitigated |
+| PM.T10 | Caller-Supplied Document Attributes Are Untrusted Metadata Carried to Results | **2** | Pipeline Mode | Partially Mitigated |
 | RPT.T01 | Reporting Data Tampering | **2** | Reporting/Analytics | Mitigated |
 | RPT.T03 | Glue Catalog Manipulation | **2** | Reporting/Analytics | Mitigated |
 | SELL.T07 | Product-Existence Oracle | **2** | Seller Entitlement Service | Mitigated |
@@ -192,11 +195,11 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (120 Threats)
+pie title Risk Distribution (123 Threats)
     "Critical (8-9)" : 8
     "High (6-7)" : 33
-    "Medium (3-5)" : 61
-    "Low (1-2)" : 18
+    "Medium (3-5)" : 63
+    "Low (1-2)" : 19
 ```
 
 ### By Component
@@ -207,20 +210,20 @@ pie title Risk Distribution (120 Threats)
 | Authentication/RBAC | 0 | 6 | 9 | 1 | 16 |
 | BDA Mode | 0 | 0 | 3 | 2 | 5 |
 | Companion Chat | 1 | 1 | 4 | 0 | 6 |
-| Feature Platform | 1 | 1 | 1 | 2 | 5 |
+| Feature Platform | 1 | 1 | 2 | 2 | 6 |
 | Jobs API | 0 | 1 | 2 | 0 | 3 |
 | Knowledge Base | 0 | 2 | 1 | 1 | 4 |
 | Lambda Hooks | 1 | 2 | 7 | 0 | 10 |
 | MCP Integration | 1 | 2 | 3 | 1 | 7 |
 | PII Anonymization | 0 | 2 | 3 | 0 | 5 |
-| Pipeline Mode | 2 | 1 | 5 | 1 | 9 |
+| Pipeline Mode | 2 | 1 | 5 | 2 | 10 |
 | Reporting/Analytics | 0 | 3 | 3 | 2 | 8 |
-| Review Queues | 0 | 0 | 3 | 2 | 5 |
+| Review Queues | 0 | 0 | 4 | 2 | 6 |
 | SDK/CLI | 0 | 3 | 6 | 0 | 9 |
 | Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
 | Tenant Isolation | 0 | 1 | 3 | 1 | 5 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **8** | **33** | **61** | **18** | **120** |
+| **Total** | **8** | **33** | **63** | **19** | **123** |
 
 ### By STRIDE Category
 
@@ -230,18 +233,18 @@ than the threat total.
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
 | **Spoofing** | 17 | Critical |
-| **Tampering** | 48 | Critical |
+| **Tampering** | 51 | Critical |
 | **Repudiation** | 7 | High |
-| **Information Disclosure** | 47 | Critical |
+| **Information Disclosure** | 49 | Critical |
 | **Denial of Service** | 22 | High |
-| **Elevation of Privilege** | 42 | Critical |
+| **Elevation of Privilege** | 43 | Critical |
 
 ### Mitigation Status
 
 | Status | Count | Description |
 |--------|-------|-------------|
 | **Mitigated** | 63 | Controls implemented and verified |
-| **Partially Mitigated** | 52 | Some controls in place, additional measures recommended |
+| **Partially Mitigated** | 55 | Some controls in place, additional measures recommended |
 | **Open** | 1 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 

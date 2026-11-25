@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.4 |
-| **Last Updated** | 2026-11-09 |
+| **Document Version** | 3.5 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 120 |
+| **Total Threat IDs** | 123 |
 
 ## 1. Threat ID Naming Convention
 
@@ -36,7 +36,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 
 ## 2. Complete Threat ID Reference
 
-### PM — Pipeline Mode (9 threats)
+### PM — Pipeline Mode (10 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -49,6 +49,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | PM.T07 | Few-shot example poisoning | Tampering | 2 (Low) |
 | PM.T08 | Document content sent to a non-Anthropic model family (OpenAI via `bedrock-mantle`) | ID | 4 (Medium) |
 | PM.T09 | Weaponized document exploits a file parser on the processing path | EoP, DoS | 3 (Medium) |
+| PM.T10 | Caller-supplied document attributes are untrusted metadata carried to results | Tampering, ID | 2 (Low) |
 
 ### BDA — BDA Mode (5 threats)
 
@@ -188,7 +189,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | RPT.T07 | Ground-truth tampering via the Test Set visual editor | Tampering, Repudiation | 6 (High) |
 | RPT.T08 | Extended data retention via document version history | ID | 3 (Medium) |
 
-### FEAT — Feature Platform (5 threats)
+### FEAT — Feature Platform (6 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -197,6 +198,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | FEAT.T03 | Feature stack IAM privilege and host resource access | EoP, Tampering | 6 (High) |
 | FEAT.T04 | Stale or downgraded feature bundle served to users | Tampering, DoS | 3 (Medium) |
 | FEAT.T05 | Test Set Generator's model-written HTML reaches the network while rendering | ID, Tampering | 2 (Low) |
+| FEAT.T06 | An extension builds third-party code and model weights into an in-account image | Tampering, ID | 3 (Medium) |
 
 ### JOB — Jobs API (3 threats)
 
@@ -234,7 +236,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SELL.T09 | Customer roster disclosure | ID | 4 (Medium) |
 | SELL.T10 | Allow-list bypass left enabled in production | EoP | 4 (Medium) |
 
-### HITL — Review Queues (5 threats)
+### HITL — Review Queues (6 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -243,6 +245,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | HITL.T03 | Review metadata reaches readers beyond the queue's audience | ID | 2 (Low) |
 | HITL.T04 | Resolvers serving Annotator operations hold write grants on authorization and workflow state | EoP | 3 (Medium) |
 | HITL.T05 | Bulk Skip All Reviews releases unreviewed output at scale | Tampering, R, DoS | 3 (Medium) |
+| HITL.T06 | Routing rules and run options decide which documents a person reviews | Tampering, EoP | 3 (Medium) |
 
 ### TEN — Tenant Isolation (5 threats)
 
