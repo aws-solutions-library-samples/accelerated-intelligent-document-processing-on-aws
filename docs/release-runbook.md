@@ -181,6 +181,9 @@ earlier copy of an overwritten key if you ever need to.
 
 ### Step 1 — Stamp the version
 
+`.claude/skills/prep-develop-for-release/SKILL.md` runs Steps 1 and 2 and the checks in
+1.2 in one request, and stops before Step 3.
+
 ```bash
 make version V=<x.y.z>
 cat VERSION                      # must print exactly <x.y.z>
