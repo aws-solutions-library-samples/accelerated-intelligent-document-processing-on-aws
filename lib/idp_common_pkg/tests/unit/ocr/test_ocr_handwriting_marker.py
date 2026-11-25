@@ -7,10 +7,10 @@ These use the real ``textractor`` library on synthetic Textract responses, so
 they cover the actual markdown conversion (plain lines and table cells), not a
 mock of it.
 
-The fixtures follow what Textract returns: ``TextType`` is set on WORD blocks,
-not on the LINE that owns them, so handwriting is read from a LINE's WORD
-children. ``test_lines_carry_no_texttype_like_real_textract`` pins that fixture
-shape.
+The fixtures follow the response shape in the Textract developer guide
+(https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html): ``TextType`` is on the WORD blocks and not on the LINE that owns them,
+so handwriting is read from a LINE's WORD children.
+``test_lines_carry_no_texttype_like_real_textract`` pins that fixture shape.
 """
 
 import copy
@@ -48,7 +48,7 @@ def _line_blocks(key, words, top):
     """A LINE block and its WORD blocks.
 
     ``words`` is a list of (text, TextType) pairs. As in real Textract output,
-    the TextType goes on the WORD blocks only.
+    the TextType goes on the WORD blocks.
     """
     word_ids = [f"{key}_w{i}" for i in range(len(words))]
     line = {

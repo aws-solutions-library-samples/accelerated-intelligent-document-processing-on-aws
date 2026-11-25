@@ -724,6 +724,23 @@ class TestReadingAPrintedPageNumber:
         reading = read_printed_page_number(text)
         assert (reading.number, reading.total) == (2, 5)
 
+    @pytest.mark.parametrize(
+        "footer, number, total",
+        [
+            ("Page 2 (HANDWRITING)", 2, None),
+            ("2 (HANDWRITING)", 2, None),
+            ("Rev. 01/2026 Page 2 (HANDWRITING)", 2, None),
+            ("Page 2 of 5 (HANDWRITING)", 2, 5),
+            ("**Page 2** (HANDWRITING)", 2, None),
+        ],
+    )
+    def test_a_page_number_marked_as_handwriting_is_read(self, footer, number, total):
+        """ocr.mark_handwriting puts "(HANDWRITING)" after a number Textract typed
+        as handwriting (a hand-numbered packet, a stamp). It is still the number."""
+        text = "\n\n".join([f"{BODY}\n{footer}", HANDWRITING_LEGEND])
+        reading = read_printed_page_number(text)
+        assert (reading.number, reading.total) == (number, total)
+
     def test_a_note_header_inside_the_page_text_is_not_a_note(self):
         """Only a header after a blank line starts a note; the same text inside a
         paragraph is page text."""

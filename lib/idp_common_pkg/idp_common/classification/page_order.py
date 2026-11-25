@@ -157,8 +157,19 @@ def _without_ocr_notes(text: str) -> str:
     return text[: match.start()] if match else text
 
 
+# The in-line marker ocr.mark_handwriting puts after handwritten words. A page
+# number Textract typed as handwriting ("Page 2 (HANDWRITING)") is still the page
+# number, so the marker is removed before a line is matched. Kept as a literal
+# here rather than imported from idp_common.ocr, so the two packages stay
+# independent.
+_HANDWRITING_MARKER_RE = re.compile(r"[ \t]*\(HANDWRITING\)")
+
+
 def _zone_lines(text: str) -> List[str]:
-    lines = [line.strip(_DECORATION) for line in _without_ocr_notes(text).splitlines()]
+    lines = [
+        _HANDWRITING_MARKER_RE.sub("", line).strip(_DECORATION)
+        for line in _without_ocr_notes(text).splitlines()
+    ]
     lines = [line for line in lines if line]
     if len(lines) <= 2 * ZONE_LINES:
         return lines
