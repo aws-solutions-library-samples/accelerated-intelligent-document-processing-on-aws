@@ -24,15 +24,16 @@ Trigger phrases: "release 0.6.17", "ship the release", "do the release now".
 
 `DRY_RUN=1` prints every command and runs only the read-only checks; with a dirty tree or
 before the tag exists it reports those as warnings instead of stopping. Each phase asks
-the user to type the version before its first public change; `--yes` on the script skips
-that.
+the user to type the version before its first public change. Without a terminal, which
+includes the Bash tool and `!` commands, pass `CONFIRM=<x.y.z>` instead.
 
 ## Procedure
 
 1. **Dry run.** `make release DRY_RUN=1`. Report any `STOPPED:` line and stop there.
-2. **Phase `git`.** The script asks for the version to be typed. The Bash tool cannot
-   answer a prompt, so either the user runs `! make release` themselves, or, if the
-   user's request said to go ahead, run `python3 scripts/release.py --phase git --yes`.
+2. **Phase `git`.** The script asks for the version to be typed at a terminal. Neither
+   the Bash tool nor a `!` command has one, so pass the version instead:
+   `make release CONFIRM=<x.y.z>`. The user can run that as `! make release CONFIRM=<x.y.z>`;
+   run it yourself only if the user's request said to go ahead.
 3. **Credentials.** Ask the user to paste the publishing account's temporary
    credentials into the session (`! export AWS_ACCESS_KEY_ID=...` and the rest), and
    for the account id if `RELEASE_ACCOUNT_ID` is not set. Never write the account id into
@@ -41,8 +42,7 @@ that.
    account check guards.
 4. **Phase `publish`.** The publish takes a long time, so run it in the background and
    wait for the notification rather than polling:
-   `RELEASE_ACCOUNT_ID=<id> python3 scripts/release.py --phase publish --yes`.
-   Use `--yes` only when the user asked for the release in this request.
+   `RELEASE_ACCOUNT_ID=<id> make release PHASE=publish CONFIRM=<x.y.z>`.
 5. **Report.** Give the release URL (`gh release view v<x.y.z> --json url`), the
    verification result per Region, the docs deploy result, and the new `develop`
    version and commit. Check that the *Solution profile release asset* workflow

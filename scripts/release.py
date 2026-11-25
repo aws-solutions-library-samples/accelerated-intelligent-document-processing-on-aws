@@ -52,6 +52,7 @@ LOG_DIR = ROOT / "scratch"
 FINAL = re.compile(r"^\d+\.\d+\.\d+$")
 
 DRY_RUN = False
+CONFIRMED = ""
 
 
 class ReleaseError(Exception):
@@ -271,9 +272,22 @@ def preflight_publish(version: str, account: str | None) -> None:
 
 # ---------------------------------------------------------------------- phases
 def confirm(version: str, what: str, assume_yes: bool) -> None:
-    if DRY_RUN or assume_yes:
+    """Require the version typed at a prompt, or given as --confirm / CONFIRM=."""
+    if DRY_RUN or assume_yes or CONFIRMED == version:
         return
-    answer = input(f"\n{what}\nType {version} to proceed: ").strip()
+    if CONFIRMED:
+        raise ReleaseError(
+            f"CONFIRM={CONFIRMED} does not match VERSION {version}; nothing was changed."
+        )
+    if not sys.stdin.isatty():
+        raise ReleaseError(
+            f"{what}\nNo terminal to confirm at; nothing was changed. Rerun with CONFIRM={version} "
+            "(make release CONFIRM=" + version + ")."
+        )
+    try:
+        answer = input(f"\n{what}\nType {version} to proceed: ").strip()
+    except EOFError:
+        answer = ""
     if answer != version:
         raise ReleaseError("Not confirmed; nothing was changed by this step.")
 
@@ -498,7 +512,7 @@ def phase_post(version: str, skip_docs: bool = False, skip_bump: bool = False) -
 
 
 def main() -> int:
-    global DRY_RUN
+    global DRY_RUN, CONFIRMED
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -520,12 +534,19 @@ def main() -> int:
         "--yes", action="store_true", help="skip the type-the-version confirmation"
     )
     p.add_argument(
+        "--confirm",
+        default="",
+        metavar="X.Y.Z",
+        help="confirm without a prompt; must equal VERSION",
+    )
+    p.add_argument(
         "--account",
         default=os.environ.get("RELEASE_ACCOUNT_ID"),
         help="publishing account id",
     )
     a = p.parse_args()
     DRY_RUN = a.dry_run
+    CONFIRMED = a.confirm.strip()
     try:
         version = read_version()
         say(f"Release v{version}, phase {a.phase}{' (dry run)' if DRY_RUN else ''}")

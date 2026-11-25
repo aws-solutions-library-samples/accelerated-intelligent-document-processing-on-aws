@@ -1992,12 +1992,12 @@ fastcommit: fastlint ## Fast lint only, auto-generate commit message, commit, an
 	git push
 
 ##@ Release
-# Usage: make release [PHASE=git|publish|post] [DRY_RUN=1] [SKIP_DOCS=1] [SKIP_BUMP=1]
+# Usage: make release [PHASE=git|publish|post] [CONFIRM=x.y.z] [DRY_RUN=1] [SKIP_DOCS=1] [SKIP_BUMP=1]
 # See scripts/release.py and .claude/skills/release/SKILL.md. PHASE=publish needs
 # RELEASE_ACCOUNT_ID and the publishing account's credentials in the environment.
 .PHONY: release
 release: ## Merge develop to main, tag, publish, create the GitHub Release (PHASE=git|publish|post)
-	@$(PYTHON) scripts/release.py --phase $(or $(PHASE),git) $(if $(DRY_RUN),--dry-run) $(if $(SKIP_DOCS),--skip-docs) $(if $(SKIP_BUMP),--skip-bump)
+	@$(PYTHON) scripts/release.py --phase $(or $(PHASE),git) $(if $(DRY_RUN),--dry-run) $(if $(SKIP_DOCS),--skip-docs) $(if $(SKIP_BUMP),--skip-bump) $(if $(CONFIRM),--confirm $(CONFIRM))
 
 ##@ Version Management
 # Usage: make version V=0.6.0
