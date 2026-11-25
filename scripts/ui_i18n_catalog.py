@@ -209,6 +209,12 @@ def todo(layout: review.Layout, locale: str) -> int:
         hint += (
             f", or delete the stale ones with make ui-i18n-drop-stale LOCALE={locale}"
         )
+    dead = len(dead_ids(english, catalog))
+    if dead:
+        hint += (
+            f"; make ui-i18n-drop-stale LOCALE={locale} deletes the {dead} dead "
+            f"entr{'y' if dead == 1 else 'ies'}, which en.json no longer has"
+        )
     print(hint, file=sys.stderr)
     return 0
 
@@ -298,9 +304,10 @@ def ingest(layout: review.Layout, locale: str, source: Path) -> int:
     missing = len(set(english) - set(catalog))
     stale = len(stale_ids(english, catalog))
     if missing or stale:
+        gate = " (the catalog gate fails on the stale ones)" if stale else ""
         print(
-            f"  still to translate: {missing} missing, {stale} stale (the catalog gate "
-            f"fails on these); make ui-i18n-todo LOCALE={locale} lists them"
+            f"  still to translate: {missing} missing, {stale} stale{gate}; "
+            f"make ui-i18n-todo LOCALE={locale} lists them"
         )
     return 1 if refused else 0
 
