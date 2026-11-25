@@ -185,7 +185,7 @@ version, another language parsing the same JSON.
 
 - [ ] **Write down the one fact your change is safe because of**, and take it as
       far as is cheap down the ladder in
-      [pr-review.md](pr-review.md#name-the-fact-the-change-is-safe-because-of):
+      [pr-review.md](../pr-review/SKILL.md#name-the-fact-the-change-is-safe-because-of):
       asserted, cited, walked, run, reproduced. For a change you are not sure
       of, "run" is one small script that imports the real code and fails loudly
       if the fact is false. Put the fact and its level in the PR body; say

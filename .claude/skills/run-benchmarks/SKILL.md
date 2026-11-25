@@ -348,7 +348,7 @@ skipped cell must appear in `meta.json`, not vanish.
 
 Use this for every accuracy, cost, token or latency figure that will go into a
 paper, a PR body or a decision between configurations, and for the live A/Bs in
-[live-eval-and-cost.md](live-eval-and-cost.md). First write down the sentence
+[live-eval-and-cost.md](../live-eval-and-cost/SKILL.md). First write down the sentence
 you expect to ship ("advanced extraction is 4 points more accurate on the
 500-row bank statements at 1.8x the cost"); the questions below test that
 sentence. For a quick ballpark the user asked for, one run is enough, but still
