@@ -19,7 +19,7 @@ Normally invoked via `make security-results` (which runs the tests first, then
 calls this) — see `scripts/security/run_security_tests.sh`. Run this script
 directly to (re-)curate from reports already in scratch/ without re-running the
 tests. See `security/test-results/README.md` for the process and
-`.claude/skills/curate-security-results.md` for the operator runbook.
+`.claude/skills/curate-security-results/SKILL.md` for the operator runbook.
 
 Design notes:
   * PUBLIC-SAFE BY CONSTRUCTION. We never copy raw report files. We parse them
@@ -264,9 +264,7 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
     # demoted findings are listed in their own section.
     open_high, name_scoped = partition_by_name_heuristic_scope(open_high, REPO_ROOT)
     gate = (
-        "PASS ✅"
-        if not open_high
-        else f"FAIL ❌ ({len(open_high)} open/reopened HIGH)"
+        "PASS ✅" if not open_high else f"FAIL ❌ ({len(open_high)} open/reopened HIGH)"
     )
 
     # Which analyzers actually ran, and how much each contributed — the
@@ -610,7 +608,7 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
         "",
         'Each suite maps to the AppSec "Minimum Mandatory Security Focused Test '
         'Cases for APIs" checklist item (see the '
-        "[api-rbac-test skill](../../../.claude/skills/api-rbac-test.md)).",
+        "[api-rbac-test skill](../../../.claude/skills/api-rbac-test/SKILL.md)).",
         "",
         "| Suite | Checklist | Checks | Pass | Hard fail | Not run | Skipped "
         "| Known-gap |",
@@ -741,11 +739,7 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
         "inconclusive": len(inconclusive),
         "skipped": len(skipped),
         "gate": (
-            "fail"
-            if hard
-            else "pass-with-reservations"
-            if inconclusive
-            else "pass"
+            "fail" if hard else "pass-with-reservations" if inconclusive else "pass"
         ),
     }
 

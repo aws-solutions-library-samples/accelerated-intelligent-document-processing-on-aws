@@ -60,7 +60,7 @@ _REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|ca|global|us-gov)\.")
 #: selectable. It decides one thing only: whether a ``pricing.yaml`` entry must be
 #: retained. A model this solution never offered cannot appear in anyone's
 #: historical cost report, so it needs no rate — and inventing one would breach
-#: the "never invent model facts" rule in ``.claude/skills/add-model.md``.
+#: the "never invent model facts" rule in ``.claude/skills/add-model/SKILL.md``.
 RETIRED_MODELS: Dict[str, Dict[str, Any]] = {
     "us.amazon.nova-premier-v1:0": {
         "was_offered": True,

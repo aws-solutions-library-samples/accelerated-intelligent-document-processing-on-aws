@@ -25,10 +25,10 @@ README for the curation process).
 
 | Test | Goal / coverage | Run with | Owning script | Skill |
 |------|-----------------|----------|---------------|-------|
-| **SRT** — SAST & dependency scan | Static analysis (Bandit, Semgrep, Checkov), dependency inventory (Syft), and a security-matrix review across the whole repo. Gate = any **HIGH** finding whose `status` is `Open` **or `reopened`** — `reopened` is what SRT records when a finding it had marked resolved/suppressed is detected again, so only `suppressed`/`resolved` are accepted dispositions. | `make srt-scan` (or `make srt`) | `scripts/srt/run.py`; suppression register `scripts/srt/issues.json` | [`srt-security-scan.md`](../.claude/skills/srt-security-scan.md) |
-| **ZAP DAST** — dynamic API scan | OWASP ZAP baseline/active scan of the deployed UI API (`POST /op/{field}`), seeded from a generated OpenAPI spec of every operation. Gate = any **High** alert. | `make stacktest-zap STACK_NAME=…` | `scripts/sdlc/run_stacktest.py zapdast`; rules `scripts/sdlc/zap-rules.conf` | [`run-stack-tests.md`](../.claude/skills/run-stack-tests.md) |
-| **RBAC static** — authorization scan | Offline (no AWS, CI-safe) cross-check of the API op universe vs. schema `@aws_cognito_user_pools` directives vs. the expectations file, catching drift and missing server-side checks. | `make api-test-static` | `scripts/sdlc/scan_api_rbac.py`; expectations `scripts/api_rbac_expectations.yaml` | [`api-rbac-test.md`](../.claude/skills/api-rbac-test.md) |
-| **RBAC dynamic** — live authorization tests | Against a deployed stack: temporary Cognito users (one per group + config-version-scoped Author + a second user for IDOR) exercise every op × every role + unauthenticated + malformed/expired tokens, plus the AppSec mandatory-cases checklist (IDOR, token lifecycle, TLS, input validation, deleted-resource). Gate = any hard failure. | `make api-test STACK_NAME=…` | `scripts/test_api_rbac.py` | [`api-rbac-test.md`](../.claude/skills/api-rbac-test.md) |
+| **SRT** — SAST & dependency scan | Static analysis (Bandit, Semgrep, Checkov), dependency inventory (Syft), and a security-matrix review across the whole repo. Gate = any **HIGH** finding whose `status` is `Open` **or `reopened`** — `reopened` is what SRT records when a finding it had marked resolved/suppressed is detected again, so only `suppressed`/`resolved` are accepted dispositions. | `make srt-scan` (or `make srt`) | `scripts/srt/run.py`; suppression register `scripts/srt/issues.json` | [`srt-security-scan.md`](../.claude/skills/srt-security-scan/SKILL.md) |
+| **ZAP DAST** — dynamic API scan | OWASP ZAP baseline/active scan of the deployed UI API (`POST /op/{field}`), seeded from a generated OpenAPI spec of every operation. Gate = any **High** alert. | `make stacktest-zap STACK_NAME=…` | `scripts/sdlc/run_stacktest.py zapdast`; rules `scripts/sdlc/zap-rules.conf` | [`run-stack-tests.md`](../.claude/skills/run-stack-tests/SKILL.md) |
+| **RBAC static** — authorization scan | Offline (no AWS, CI-safe) cross-check of the API op universe vs. schema `@aws_cognito_user_pools` directives vs. the expectations file, catching drift and missing server-side checks. | `make api-test-static` | `scripts/sdlc/scan_api_rbac.py`; expectations `scripts/api_rbac_expectations.yaml` | [`api-rbac-test.md`](../.claude/skills/api-rbac-test/SKILL.md) |
+| **RBAC dynamic** — live authorization tests | Against a deployed stack: temporary Cognito users (one per group + config-version-scoped Author + a second user for IDOR) exercise every op × every role + unauthenticated + malformed/expired tokens, plus the AppSec mandatory-cases checklist (IDOR, token lifecycle, TLS, input validation, deleted-resource). Gate = any hard failure. | `make api-test STACK_NAME=…` | `scripts/test_api_rbac.py` | [`api-rbac-test.md`](../.claude/skills/api-rbac-test/SKILL.md) |
 
 ### Additionally: Seller Entitlement Service tests
 
@@ -142,7 +142,7 @@ the red build.
   and GitHub execute them on every merge/pull request.
 - **ZAP DAST** and **RBAC dynamic** need a live stack; they are on-demand
   `make stacktest-*` / `make api-test` targets (see
-  [`run-stack-tests.md`](../.claude/skills/run-stack-tests.md) for why they were
+  [`run-stack-tests.md`](../.claude/skills/run-stack-tests/SKILL.md) for why they were
   moved out of the always-on pipeline).
 - **Seller-service template-security + payload-fuzz** run offline per commit via
   `make test-packages-cicd`, called by the GitHub `developer-tests` workflow. Note
@@ -164,7 +164,7 @@ make security-results                                      # offline-only (SRT +
 ```
 
 **Or ask Claude Code:** *"run security tests and update results"* — it follows
-the [`curate-security-results`](../.claude/skills/curate-security-results.md)
+the [`curate-security-results`](../.claude/skills/curate-security-results/SKILL.md)
 skill.
 
 To curate from already-run reports (no re-run):

@@ -7,7 +7,7 @@ another release, prove nothing was lost, and tear it down.
 WHAT IT PROVES
 --------------
 This is the Terraform counterpart of the CloudFormation in-place upgrade test
-(``.claude/skills/test-upgrade.md``, release-validation tier E), and it answers the
+(``.claude/skills/test-upgrade/SKILL.md``, release-validation tier E), and it answers the
 one question a fresh deploy cannot: a customer who already runs release X and
 points the module at release Y keeps their documents, configuration, users and
 passwords, and the deployment still processes a document afterwards.

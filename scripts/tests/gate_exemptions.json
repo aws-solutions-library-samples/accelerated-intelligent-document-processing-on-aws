@@ -110,7 +110,7 @@
       "turnsOff": "test_agent_capabilities.py's per-output combination rule for one entry's listed outputs, and test_analytics_role_grants.py's declared-access check for one grant, per member",
       "ratchet": "count-pinned",
       "ratchetEvidence": "scripts/tests/test_agent_capabilities.py",
-      "ratchetGap": "The pin holds the set of findings, not their text: an entry's finding text or an unused grant's note can be wrong, and nothing checks that the access really is unused or the channel really is unlimited. .claude/skills/agent-capability-review.md is the audit that re-reads them."
+      "ratchetGap": "The pin holds the set of findings, not their text: an entry's finding text or an unused grant's note can be wrong, and nothing checks that the access really is unused or the channel really is unlimited. .claude/skills/agent-capability-review/SKILL.md is the audit that re-reads them."
     },
     "scripts/tests/test_config_profile_writer_wiring.py::KNOWN_WRITERS": {
       "kind": "fixture",
@@ -2874,17 +2874,6 @@
       "crossReferences": [
         "ruff.toml::extend-exclude"
       ]
-    },
-    "scripts/tests/test_repo_quality_review_skill.py::CLINE_EXEMPT": {
-      "kind": "exemption",
-      "turnsOff": "the 'every .claude skill has a .cline symlink' check",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "staleness",
-      "reason": "Each row carries its own reason. The live tiers drive real stacks; ux-test-stories.md is Claude Code only, because its pair mode starts a claude --mcp-config session and its unattended runs go through run_in_background. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
-      "memberKind": "path",
-      "ratchetEvidence": "scripts/tests/test_repo_quality_review_skill.py"
     },
     "scripts/tests/test_repo_walk_guards_prune_local_work.py::REPO_WALKING_GATES": {
       "kind": "enforced-universe",

@@ -295,7 +295,7 @@ class FakeHost:
                     "scripts/ux_runner/package-lock.json": b"{}\n",
                     "scripts/ux_runner/requirements.txt": b"\n",
                     "scripts/ux_runner/chrome_policy.json": b"{}\n",
-                    ".claude/skills/ux-test-stories.md": b"# skill\n",
+                    ".claude/skills/ux-test-stories/SKILL.md": b"# skill\n",
                     "docs-site/setup.sh": b"#!/bin/bash\n",
                 }
             return self._done(argv, 0, _tar(body), b"")
@@ -508,7 +508,9 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
         for arg in node.args
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
     }
-    skill = (REPO_ROOT / ".claude" / "skills" / "ux-test-stories.md").read_text()
+    skill = (
+        REPO_ROOT / ".claude" / "skills" / "ux-test-stories" / "SKILL.md"
+    ).read_text()
     cited = set(
         re.findall(
             r"run_in_docker\.py stories((?: --[a-z-]+(?: [^\s`-][^\s`]*)?)+)", skill

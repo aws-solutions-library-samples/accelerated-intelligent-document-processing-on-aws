@@ -41,18 +41,18 @@ See [sdlc/cfn/README.md](sdlc/cfn/README.md) for CloudFormation templates.
 |--------|---------|-------|
 | `discover_model_limits.py` | Empirically test Bedrock model max_tokens limits | `python scripts/discover_model_limits.py` |
 | `test_api_rbac.py` | Live RBAC/auth/arg-mapping test of the REST API across all Cognito roles | `python scripts/test_api_rbac.py --stack-name <stack> --region <region>` |
-| `ux_test_session.py` | Web URL and throwaway Cognito user for a browser UX review (see `.claude/skills/ux-test.md`) | `python scripts/ux_test_session.py url <stack> --region <region>` |
+| `ux_test_session.py` | Web URL and throwaway Cognito user for a browser UX review (see `.claude/skills/ux-test/SKILL.md`) | `python scripts/ux_test_session.py url <stack> --region <region>` |
 | `ux_recorder.py` | Record a UX review or a product demo as a narrated, captioned mp4 (sidecar to the ux-test and product-demo skills; see below) | `python scripts/ux_recorder.py start --stack <stack> --persona Admin --url-contains cloudfront` |
 | `ux_recorder_mcp.py` | The recorder's mark, note, pause and resume as a stdio MCP server, the only recorder control the unattended MR UX test's model holds (see `ux_runner/` below) | `python3 -I -B scripts/ux_recorder_mcp.py --out <recorder out dir>` |
 | `ux_story_mcp.py` | The `ux-story` stdio MCP server for first-time-user stories: documentation search and read, three notes, two one-shot reports, and the flow's append-only journal, the only record the verdict is judged from. With `--devtools PATH --budget N` it is the flow's only browser server, relaying twelve chrome-devtools-mcp tools behind the action budget, the commit guard and the other caps (see below) | `python3 -I -B scripts/ux_story_mcp.py --index <index.json> --out <dir> --start <start.json> [--recorder-out <recorder out dir>] [--devtools <chrome-devtools-mcp> --budget <N>]` |
 | `ux_test_proxy.py` | The MR UX test browser's egress proxy: serves the MR's UI build and tunnels only to the review stack's own hosts (see `ux_runner/` below) | `python3 -I -B scripts/ux_test_proxy.py --rules <rules.json> --build-dir src/ui/build` |
-| `demo_storyboards.yaml` | Confirmed product-demo storyboards, so a demo can be re-recorded on a later release (see `.claude/skills/product-demo.md`) | — |
+| `demo_storyboards.yaml` | Confirmed product-demo storyboards, so a demo can be re-recorded on a later release (see `.claude/skills/product-demo/SKILL.md`) | — |
 | `generate_govcloud_template.py` | Generate GovCloud-compatible template (**deprecated** — use `idp-cli publish --headless`) | `idp-cli publish --source-dir . --region <region> --headless` |
 
 ### UX review and demo recorder (`ux_recorder.py`)
 
 Turns a browser session (the agent driving the debug Chrome per
-`.claude/skills/ux-test.md` or `.claude/skills/product-demo.md`) into an mp4 with
+`.claude/skills/ux-test/SKILL.md` or `.claude/skills/product-demo/SKILL.md`) into an mp4 with
 spoken narration and an embedded subtitle track, so a review can be shown to the
 team instead of re-run, and a feature can be demonstrated without a live walkthrough.
 
@@ -97,7 +97,7 @@ recordings of a live stack show real documents and are never committed. Nor is
 anything else in the session directory: it also holds the tab's address and title,
 and a click log (`events.jsonl`, `timeline.json`) that labels clicks with text from
 the page, as the Privacy section of
-[`ux-test.md`](../.claude/skills/ux-test.md#privacy) describes. Polly receives only
+[`ux-test.md`](../.claude/skills/ux-test/SKILL.md#privacy) describes. Polly receives only
 the narration text. Stdlib plus boto3/Pillow at render time; the
 WebSocket client is vendored in `ux_recorder_cdp.py` rather than adding a
 dependency. Unit tests: `scripts/tests/test_ux_recorder.py`.
@@ -128,7 +128,7 @@ make ai-ux-browser STACK=<stack>          # only the confined browser, DevTools 
 py scripts\ux_runner\run_in_docker.py review --mr <iid>    # Windows, without make
 ```
 
-The unattended contract is [`ux-test-ci.md`](../.claude/skills/ux-test-ci.md).
+The unattended contract is [`ux-test-ci.md`](../.claude/skills/ux-test-ci/SKILL.md).
 Unit tests: `scripts/tests/test_ux_runner_*.py`, `test_ux_test_proxy.py`,
 `test_ux_recorder_mcp.py`, `test_ux_review_relay.py`, `test_ai_ux_test.py` and, for
 the two CI jobs' shape, `test_ux_test_ci_jobs.py`.
@@ -146,7 +146,7 @@ package as the MR UX test, with these modules of their own:
 - `scripts/ux_runner/story_inputs.py` — an MR's StoryInputs v1, what its stories select from: the MR UX test's record plus `CHANGELOG.md` at the merge base and the head, the head's `docs` and `src/ui` tree ids and the documentation sections the MR edits, all read from git objects by id, so a path the MR commits never opens a file, each bounded before it is read.
 - `scripts/ux_runner/story_section.py` — the MR reply, composed from structured fields alone, behind a `ux-story:` marker that neither the MR UX test's nor the AI review's marker matches.
 - `scripts/ux_runner/story_digest.py` — the nightly digest: merged shards, the history of earlier nights, and the regression rules, which compare a flow only within its series and only on nights the review stack was current and every audit clean.
-- `scripts/ux_runner/story_prompt.py` — the deterministic story prompt: a header, the brief from `.claude/skills/ux-test-stories.md`, `ux-test-stories-ci.md` whole, the untrusted-input paragraph, the persona's group and background, the task with its kind's rule, and the action and look bounds; no MR text, page text or stack identifier, and every catalogue value quoted as a JSON string. `python3 -B scripts/ux_runner/story_prompt.py show STORY@PERSONA [--scale 2]` prints one flow's prompt.
+- `scripts/ux_runner/story_prompt.py` — the deterministic story prompt: a header, the brief from `.claude/skills/ux-test-stories/SKILL.md`, `ux-test-stories-ci.md` whole, the untrusted-input paragraph, the persona's group and background, the task with its kind's rule, and the action and look bounds; no MR text, page text or stack identifier, and every catalogue value quoted as a JSON string. `python3 -B scripts/ux_runner/story_prompt.py show STORY@PERSONA [--scale 2]` prints one flow's prompt.
 - `scripts/sdlc/ai_ux_test_stories.py` — the orchestrator: precheck, run, judge, merge and digest, each flow in a confined browser of its own and judged from the journal its server wrote, locally in Docker and in CI.
 - `scripts/ux_runner/story_pair.py` — a pair session's files, written inside the browser container: the docs index, the server's start record, a one-flow run record and the flow's prompt, which the printed command passes with `--append-system-prompt-file`.
 - `scripts/ux_runner/transcript.py` — what a watched session's Claude Code session file says: the person's messages (so `assisted`) and the priced token counts per assistant message, pinned to sessions recorded offline at the pinned release in `scripts/tests/fixtures/ux_story_transcript/` (`record.py` re-records them).
@@ -164,8 +164,8 @@ py scripts\ux_runner\run_in_docker.py stories --story <id> --as <persona>   # Wi
 In CI it is the advisory `ai_ux_test_stories` job, on non-Draft MRs to `develop` that
 change `CHANGELOG.md`, and the nightly `ai_ux_test_stories_nightly` and
 `ai_ux_test_stories_digest`. The operator procedure is
-[`ux-test-stories.md`](../.claude/skills/ux-test-stories.md) and the unattended
-contract [`ux-test-stories-ci.md`](../.claude/skills/ux-test-stories-ci.md).
+[`ux-test-stories.md`](../.claude/skills/ux-test-stories/SKILL.md) and the unattended
+contract [`ux-test-stories-ci.md`](../.claude/skills/ux-test-stories-ci/SKILL.md).
 Unit tests: `scripts/tests/test_ux_test_stories_*.py`, `test_ux_story_mcp.py`,
 `test_ux_story_relay.py` and `test_ai_ux_test_stories.py`.
 

@@ -17,7 +17,7 @@
 # for each external output, a control that limits it or a finding that lists it.
 #
 # The gate checks that these declarations are complete and resolve. It does not
-# check that they are true; .claude/skills/agent-capability-review.md is the audit
+# check that they are true; .claude/skills/agent-capability-review/SKILL.md is the audit
 # that does, surface by surface.
 
 vocabulary:

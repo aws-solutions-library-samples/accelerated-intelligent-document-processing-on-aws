@@ -5,9 +5,9 @@
 
 A flow's model knows the product only through its documentation and its screens,
 and this text is everything else it is told, in this order: a short header; the
-brief from ``.claude/skills/ux-test-stories.md`` (the text strictly between its
+brief from ``.claude/skills/ux-test-stories/SKILL.md`` (the text strictly between its
 ``<!-- brief:start -->`` and ``<!-- brief:end -->`` lines, and nothing else from
-that file); ``.claude/skills/ux-test-stories-ci.md`` whole; the paragraph saying
+that file); ``.claude/skills/ux-test-stories-ci/SKILL.md`` whole; the paragraph saying
 what to treat as data (:data:`UNTRUSTED_PARAGRAPH`); who the persona is; the
 story's task, with the rule its kind adds; and the bounds of the flow. No input
 says which mode a flow runs in, so one flow gets the same bytes unattended,
@@ -80,10 +80,15 @@ if str(_HERE.parent) not in sys.path:
 
 from ux_runner import stories, tool_profiles  # noqa: E402
 
-STORY_PROMPT_REVISION = 2
+STORY_PROMPT_REVISION = 3
 SKILLS_DIR = Path(__file__).resolve().parents[2] / ".claude" / "skills"
-BRIEF_SKILL = "ux-test-stories.md"
-CONTRACT_SKILL = "ux-test-stories-ci.md"
+BRIEF_SKILL = "ux-test-stories/SKILL.md"
+CONTRACT_SKILL = "ux-test-stories-ci/SKILL.md"
+#: The names the prompt and its error messages give the two files. Each skill is
+#: ``<name>/SKILL.md``, so the path's own file name says nothing; these keep the
+#: prompt text identical to what it was before the skills moved into directories.
+BRIEF_LABEL = "ux-test-stories.md"
+CONTRACT_LABEL = "ux-test-stories-ci.md"
 BRIEF_START = "<!-- brief:start -->"
 BRIEF_END = "<!-- brief:end -->"
 SKILL_MAX_BYTES = 256 * 1024
@@ -155,8 +160,8 @@ class PromptTexts:
     ci_contract: str
 
     def __post_init__(self) -> None:
-        _check_document(self.brief, f"the brief in {BRIEF_SKILL}")
-        _check_document(self.ci_contract, CONTRACT_SKILL)
+        _check_document(self.brief, f"the brief in {BRIEF_LABEL}")
+        _check_document(self.ci_contract, CONTRACT_LABEL)
 
     @property
     def brief_sha256(self) -> str:
@@ -202,27 +207,27 @@ def brief_from(skill_text: str) -> str:
     refused.
     """
     if not isinstance(skill_text, str):
-        raise StoryPromptError(f"{BRIEF_SKILL} must be text")
+        raise StoryPromptError(f"{BRIEF_LABEL} must be text")
     text = _normalised(skill_text)
     for marker in (BRIEF_START, BRIEF_END):
         found = text.count(marker)
         if found != 1:
             raise StoryPromptError(
-                f"{BRIEF_SKILL} must hold {marker} exactly once, not {found} times"
+                f"{BRIEF_LABEL} must hold {marker} exactly once, not {found} times"
             )
     lines = text.split("\n")
     if BRIEF_START not in lines or BRIEF_END not in lines:
         raise StoryPromptError(
-            f"each brief marker in {BRIEF_SKILL} must be a line of its own"
+            f"each brief marker in {BRIEF_LABEL} must be a line of its own"
         )
     start, end = lines.index(BRIEF_START), lines.index(BRIEF_END)
     if end < start:
         raise StoryPromptError(
-            f"{BRIEF_END} comes before {BRIEF_START} in {BRIEF_SKILL}"
+            f"{BRIEF_END} comes before {BRIEF_START} in {BRIEF_LABEL}"
         )
     brief = "\n".join(lines[start + 1 : end]).strip("\n")
     if not brief.strip():
-        raise StoryPromptError(f"the brief in {BRIEF_SKILL} is empty")
+        raise StoryPromptError(f"the brief in {BRIEF_LABEL} is empty")
     return brief
 
 
@@ -280,8 +285,8 @@ def build_story_prompt(
         raise StoryPromptError(f"a story's kind is one of {', '.join(stories.KINDS)}")
     blocks = (
         _header(),
-        _inlined("brief", BRIEF_SKILL, texts.brief),
-        _inlined("contract", CONTRACT_SKILL, texts.ci_contract),
+        _inlined("brief", BRIEF_LABEL, texts.brief),
+        _inlined("contract", CONTRACT_LABEL, texts.ci_contract),
         UNTRUSTED_PARAGRAPH,
         _who(persona),
         _task(story),
@@ -379,6 +384,13 @@ def _read_at_most(descriptor: int, limit: int) -> bytes:
 
 
 def _read_skill(path: Path) -> str:
+    """The skill's text, with its YAML front matter removed.
+
+    The front matter (``name``, ``description``) is metadata for the assistants
+    that register the skill, not part of the brief or the contract, so it is not
+    inlined into the prompt.
+    """
+    label = f"{path.parent.name}.md" if path.name == "SKILL.md" else path.name
     try:
         descriptor = os.open(path, _READ_FLAGS)
         try:
@@ -387,16 +399,22 @@ def _read_skill(path: Path) -> str:
         finally:
             os.close(descriptor)
     except OSError as error:
-        raise StoryPromptError(f"cannot read {path.name}: {_reason(error)}") from None
+        raise StoryPromptError(f"cannot read {label}: {_reason(error)}") from None
     if not regular:
-        raise StoryPromptError(f"{path.name} is not a regular file")
+        raise StoryPromptError(f"{label} is not a regular file")
     if len(data) > SKILL_MAX_BYTES:
-        raise StoryPromptError(f"{path.name} is larger than {SKILL_MAX_BYTES} bytes")
+        raise StoryPromptError(f"{label} is larger than {SKILL_MAX_BYTES} bytes")
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise StoryPromptError(f"{path.name} is not UTF-8 text") from None
-    return _normalised(text)
+        raise StoryPromptError(f"{label} is not UTF-8 text") from None
+    return _without_front_matter(_normalised(text))
+
+
+def _without_front_matter(text: str) -> str:
+    """``text`` without a leading ``---`` front-matter block and the blank line after."""
+    match = re.match(r"---\n.*?\n---\n\n?", text, flags=re.DOTALL)
+    return text[match.end() :] if match else text
 
 
 def _listed(names: tuple[str, ...]) -> str:

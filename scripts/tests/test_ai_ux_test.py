@@ -3622,8 +3622,10 @@ def _headings(text: str) -> set[str]:
 
 @pytest.mark.unit
 def test_the_ci_skill_states_only_how_the_unattended_run_differs() -> None:
-    ci = (REPO_ROOT / ".claude/skills/ux-test-ci.md").read_text(encoding="utf-8")
-    interactive = (REPO_ROOT / ".claude/skills/ux-test.md").read_text(encoding="utf-8")
+    ci = (REPO_ROOT / ".claude/skills/ux-test-ci/SKILL.md").read_text(encoding="utf-8")
+    interactive = (REPO_ROOT / ".claude/skills/ux-test/SKILL.md").read_text(
+        encoding="utf-8"
+    )
     assert "ux-test.md" in ci
     assert not _headings(ci) & _headings(interactive)
     assert len(ci) < len(interactive)
@@ -3657,8 +3659,10 @@ def test_the_ci_skill_overrides_all_of_the_interactive_setup_and_its_gotchas() -
     section and in "Before you start", and the CI skill's first difference
     overrides that section whole, Gotchas included, rather than parts of it: a part
     left standing is advice about a browser the session does not have."""
-    ci = (REPO_ROOT / ".claude/skills/ux-test-ci.md").read_text(encoding="utf-8")
-    interactive = (REPO_ROOT / ".claude/skills/ux-test.md").read_text(encoding="utf-8")
+    ci = (REPO_ROOT / ".claude/skills/ux-test-ci/SKILL.md").read_text(encoding="utf-8")
+    interactive = (REPO_ROOT / ".claude/skills/ux-test/SKILL.md").read_text(
+        encoding="utf-8"
+    )
     first = re.search(r"^### 1\. [^\n]*\n(.*?)^### ", ci, re.M | re.S)
     assert first, "ux-test-ci.md no longer opens its differences with a ### 1."
     overrides = " ".join(first.group(1).split()).split(". ")[0]
@@ -3696,7 +3700,7 @@ def test_the_ci_skill_names_the_console_and_network_only_as_out_of_reach() -> No
         name = tool_profiles.mcp_tool(tool_profiles.CHROME_DEVTOOLS_SERVER, tool)
         assert name in tool_profiles.EXPERT_DISALLOWED_TOOLS, name
         assert not tool_profiles.is_granted(name), name
-    ci = (REPO_ROOT / ".claude/skills/ux-test-ci.md").read_text(encoding="utf-8")
+    ci = (REPO_ROOT / ".claude/skills/ux-test-ci/SKILL.md").read_text(encoding="utf-8")
     sentences = re.split(r"(?<=[.;:!?])\s+", " ".join(ci.split()))
     mentions = [s for s in sentences if re.search(r"\b(?:console|network)\b", s, re.I)]
     assert mentions, "ux-test-ci.md no longer says the console and network are unread"
@@ -3706,17 +3710,9 @@ def test_the_ci_skill_names_the_console_and_network_only_as_out_of_reach() -> No
 
 @pytest.mark.unit
 def test_the_ci_skill_links_only_to_files_that_exist() -> None:
-    skill = REPO_ROOT / ".claude/skills/ux-test-ci.md"
+    skill = REPO_ROOT / ".claude/skills/ux-test-ci/SKILL.md"
     targets = re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", skill.read_text("utf-8"))
     relative = [t for t in targets if "://" not in t]
     assert relative
     missing = [t for t in relative if not (skill.parent / t).exists()]
     assert not missing, f"unresolvable links: {missing}"
-
-
-@pytest.mark.unit
-def test_the_cline_entry_is_a_symlink_to_the_claude_skill() -> None:
-    entry = REPO_ROOT / ".cline/skills/ux-test-ci.md"
-    assert entry.is_symlink()
-    assert os.readlink(entry) == "../../.claude/skills/ux-test-ci.md"
-    assert entry.resolve() == (REPO_ROOT / ".claude/skills/ux-test-ci.md").resolve()

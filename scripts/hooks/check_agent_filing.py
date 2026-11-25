@@ -8,7 +8,7 @@ Registered as a ``PreToolUse`` hook on ``Bash`` in ``.claude/settings.json``,
 alongside ``check_commit_text.py`` and ``check_shared_branch.py``.
 
 **Why this is a hook rather than a sentence in a brief.** The backlog loop
-(``.claude/skills/work-the-backlog.md``) delegates one issue per subagent, and an
+(``.claude/skills/work-the-backlog/SKILL.md``) delegates one issue per subagent, and an
 agent reading unfamiliar code to verify its own change finds things. Filing them
 is the coordinator's call, for a reason that was measured rather than assumed:
 one run filed **15 issues against 1 closed** before anyone looked at the ratio,

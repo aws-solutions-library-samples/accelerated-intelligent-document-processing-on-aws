@@ -145,7 +145,7 @@ def test_retired_model_is_not_offered(model_id: str):
         f"{model_id} is retired ({reason}) but is still offered/priced here:\n  "
         + "\n  ".join(hits)
         + "\n\nRemove it from the enum / pricing entry / model list. Work "
-        ".claude/skills/add-model.md in reverse — removing a model touches the "
+        ".claude/skills/add-model/SKILL.md in reverse — removing a model touches the "
         "same files as adding one."
     )
 

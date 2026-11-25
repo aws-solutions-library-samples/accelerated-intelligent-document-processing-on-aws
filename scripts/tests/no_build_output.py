@@ -149,7 +149,7 @@ def message(changed_paths: list[str], project_root: Path, what: str) -> str:
         f"repository instead of a staging directory. `make srt-scan` degrades when "
         f"an .aws-sam directory is present, so this makes the security gate depend "
         f"on whether the test suite ran first — see issue #1491 and the chdir "
-        f"section in .claude/skills/testing-qa.md. `make srt-clean` removes it."
+        f"section in .claude/skills/testing-qa/SKILL.md. `make srt-clean` removes it."
     )
 
 

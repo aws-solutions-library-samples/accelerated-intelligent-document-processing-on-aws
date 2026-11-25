@@ -107,7 +107,7 @@ its size, when the decider's `usage.input_tokens` exceeds the estimate plus
 `PROMPT_RESERVE_TOKENS`, or when the window, the prompt or an image's cost no
 longer matches its constant. Run it after changing any of them, the estimate, a
 call site's request, or the decider's pinned model. It is live and on demand, in
-neither CI; [run-stack-tests](../../../../.claude/skills/run-stack-tests.md) has
+neither CI; [run-stack-tests](../../../../.claude/skills/run-stack-tests/SKILL.md) has
 the options.
 
 What four runs measured, in us-east-1 in November 2026, against the extension's

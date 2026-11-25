@@ -3,7 +3,7 @@
 
 """The declared standing-failure baseline, and the comparison against a real run.
 
-``.claude/skills/full-test-battery.md`` carries one table of accepted test
+``.claude/skills/full-test-battery/SKILL.md`` carries one table of accepted test
 failures and one stated count. Both used to be prose that nothing measured: the
 only check on them was that the count equalled the number of rows, so the
 document could assert a clean baseline while the tree was red and its own gate
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BATTERY = REPO_ROOT / ".claude" / "skills" / "full-test-battery.md"
+BATTERY = REPO_ROOT / ".claude" / "skills" / "full-test-battery" / "SKILL.md"
 
 BEGIN = "<!-- STANDING-FAILURES-BEGIN -->"
 END = "<!-- STANDING-FAILURES-END -->"
@@ -195,7 +195,7 @@ def describe(verdict: Verdict) -> str:
         lines += [f"     {node}" for node in verdict.unexpected]
         lines.append(
             "   Fix them. They are regressions until proved otherwise — see "
-            ".claude/skills/full-test-battery.md for the three checks that prove "
+            ".claude/skills/full-test-battery/SKILL.md for the three checks that prove "
             "it (install, order, pristine develop). If one is genuinely accepted, "
             "add a row to the accepted-failure table there naming its node id, "
             "failure mode, verified cause and date, and bump the stated count."
@@ -208,7 +208,7 @@ def describe(verdict: Verdict) -> str:
         lines += [f"     {node}" for node in verdict.resolved]
         lines.append(
             "   Delete the row from the accepted-failure table in "
-            ".claude/skills/full-test-battery.md and lower the stated count. A row "
+            ".claude/skills/full-test-battery/SKILL.md and lower the stated count. A row "
             "over a passing test is a waiver that will wave through the next real "
             "failure in that file."
         )

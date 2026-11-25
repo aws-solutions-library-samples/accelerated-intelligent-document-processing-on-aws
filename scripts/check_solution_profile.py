@@ -75,7 +75,7 @@ OCR_SERVICE = "lib/idp_common_pkg/idp_common/ocr/file_types.py"
 ROUTING_FUNCTION = "routed_file_type"
 RELEASE_SCRIPT = "scripts/aws-release.sh"
 CHANGELOG = "CHANGELOG.md"
-UPDATE_SKILL = ".claude/skills/update-solution-profile.md"
+UPDATE_SKILL = ".claude/skills/update-solution-profile/SKILL.md"
 
 #: How many of the newest CHANGELOG releases ``changes.yaml`` must cover. The
 #: contract says "keep at least the last ten releases".

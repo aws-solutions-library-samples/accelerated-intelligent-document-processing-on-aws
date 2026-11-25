@@ -61,5 +61,5 @@ General template rules are in [infrastructure.md](infrastructure.md).
   deployment modes, pipeline hook semantics and config presets
 - [docs/architecture.md](../../docs/architecture.md): how hooks, features and
   `idp_common` extras divide up the extension work
-- [.claude/skills/sync-pii-anonymizer.md](../skills/sync-pii-anonymizer.md):
+- [.claude/skills/sync-pii-anonymizer/SKILL.md](../skills/sync-pii-anonymizer/SKILL.md):
   re-syncing the vendored copy

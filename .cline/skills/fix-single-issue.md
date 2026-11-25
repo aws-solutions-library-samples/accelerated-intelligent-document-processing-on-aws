@@ -1,1 +1,0 @@
-../../.claude/skills/fix-single-issue.md

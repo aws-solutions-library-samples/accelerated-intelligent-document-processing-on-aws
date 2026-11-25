@@ -223,7 +223,8 @@ def test_a_final_version_applies_the_release_rules_and_says_what_to_do(
         "reviewed_for_version" in out and "changes: no entry for version 9.9.9" in out
     )
     assert (
-        "update-solution-profile.md" in out and "set reviewed_for_version: 9.9.9" in out
+        "update-solution-profile/SKILL.md" in out
+        and "set reviewed_for_version: 9.9.9" in out
     )
 
 

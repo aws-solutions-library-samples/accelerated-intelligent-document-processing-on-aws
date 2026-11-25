@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 #
-# User-experience flows for the UX test skill (.claude/skills/ux-test.md).
+# User-experience flows for the UX test skill (.claude/skills/ux-test/SKILL.md).
 #
 # Each flow is something a person does, with an outcome that can be checked in a
 # browser. The agent drives the UI and reports per-flow: does it work, and is it

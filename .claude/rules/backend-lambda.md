@@ -72,9 +72,9 @@ Applies to Lambda handlers under `src/lambda/` and to Python library code under
 - `cd lib/idp_common_pkg && make test-unit`, then `make test`
 
 ## Sources
-- [.claude/skills/backend-lambda.md](../skills/backend-lambda.md): the handler
+- [.claude/skills/backend-lambda/SKILL.md](../skills/backend-lambda/SKILL.md): the handler
   template, ruff and pyright settings, and the lazy-loading and mock-patch details
-- [.claude/skills/code-review.md](../skills/code-review.md): the Lambda and
+- [.claude/skills/code-review/SKILL.md](../skills/code-review/SKILL.md): the Lambda and
   DynamoDB review checklist
 - [lib/idp_common_pkg/idp_common/README.md](../../lib/idp_common_pkg/idp_common/README.md):
   the library layout and lazy submodule loading

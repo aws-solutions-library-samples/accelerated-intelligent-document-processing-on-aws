@@ -5,7 +5,7 @@
 ux_recorder.py
 
 Record a browser session as a narrated, captioned video: a UX review
-(``.claude/skills/ux-test.md``) or a product demo (``.claude/skills/product-demo.md``).
+(``.claude/skills/ux-test/SKILL.md``) or a product demo (``.claude/skills/product-demo/SKILL.md``).
 
 The review or demo itself is still done by the agent following its skill: it
 drives the debug Chrome through the chrome-devtools MCP server and decides what to
@@ -886,7 +886,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(
             f"No debug Chrome answering on 127.0.0.1:{args.port} ({exc}). "
-            "Launch it as described in .claude/skills/ux-test.md step 2.",
+            "Launch it as described in .claude/skills/ux-test/SKILL.md step 2.",
             file=sys.stderr,
         )
         return 2
@@ -926,7 +926,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(
             f"No debug Chrome answering on 127.0.0.1:{args.port} ({exc}). "
-            "Launch it as described in .claude/skills/ux-test.md step 2.",
+            "Launch it as described in .claude/skills/ux-test/SKILL.md step 2.",
             file=sys.stderr,
         )
         return 2

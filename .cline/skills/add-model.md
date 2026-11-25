@@ -1,1 +1,0 @@
-../../.claude/skills/add-model.md

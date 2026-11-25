@@ -66,11 +66,11 @@ test can actually fail. Gate exemptions are covered in
 - `make check-coverage-debt`
 
 ## Sources
-- [.claude/skills/testing-qa.md](../skills/testing-qa.md): conftest setup, the
+- [.claude/skills/testing-qa/SKILL.md](../skills/testing-qa/SKILL.md): conftest setup, the
   mutation procedure and cache trap, suite discovery and CI registration
-- [.claude/skills/code-review.md](../skills/code-review.md): the test review
+- [.claude/skills/code-review/SKILL.md](../skills/code-review/SKILL.md): the test review
   checklist
-- [.claude/skills/full-test-battery.md](../skills/full-test-battery.md): the full
+- [.claude/skills/full-test-battery/SKILL.md](../skills/full-test-battery/SKILL.md): the full
   battery and its pre-existing-failure baseline
 - [docs/testing.md](../../docs/testing.md): each test tier and its entry point,
   and whether CI runs it

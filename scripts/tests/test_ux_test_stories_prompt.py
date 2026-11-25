@@ -48,8 +48,8 @@ from ux_runner import (  # noqa: E402
 
 STORY_PROMPT_PY = SCRIPTS / "ux_runner" / "story_prompt.py"
 SKILLS = REPO_ROOT / ".claude" / "skills"
-OPERATOR_SKILL = SKILLS / "ux-test-stories.md"
-CI_CONTRACT = SKILLS / "ux-test-stories-ci.md"
+OPERATOR_SKILL = SKILLS / "ux-test-stories" / "SKILL.md"
+CI_CONTRACT = SKILLS / "ux-test-stories-ci" / "SKILL.md"
 MR_UX_TEST_SUITE = SCRIPTS / "tests" / "test_ai_ux_test.py"
 SAMPLE_LOGIN = "ux-persona-admin@example.invalid"
 SAMPLE_CREDENTIAL = "Ux!Zq7-sample-Kd29-9aZ"
@@ -136,6 +136,9 @@ SHIPPED_FLOWS: tuple[tuple[str, int], ...] = (
 PROMPT_DIGESTS: dict[int, str] = {
     1: "6ce1f9c3a5b84965f9e3a12e6143718088e89fab8491da2d9c7e1c8150cc9d4b",
     2: "d4a3c0178ce1f2f7e29acdcd518a4a618df716b8333aa64809ea4459cb7a0f60",
+    # 3: the skills moved to <name>/SKILL.md, so two relative links in the contract
+    # changed target and the contract's front matter is stripped before inlining.
+    3: "6cae88ff285f46abbe83e8223c31e81f9a1c5848c79ec6892fac087b2a68c6df",
 }
 GOLDEN_PROMPT = """\
 # A first-time-user story
@@ -208,8 +211,8 @@ def _build(
 
 def _blocks(texts: story_prompt.PromptTexts) -> tuple[str, str]:
     return (
-        f'<brief file="{story_prompt.BRIEF_SKILL}">\n{texts.brief}\n</brief>',
-        f'<contract file="{story_prompt.CONTRACT_SKILL}">\n{texts.ci_contract}\n</contract>',
+        f'<brief file="{story_prompt.BRIEF_LABEL}">\n{texts.brief}\n</brief>',
+        f'<contract file="{story_prompt.CONTRACT_LABEL}">\n{texts.ci_contract}\n</contract>',
     )
 
 
@@ -307,7 +310,8 @@ def _tool_vocabulary() -> set[str]:
 
 def _skill_dir(tmp_path: Path, *, skill: str, ci_contract: str) -> Path:
     directory = tmp_path / "skills"
-    directory.mkdir()
+    for name in (story_prompt.BRIEF_SKILL, story_prompt.CONTRACT_SKILL):
+        (directory / name).parent.mkdir(parents=True)
     (directory / story_prompt.BRIEF_SKILL).write_text(skill, encoding="utf-8")
     (directory / story_prompt.CONTRACT_SKILL).write_text(ci_contract, encoding="utf-8")
     return directory
@@ -564,8 +568,11 @@ def test_the_brief_is_what_the_skill_suite_reads_between_the_markers() -> None:
 @pytest.mark.unit
 def test_the_contract_is_inlined_whole_and_hashed_as_inlined() -> None:
     texts = story_prompt.read_texts()
-    contract = CI_CONTRACT.read_text(encoding="utf-8").strip("\n")
+    raw = CI_CONTRACT.read_text(encoding="utf-8")
+    assert raw.startswith("---\n"), "the contract lost its front matter"
+    contract = re.sub(r"\A---\n.*?\n---\n", "", raw, flags=re.DOTALL).strip("\n")
     assert texts.ci_contract == contract
+    assert "description:" not in texts.ci_contract
     prompt = _build(texts=texts)
     brief_block, contract_block = _blocks(texts)
     assert brief_block in prompt and contract_block in prompt
@@ -1087,7 +1094,8 @@ def test_read_texts_reads_both_files_and_normalises_their_line_ends(
 ) -> None:
     skill = _skill_text("Brief one.\n\nBrief two.").replace("\n", "\r\n")
     directory = tmp_path / "skills"
-    directory.mkdir()
+    for name in (story_prompt.BRIEF_SKILL, story_prompt.CONTRACT_SKILL):
+        (directory / name).parent.mkdir(parents=True)
     (directory / story_prompt.BRIEF_SKILL).write_bytes(
         b"\xef\xbb\xbf" + skill.encode("utf-8")
     )

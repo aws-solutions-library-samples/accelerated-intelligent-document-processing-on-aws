@@ -59,7 +59,7 @@ than an unattended one.
 ⚠️ **This gate checks declarations, not truth.** It cannot tell whether an entry's
 ``reads`` are complete, whether a ``control`` actually limits what the entry says it
 limits, or whether a cited test asserts anything about it. Those are the questions
-``.claude/skills/agent-capability-review.md`` asks of the code, one surface at a
+``.claude/skills/agent-capability-review/SKILL.md`` asks of the code, one surface at a
 time. What this gate guarantees is that a new surface cannot arrive without an entry,
 that an entry cannot outlive its surface, and that a declaration naming a control
 names one that exists.

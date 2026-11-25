@@ -50,7 +50,7 @@ REACH_PROBES = (
     "CHANGELOG.md",
     "README.md",
     "CLAUDE.md",
-    ".claude/skills/documentation.md",
+    ".claude/skills/documentation/SKILL.md",
     "docs/testing.md",
     "lib/idp_common_pkg/idp_common/reporting/README.md",
     "scripts/sdlc/docs/CI_TEST_COVERAGE.md",
@@ -486,7 +486,7 @@ def test_the_outer_target_of_a_linked_image_is_checked(checkout: Path) -> None:
 def test_a_link_inside_a_fenced_block_is_not_a_link(checkout: Path) -> None:
     """This is what keeps the skill files' illustrative placeholders quiet.
 
-    ``.claude/skills/prepare-changelog.md`` shows ``[text](docs/feature.md)`` as
+    ``.claude/skills/prepare-changelog/SKILL.md`` shows ``[text](docs/feature.md)`` as
     a worked example of a changelog entry, and ``documentation.md`` shows
     ``./architecture.md``. Both sit in fenced blocks, so they are not links —
     which means no list of placeholder spellings has to be maintained anywhere,
@@ -647,28 +647,28 @@ def test_a_readme_deep_under_an_unusual_tree_is_discovered(checkout: Path) -> No
 
 
 @pytest.mark.unit
-def test_a_symlinked_markdown_file_is_read_once_at_its_real_path() -> None:
-    """``.cline/skills/*.md`` are symlinks to ``.claude/skills/*.md``.
+def test_a_symlinked_markdown_file_is_read_once_at_its_real_path(
+    checkout: Path,
+) -> None:
+    """A Markdown symlink is the same bytes under a second name.
 
     Reading both would report every finding twice, the second time at a path
     whose content nobody wrote.
     """
+    _write(checkout, "real.md", "# Real\n")
+    (checkout / "alias.md").symlink_to("real.md")
+    files = set(gate.markdown_files(checkout))
+    assert "real.md" in files
+    assert "alias.md" not in files
+
+
+@pytest.mark.unit
+def test_the_agents_skills_link_adds_no_second_copy_of_the_skills() -> None:
+    """``.agents/skills`` is a directory symlink to ``.claude/skills``; git lists it
+    as one entry, so no skill is read a second time through it."""
     files = set(gate.markdown_files(REPO_ROOT))
-    symlinked = [
-        rel
-        for rel in subprocess.run(
-            ["git", "ls-files", "--", ".cline/skills"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.split()
-        if rel.endswith(".md")
-    ]
-    assert symlinked, ".cline/skills holds no Markdown; re-point this probe"
-    assert all((REPO_ROOT / rel).is_symlink() for rel in symlinked)
-    assert not files & set(symlinked)
-    assert ".claude/skills/documentation.md" in files
+    assert ".claude/skills/documentation/SKILL.md" in files
+    assert not any(rel.startswith(".agents/") for rel in files)
 
 
 @pytest.mark.unit

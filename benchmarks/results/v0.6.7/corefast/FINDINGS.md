@@ -91,7 +91,7 @@ uses** (sonnet-4-6, nova-lite, nova-2-lite, Textract). Verified by diffing
 artifact.
 
 The baseline was also measured on a *different stack* (`IDPRel066`), which the
-release-cycle procedure in `.claude/skills/run-benchmarks.md` does not sanction — it
+release-cycle procedure in `.claude/skills/run-benchmarks/SKILL.md` does not sanction — it
 prescribes deploying the previous release and upgrading the **same** stack in place.
 
 ## To redo this properly

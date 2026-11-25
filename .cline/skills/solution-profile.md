@@ -1,1 +1,0 @@
-../../.claude/skills/update-solution-profile.md

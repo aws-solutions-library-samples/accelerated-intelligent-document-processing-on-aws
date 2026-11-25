@@ -82,5 +82,5 @@ chat agent, so [agents.md](agents.md) applies too.
   and the optional test-set generator
 - [lib/idp_common_pkg/idp_common/agents/README.md](../../lib/idp_common_pkg/idp_common/agents/README.md):
   how agents are built, registered and given memory
-- [.claude/skills/ux-test-stories.md](../skills/ux-test-stories.md): writing and
+- [.claude/skills/ux-test-stories/SKILL.md](../skills/ux-test-stories/SKILL.md): writing and
   running first-time-user stories

@@ -54,7 +54,7 @@
     "feature-platform/pii-anonymizer/hook/vendor": {
       "turnsOff": "ruff lint AND format for the vendored copy of awslabs/pii-anonymizer",
       "premise": "vendored_with_provenance",
-      "reason": "Third-party source (Apache-2.0), kept byte-for-byte so that .claude/skills/sync-pii-anonymizer.md can diff it against the upstream commit pinned in its PROVENANCE.md. Reformatting it to our style would make every re-sync a manual merge.",
+      "reason": "Third-party source (Apache-2.0), kept byte-for-byte so that .claude/skills/sync-pii-anonymizer/SKILL.md can diff it against the upstream commit pinned in its PROVENANCE.md. Reformatting it to our style would make every re-sync a manual merge.",
       "ratchet": "non-vacuity + premise (PROVENANCE.md must still pin an upstream commit)",
       "ratchetGap": "the count is not pinned, because an upstream re-sync legitimately changes it. A defect introduced into the vendored tree by us rather than upstream would therefore not be caught here; the sync skill's diff-against-upstream step is what covers that.",
       "shields": {
@@ -395,7 +395,6 @@
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
     "scripts/sdlc/validate_buildspec.py",
     "scripts/sdlc/validate_service_role_permissions.py",
-    "scripts/security/curate_results.py",
     "scripts/security/live_checks/oidc_provider/deploy.py",
     "scripts/security/live_checks/verify_execution_scope.py",
     "scripts/security/live_checks/verify_idp_group_mapping.py",
@@ -407,7 +406,6 @@
     "scripts/tests/test_check_python_arn_partitions.py",
     "scripts/tests/test_contributing_doc.py",
     "scripts/tests/test_metric_namespace_alignment.py",
-    "scripts/tests/test_repo_quality_review_skill.py",
     "scripts/tests/test_scope_lookup_fail_closed.py",
     "scripts/tests/test_secure_transport_deny.py",
     "scripts/tests/test_state_machine_retry_policies.py",
@@ -484,6 +482,6 @@
   "highWaterMark": {
     "lintDebtFiles": 70,
     "lintFindings": 170,
-    "formatDebtFiles": 154
+    "formatDebtFiles": 152
   }
 }

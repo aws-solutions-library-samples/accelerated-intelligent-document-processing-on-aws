@@ -765,7 +765,7 @@ class TestTemplateUrlTable:
             "Add the Region to both, plus all three Launch Stack tables "
             "(README.md, docs/deployment.md, "
             "workshop/amazon-quick-integration-workshop.md) and the Templates "
-            "block in .claude/skills/cut-release-changelog.md."
+            "block in .claude/skills/cut-release-changelog/SKILL.md."
         )
 
     @pytest.mark.parametrize(

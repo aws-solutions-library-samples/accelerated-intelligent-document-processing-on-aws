@@ -5,7 +5,7 @@
 
 The unattended MR UX test (``scripts/sdlc/ai_ux_test.py``) runs Claude Code with
 no built-in tools at all, so the model cannot run ``ux_recorder.py mark ...`` the
-way the interactive skill (``.claude/skills/ux-test.md``) has it do. This server
+way the interactive skill (``.claude/skills/ux-test/SKILL.md``) has it do. This server
 gives it the four commands a recorded session needs, ``mark``, ``note``,
 ``pause`` and ``resume``, as MCP tools, and forwards each one over the recorder's
 existing Unix socket, which it finds through the ``current.json`` the recorder
