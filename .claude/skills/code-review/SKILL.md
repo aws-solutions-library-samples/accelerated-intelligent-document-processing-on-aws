@@ -176,6 +176,21 @@ makes a mutation silently lie about its own result, is in
       because the last iteration failed too, and so certified a fix while
       measuring nothing.
 
+### What could this break outside the diff?
+
+The tests above cover the code you changed. They say nothing about a consumer
+the diff does not show: a UI field reading a renamed key, a nested stack
+consuming a parameter, a stored config or DynamoDB record written by the old
+version, another language parsing the same JSON.
+
+- [ ] **Write down the one fact your change is safe because of**, and take it as
+      far as is cheap down the ladder in
+      [pr-review.md](../pr-review/SKILL.md#name-the-fact-the-change-is-safe-because-of):
+      asserted, cited, walked, run, reproduced. For a change you are not sure
+      of, "run" is one small script that imports the real code and fails loudly
+      if the fact is false. Put the fact and its level in the PR body; say
+      **unproven** when it stopped at "cited".
+
 ## Git Workflow
 - [ ] Branch from `develop` using prefix: `feature/`, `fix/`, `docs/`
 - [ ] Focused, single-issue changes
@@ -209,3 +224,8 @@ Treat both as published text.
       `SECURITY.md`, not into a commit message, roadmap entry or changelog line.
 - [ ] Facts that rot are dated or omitted: live permission tables, "as of today"
       counts and in-flight PR states are stale within a week.
+
+---
+
+The blast-radius check is adapted from the `blast-radius` skill in
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT licence).
