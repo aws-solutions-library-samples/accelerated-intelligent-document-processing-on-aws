@@ -61,7 +61,9 @@ same entry, keep neither: translate it again from `make ui-i18n-todo`.
   explains.
 - **Keep the ICU.** Every argument, plural, select and rich-text tag of the English
   stays, with its branch keys; only the text around and inside them is translated.
-  `ui-i18n-ingest` refuses anything else, in the build's wording.
+  `ui-i18n-ingest` refuses a missing or extra argument or tag, or an argument of
+  another kind, in the build's wording. It does not compare plural or select branch
+  keys, so keep those yourself.
 
 ## Reviewing a change's translations
 
@@ -79,10 +81,12 @@ flag:
 - an argument, plural, select or tag the French changed;
 - text likely to be cut off where the English already fills its place, since French
   runs longer;
-- a hand edit of `fr-CA.json`, of a `sourceHash` especially.
+- an entry whose English changed but whose French did not (only its `sourceHash`
+  moved): check that the French still says what the new English says.
 
-The review is advisory. Of all this, only a stale entry blocks a merge, through
-`make check-ui-i18n-catalog`; a missing translation never does.
+The review is advisory. Only `make check-ui-i18n-catalog` blocks a merge: on a stale
+entry, an entry the build rejects (for example a changed argument or tag), or a dead
+one. A missing translation never does.
 
 ## Before a release
 
