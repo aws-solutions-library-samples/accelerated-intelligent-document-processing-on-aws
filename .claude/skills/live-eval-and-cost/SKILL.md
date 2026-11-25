@@ -89,6 +89,9 @@ from S3 (next section).
 
 ## 3. Reading accuracy + cost from a run
 
+Before quoting an A/B result or choosing between arms on it, run the checklist
+in [run-benchmarks.md](../run-benchmarks/SKILL.md#before-you-report-or-act-on-a-number).
+
 **Accuracy (self-computed, resolver-free):** each doc writes
 `s3://<outputbucket>/<runId>/<doc>/evaluation/results.json` with
 `overall_metrics.weighted_overall_score` and per-section `attributes` (each has
