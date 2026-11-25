@@ -406,7 +406,8 @@ re-measure it, and the figures will shrink as the conversion PRs land):
 `<locale>.json`: `translated`, `missing` (no entry, English shown), `stale` (the recorded
 `sourceHash` is not the hash of the current English), `invalid` (what the build rejects, with its
 `problems` in the build's own wording) and `dead` (ids `en.json` no longer has), plus a
-percentage. Every English id lands in exactly one of translated, missing, stale or invalid.
+percentage. Every English id lands in exactly one of translated, missing, stale or invalid. Under
+each list that is not empty, a `fix:` line names the make targets that clear it.
 `UI_I18N_COVERAGE_ARGS=--json` gives the machine-readable form; `--locale fr-CA` narrows it. It is
 advisory: exit 0 for any report, 2 only for a tool error (no `en.json`, malformed JSON, a
 `--locale` with no file); it is in none of `lint`, `fastlint` or `lint-cicd`. `en-XA` is never a
