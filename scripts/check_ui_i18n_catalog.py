@@ -89,7 +89,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ui_deps_freshness import describe, stale_dependencies  # noqa: E402
-from ui_i18n_catalog import stale_ids  # noqa: E402
+from ui_i18n_catalog import dead_ids, stale_ids  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -265,6 +265,27 @@ def check_english_catalog(layout: Layout, report: Report) -> None:
     )
 
 
+def dead_fix(layout: Layout, locale: str) -> str:
+    """A line for the end of the build's message on a catalog that holds dead entries,
+    naming the command that deletes them: the build names each one and says to delete
+    it, which would be a hand edit (issue #2080). Empty when there are none."""
+    try:
+        english = json.loads(layout.en_catalog.read_text(encoding="utf-8"))
+        catalog = json.loads(
+            (layout.catalog_dir / f"{locale}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return ""  # the build's message says what is wrong with the file
+    keyed = isinstance(english, dict) and isinstance(catalog, dict)
+    dead = dead_ids(english, catalog) if keyed else []
+    if not dead:
+        return ""
+    return (
+        f"\nDelete the {len(dead)} dead translation(s), which en.json no longer has: "
+        f"'make ui-i18n-drop-stale LOCALE={locale}'."
+    )
+
+
 def check_translation_catalogs(layout: Layout, report: Report) -> None:
     """Compile every ``<locale>.json`` other than ``en.json`` as the build would."""
     locales = [loc for loc in catalog_locales(layout) if loc != SOURCE_LOCALE]
@@ -292,6 +313,7 @@ def check_translation_catalogs(layout: Layout, report: Report) -> None:
             report.failures.append(
                 f"{layout.relative(layout.catalog_dir / f'{locale}.json')} would fail "
                 f"the UI build (exit {result.returncode}):\n{output}"
+                f"{dead_fix(layout, locale)}"
             )
         else:
             report.notes.append(output or f"{locale}.json compiles")

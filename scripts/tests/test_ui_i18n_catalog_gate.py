@@ -268,6 +268,34 @@ def test_a_translation_catalog_the_build_would_reject_fails(tmp_path, monkeypatc
     assert [c[2] for c in calls if c[0] == "node"] == ["en-XA", "fr-CA"]
 
 
+def test_a_dead_translation_names_the_command_that_deletes_it(tmp_path, monkeypatch):
+    """A removed message leaves its translation dead. The build names the id and says to
+    delete it; the line under the build's message names the command that does, for the
+    catalog that holds one and no other (issue #2080)."""
+    dead = {"i18n.gone": _translation("Parti", "Gone")}
+    layout = _tree(tmp_path, catalogs={"es.json": "{}", "fr-CA.json": json.dumps(dead)})
+    build = (
+        'fr-CA.json: "i18n.gone" is not in en.json (a dead translation: delete it, or '
+        "re-extract if the message exists)\n"
+        "fr-CA.json: 1 problem(s); a build with this catalog would fail"
+    )
+    _fake_run(
+        monkeypatch,
+        broken={
+            "es": "es.json: 1 problem(s); a build with this catalog would fail",
+            "fr-CA": build,
+        },
+    )
+    other, failure = _check(layout)
+    assert failure == (
+        f"src/ui/src/i18n/fr-CA.json would fail the UI build (exit 1):\n{build}\n"
+        "Delete the 1 dead translation(s), which en.json no longer has: "
+        "'make ui-i18n-drop-stale LOCALE=fr-CA'."
+    )
+    assert other.startswith("src/ui/src/i18n/es.json would fail the UI build")
+    assert "drop-stale" not in other
+
+
 def test_a_stale_translation_fails_naming_each_id_and_both_fixes(tmp_path, monkeypatch):
     """The English changed after the entry was translated. The build compiles and ships
     it, so the gate is what fails, and it names both fixes (issue #2080)."""

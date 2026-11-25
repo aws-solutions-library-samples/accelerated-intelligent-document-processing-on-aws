@@ -258,6 +258,27 @@ def test_todo_with_nothing_to_translate_prints_an_empty_list(tmp_path, capsys):
     assert "make ui-i18n-" not in err
 
 
+def test_todo_counts_the_dead_entries_and_names_drop_stale(tmp_path, capsys):
+    """A removed message leaves its translation dead: there is nothing to translate, but
+    the build rejects the entry, so the hint names the command that deletes it."""
+    catalog = {
+        entry_id: _entry(
+            FRENCH.get(entry_id, "Ouvrir la file"), source["defaultMessage"]
+        )
+        for entry_id, source in EN.items()
+    }
+    catalog["nav.gone"] = _entry("Parti", "Gone")
+    layout = _real_tree(tmp_path, catalog)
+    assert MODULE.main(["todo", "--locale", "fr-CA"], layout=layout) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out) == {"locale": "fr-CA", "entries": []}
+    assert "nothing to translate in " in err
+    assert (
+        "; make ui-i18n-drop-stale LOCALE=fr-CA deletes the 1 dead entry, which "
+        "en.json no longer has"
+    ) in err
+
+
 def test_todo_without_a_glossary_lists_no_terms(tmp_path, capsys):
     layout = _real_tree(tmp_path, glossary=None)
     entries = _todo(layout, capsys)["entries"]
@@ -418,13 +439,32 @@ def test_ingest_refuses_what_it_cannot_write_by_id_and_writes_the_rest(
     assert "nav.queue: it has no message" in out
     assert "nav.sure: the file names it more than once" in out
     assert "nav.greeting: its English changed after the list was made" in out
-    assert "still to translate: 5 missing, 2 stale" in out
+    assert (
+        "still to translate: 5 missing, 2 stale (the catalog gate fails on the stale "
+        "ones); make ui-i18n-todo LOCALE=fr-CA lists them"
+    ) in out
 
     catalog = _read(layout)
     assert catalog["nav.name"] == _entry(f"Nom{NBSP}: {{name}}", "Name: {name}")
     assert "nav.upload" not in catalog and "nav.sure" not in catalog
     assert catalog["nav.greeting"] == _catalog()["nav.greeting"]
     assert catalog["nav.queue"] == _catalog()["nav.queue"]
+
+
+def test_ingest_that_leaves_only_missing_entries_claims_no_gate_failure(
+    tmp_path, capsys
+):
+    """A missing translation never fails a job, so the closing note names the catalog
+    gate only for stale entries."""
+    layout = _real_tree(tmp_path, {})
+    path = _list_file(tmp_path, [{"id": "nav.upload", "message": FRENCH["nav.upload"]}])
+    assert _ingest(layout, path) == 0
+    out = capsys.readouterr().out
+    assert (
+        f"still to translate: {len(EN) - 1} missing, 0 stale; make ui-i18n-todo "
+        "LOCALE=fr-CA lists them"
+    ) in out
+    assert "gate" not in out
 
 
 def test_a_parity_check_that_cannot_run_refuses_every_entry_and_writes_none(
