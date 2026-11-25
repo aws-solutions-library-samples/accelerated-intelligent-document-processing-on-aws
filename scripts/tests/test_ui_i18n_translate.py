@@ -680,7 +680,43 @@ def test_multi_word_terms_keep_the_glossary_case():
     )
 
 
-def test_the_written_message_keeps_the_glossary_case(tmp_path, monkeypatch):
+def test_the_glossary_case_goes_on_the_answers_the_parity_check_judges(
+    tmp_path, monkeypatch
+):
+    joined: list[dict[str, Any]] = []
+
+    def join(request):
+        joined.extend(request["entries"])
+        return [{"id": e["id"], "message": "".join(e["answers"])} for e in joined]
+
+    layout, _ = _canned_tree(
+        tmp_path,
+        monkeypatch,
+        _plan([_entry("a.one", "Open the Review Queue")]),
+        join=join,
+    )
+    _with_glossary(layout)
+    raw = "Ouvrir la File D’Attente De Révision"
+    _use_client(monkeypatch, FakeTranslate(reply=lambda text: raw))
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+
+    cased = "Ouvrir la File d’attente de révision"
+    assert joined[0]["answers"] == [cased]
+    written = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
+    assert written["a.one"]["message"] == cased
+    (path,) = layout.provenance_dir.iterdir()
+    (entry,) = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    assert entry["sentences"][0]["answer"] == raw  # Translate's own answer
+    assert entry["message"] == cased
+
+
+def test_the_message_the_parity_check_passed_is_written_as_it_came_back(
+    tmp_path, monkeypatch
+):
     def join(request):
         return [{"id": "a.one", "message": "File D’Attente De Révision {name}"}]
 
@@ -695,7 +731,41 @@ def test_the_written_message_keeps_the_glossary_case(tmp_path, monkeypatch):
         == 0
     )
     written = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
-    assert written["a.one"]["message"] == "File d’attente de révision {name}"
+    assert written["a.one"]["message"] == "File D’Attente De Révision {name}"
+
+
+def test_end_to_end_the_glossary_case_passes_the_parity_check_it_is_written_by(
+    tmp_path, monkeypatch
+):
+    layout = _real_tree(tmp_path)
+    english = "Open the Review Queue for {name}"
+    (tmp_path / "en.json").write_text(
+        json.dumps({"nav.queue": {"defaultMessage": english, "description": "Link"}}),
+        encoding="utf-8",
+    )
+    _with_glossary(layout)
+
+    def french(html: str) -> str:
+        return html.replace(
+            "Open the Review Queue for ", "Ouvrir la File D’Attente De Révision pour "
+        )
+
+    _use_client(monkeypatch, FakeTranslate(reply=french))
+
+    assert (
+        MODULE.main(["--locale", "fr-CA", "--region", "ca-central-1"], layout=layout)
+        == 0
+    )
+
+    written = json.loads(layout.catalog("fr-CA").read_text(encoding="utf-8"))
+    assert written == {
+        "nav.queue": {
+            "message": "Ouvrir la File d’attente de révision pour {name}",
+            "sourceHash": source_hash(english),
+        }
+    }
+    check = _check_catalog(layout, "fr-CA")
+    assert check.returncode == 0, check.stdout + check.stderr
 
 
 def test_the_provenance_file_records_the_run_outside_the_catalog(tmp_path, monkeypatch):

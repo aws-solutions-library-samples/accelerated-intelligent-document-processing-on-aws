@@ -30,7 +30,9 @@ terminology's description), and that hash is the terminology version the run
 records. Translate gives a term the capitals of the English it matched, word by
 word, so a Title Case label would get every word of a French term capitalized;
 the run puts each multi-word term back in the glossary's own case, keeping only
-the first letter's.
+the first letter's. It does so on a copy of the answers, before the worker rebuilds
+them, so the parity check judges the text that is written; the provenance keeps
+Translate's own answers.
 
 WHAT IT WRITES
 --------------
@@ -608,11 +610,19 @@ def translate_catalog(layout: Layout, args: argparse.Namespace) -> int:
         else (0, None)
     )
 
+    # The glossary's case goes on a copy of the answers, before the worker rebuilds the
+    # message and runs the parity check, so the check judges what is written.
+    # shortcut: the answers are HTML, so a term whose apostrophe Translate spelled as an
+    # entity (&#39;) is not re-cased; no answer of the fr-CA runs so far held an entity.
+    # Match the entity forms too if one ever does.
     request = [
         {
             "id": entry["id"],
             "english": entry["english"],
-            "answers": [sentence["answer"] for sentence in entry["sentences"]],
+            "answers": [
+                keep_glossary_case(sentence["answer"], terminology)
+                for sentence in entry["sentences"]
+            ],
         }
         for entry in entries
     ]
@@ -630,12 +640,11 @@ def translate_catalog(layout: Layout, args: argparse.Namespace) -> int:
     for result in results:
         entry = by_id[result["id"]]
         if "message" in result:
-            message = keep_glossary_case(result["message"], terminology)
             catalog[result["id"]] = {
-                "message": message,
+                "message": result["message"],
                 "sourceHash": hashes[result["id"]],
             }
-            entry["message"] = message
+            entry["message"] = result["message"]
         else:
             entry["errors"] = result["errors"]
 

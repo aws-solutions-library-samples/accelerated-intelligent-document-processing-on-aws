@@ -68,6 +68,11 @@ vocabulary:
       note: >-
         Pages of the shared review stack in a browser, which show documents and text
         from the merge request under test.
+    operator_stack_pages:
+      origin: document
+      note: >-
+        Pages of a stack the operator names, in a browser: they show whatever
+        documents that stack processed and the values extracted from them.
     change_under_review:
       origin: external
       note: A merge or pull request's diff, description and discussion.
@@ -112,6 +117,11 @@ vocabulary:
     review_stack_session:
       private: true
       note: A signed-in browser session on the shared review stack.
+    operator_stack_session:
+      private: true
+      note: >-
+        A signed-in browser session on a stack the operator names, which sees all
+        that stack holds; nothing checks that it holds sample data only.
     repository_checkout:
       private: false
       note: The public repository's own files.
@@ -142,6 +152,11 @@ vocabulary:
     review_comment:
       external: true
       note: A comment on a merge or pull request, read by people and other tools.
+    local_files:
+      external: false
+      note: >-
+        Files written on the operator's machine and posted nowhere, unredacted
+        screenshots included; who else sees them is the operator's call.
     configuration_write:
       external: false
       note: A configuration profile or revision saved in the stack.
@@ -719,14 +734,17 @@ entries:
     surfaces: [harness:scripts/ux_runner/agent.py::claude_argv]
     note: >-
       The MR UX test and the first-time-user stories (ai_ux_test, ai_ux_test_stories),
-      driving a confined browser against the shared review stack, and the screen
-      review of a translated UI (ai_ux_translation_review), which may only look and
-      writes local files, no comment.
-    reads: [review_stack_session]
-    inputs: [review_stack_pages]
-    outputs: [review_comment]
+      driving a confined browser against the shared review stack and posting a
+      redacted comment; and the screen review of a translated UI
+      (ai_ux_translation_review), which signs in to a stack the operator names in the
+      same confined browser, may only look, and writes local files, its screenshots
+      unredacted, and posts nothing.
+    reads: [review_stack_session, operator_stack_session]
+    inputs: [review_stack_pages, operator_stack_pages]
+    outputs: [review_comment, local_files]
     control:
       - {symbol: scripts/ux_test_proxy.py::EgressRules.permits, limits: review_stack_session}
+      - {symbol: scripts/ux_test_proxy.py::EgressRules.permits, limits: operator_stack_session}
       - {symbol: scripts/ux_runner/artifacts.py::redactor_for, limits: review_comment}
     test:
       - scripts/tests/test_ux_test_proxy.py::test_unlisted_and_internal_targets_are_refused_before_any_lookup
