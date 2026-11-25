@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 1.1 |
-| **Last Updated** | 2026-11-17 |
+| **Document Version** | 1.2 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.16 |
 | **Feature** | Feature Platform (installable Extension Features) |
 | **Classification** | Internal |
@@ -150,6 +150,22 @@ flowchart TD
 | **Residual risk** | If the installed `xhtml2pdf` lacks `xhtml2pdf.config.resources`, or SEED stops keeping its backends in `seed_data.tools._HTML_RENDERERS`, the adapter logs `Render fetch policy not applied` and SEED's own renderer runs, which fetches remote references; the pin is what keeps that from happening. Inline `data:` resources and files in the runtime user's home directory still load. `file_write` and `editor` read and write any path the image's `appuser` can, so anything that user can read can enter the model's context. The runtime keeps outbound internet access, and VPC network mode is not offered; an account that requires no internet route should not install the extension. |
 | **Evidence** | `lib/idp_common_pkg/tests/unit/synthesis/test_engine.py::TestRenderFetchPolicy::test_xhtml2pdf_backend_renders_with_remote_resources_refused`; `lib/idp_common_pkg/tests/unit/synthesis/test_engine.py::TestRenderFetchPolicy::test_seed_renderer_is_left_alone_without_the_policy_module`; `lib/idp_common_pkg/tests/unit/synthesis/test_engine.py::TestSynthesizeShaping::test_generator_is_given_an_html_renderer`; UNVERIFIED: the tool inventory was taken by reading the pinned wheel, not by running it, and no test asserts the `Dockerfile` pins |
 
+### FEAT.T06: An Extension Builds Third-Party Code and Model Weights into an In-Account Image
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | FEAT.T06 |
+| **Category** | STRIDE: Tampering, Information Disclosure |
+| **Description** | The *Decision Model: Strands Decider* extension (v0.6.16) builds a Lambda container image in the customer's account with CodeBuild, from the upstream `strands-labs/strands-decider` repository and model weights downloaded from a model hub, and installs it as the decision model that section classification and extraction confidence call. The function then receives section text or page images, field names and extracted values (HOOK.T09). Whatever the upstream source, its Dockerfile's dependencies or the model repository contain at build time runs inside the account with document content as input. |
+| **Attack Vector** | A compromised upstream commit, a dependency the upstream Dockerfile installs from PyPI, the PyTorch index or a public container registry, or a model repository that changes what a revision name resolves to. An installer pins a revision from a fork. |
+| **Impact** | Code chosen by a third party processing document content inside the account, with the ability to send it out over the function's internet egress; decisions skewed by tampered weights. |
+| **Likelihood** | Low |
+| **Severity** | High |
+| **Affected Components** | `feature-platform/decision-model-decider/` (`template.yaml`, `image-build/`), its CodeBuild project and ECR repository, the `GENAIIDP-decider` function |
+| **Mitigations** | **Pins.** The upstream source revision and the model revision are stack parameters that must each be a 40-character commit SHA, and the source repository is a constant in code. The build confirms through the hub API that the model revision resolves to itself (refusing a branch name), refuses a source commit that is on no branch or tag of the upstream repository (refusing a fork commit), and checks `HEAD` after checkout. **Image.** The ECR repository scans on push and is encrypted with the host stack's key; tags are derived from the build inputs and the build never re-pushes an existing tag. **Roles.** The CodeBuild role holds logs, push and pull on the extension's own repository, and use of the host key; the decider function's role holds logs and X-Ray only, so it reaches no bucket, table or other function. Installing the extension is an Admin action through the extension catalog (FEAT.T03). |
+| **Residual risk / recommendation** | Integrity rests on git and hub content addressing; the transitive dependencies the upstream Dockerfile installs are pinned only as upstream wrote them and are not verified here. CodeBuild runs privileged, outside a VPC, with internet egress, and the decider function has no VPC configuration, so code in the image can reach the internet with the content it is sent. ECR tag mutability is left on. Review the pinned commit before installing or changing it, and treat a pin change as a code change. |
+| **Evidence** | `feature-platform/decision-model-decider/image-build/tests/test_image_build.py`; UNVERIFIED: the citation covers the image-build function; the buildspec's revision and fork checks and the IAM grants are not matched to a test, and the build has not been exercised against a hostile upstream |
+
 ## 4. Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
@@ -162,6 +178,7 @@ flowchart TD
 | **Hook invoke scope** | Pipeline-hooks dispatcher may invoke only functions tagged `idp:feature-id` or named `GENAIIDP-*` | FEAT.T03 |
 | **Short bundle cache TTL** | `Cache-Control: max-age=300` matching CloudFront TTL | FEAT.T04 |
 | **Feature-owned sensitive storage** | Feature data (e.g. PII mappings) in the feature's own encrypted tables | FEAT.T03 |
+| **Commit-pinned image builds** | Strands Decider source and model revisions must be 40-character SHAs; fork and branch revisions refused at build; scan on push; logs-only function role | FEAT.T06 |
 | **Pinned generator and local-only rendering** | Test Set Generator pins `seed-data` and `xhtml2pdf`, names the `xhtml2pdf` backend, and renders with `ResourceAccessPolicy(allow_remote=False)` | FEAT.T05 |
 
 ## 5. Open Items
@@ -173,4 +190,5 @@ flowchart TD
 | `expectedVersion` mismatch warns but loads anyway | FEAT.T04 | **Open** |
 | No permissions boundary required for third-party feature installs | FEAT.T03 | **Open** — recommend documenting as a prerequisite |
 | Feature registry readable by all roles | FEAT.T02 | **Accepted** — design requirement |
+| Decider image's transitive dependencies are not verified; CodeBuild and the function have open egress | FEAT.T06 | **Open** — recommendation |
 | Test Set Generator runtime has outbound internet access; render policy falls back to SEED's renderer if the pinned packages change shape | FEAT.T05 | **Accepted** — the pins hold it; no VPC mode is offered |

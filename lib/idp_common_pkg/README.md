@@ -247,10 +247,11 @@ the queue sender (through `Document.from_s3_event`) and the reprocess service
 - `sanitize_attributes(candidate)` keeps what satisfies the rules and reports the
   rest as `(key, reason)` pairs, considering keys in sorted order so which ones
   survive the count and size bounds is deterministic.
-- `read_object_attributes(metadata, bucket, s3_client)` is the S3 intake route:
-  inline `idp-attr-<name>` metadata (`-` in the name becomes `_`) and the
-  `idp-attributes-uri` sidecar, which must be in the same bucket with a key ending
-  in `.idp-attributes.json` and is read up to the 32 KB bound. It never raises for
+- `read_object_attributes(metadata, bucket, s3_client, *, document_key)` is the S3
+  intake route: inline `idp-attr-<name>` metadata (`-` in the name becomes `_`) and
+  the `idp-attributes-uri` sidecar, which must be in the same bucket at exactly the
+  document's key plus `.idp-attributes.json` (`sidecar_key_for(document_key)`) and
+  is read up to the 32 KB bound. It never raises for
   bad input.
 - `idp_common.models.attributes_dropped_issue(dropped)` builds the document-level
   `ingest_attributes_dropped` warning, naming keys and reasons but never values.

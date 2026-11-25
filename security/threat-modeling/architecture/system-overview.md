@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.5 |
-| **Last Updated** | 2026-11-17 |
+| **Document Version** | 3.6 |
+| **Last Updated** | 2026-11-24 |
 | **Applies to release** | v0.6.16 |
 | **Classification** | Internal |
 | **System Name** | GenAI Intelligent Document Processing (IDP) Accelerator |
@@ -117,7 +117,7 @@ flowchart TD
 | **Edge / WAF** | CloudFront, optional WAFv2 (REGIONAL) | SPA delivery with a content security policy in both hosting modes; optional IP allow-list WebACL on the REST API stage, whose requests are logged to `aws-waf-logs-<StackName>-api` (`ApiWafLogGroup`, KMS-encrypted) |
 | **Authentication** | Amazon Cognito (2 user pools + 1 identity pool) | Main user pool (**5 RBAC groups**: Admin, Author, Reviewer, Annotator, Viewer), which also holds the MCP app clients (`ExternalAppClient` for signed-in users, `MCPConnectorClient` and each Admin-created client-credentials app); Identity Pool mints the SigV4 credentials the chat Function URL requires; separate M2M pool for the Jobs API |
 | **Secrets** | AWS Secrets Manager (CMK-encrypted) | With `EnableMCP=true`: the stack-created MCP clients' IDs and secrets (`McpConnectorClientSecret`, `McpUserClientSecret`, published as the ARNs `MCPConnectorClientSecretArn` and `MCPClientSecretArn`, never as values), one secret per Admin-created MCP credential under `<StackName>/mcp/credentials/`, and the key that signs MCP caller identities (`McpCallerSigningSecret`) |
-| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues, the Secrets Manager secrets and 136 of the 139 explicitly declared log groups; the optional bastion host adds a second key of its own |
+| **Encryption keys** | AWS KMS customer-managed key | One deployment CMK — the stack-owned `CustomerManagedEncryptionKey` (`EnableKeyRotation: true`, retained on stack deletion), or since v0.6.16 a key the customer supplies through `CustomerManagedKmsKeyArn`, in which case the stack creates none — used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues, the Secrets Manager secrets and 136 of the 139 explicitly declared log groups; the optional bastion host adds a second key of its own |
 | **Compute** | AWS Lambda (130+ functions) | Processing logic, API resolvers, agents, hooks |
 | **Monitoring** | Amazon CloudWatch | Alarms, dashboards, KMS-encrypted log groups |
 
@@ -158,7 +158,10 @@ flowchart TD
 | **Reporting** | Analytics database with Athena, Glue, Parquet | S3, Glue, Athena |
 | **Rule Validation** | Configurable business rule checks on extracted data | Lambda, Bedrock |
 | **Evaluation** | Automated accuracy measurement against ground truth | Lambda, S3 |
-| **Quick Start** | Conversational config bootstrap agent | Bedrock, AgentCore |
+| **Quick Start** | Conversational config bootstrap agent; Admin-only, and off on the server when `EnableQuickStartWidget=false` (v0.6.16) | Bedrock, AgentCore |
+| **Review routing** (v0.6.16) | A per-profile routing table, Admin-only to change and importable from DMN, decides whether a processed document is held for review and in which production queue; review outcomes include send-back for reprocessing (HITL.T06) | Lambda, DynamoDB (`HITLTable`), Step Functions |
+| **Document attributes** (v0.6.16) | Uploader-supplied key-value pairs carried from upload to results and the post-processing hook (PM.T10) | S3 metadata, DynamoDB |
+| **Decision models** | Optional classification and extraction-confidence calls to a deployment-named decision model, including the Strands Decider extension built in the account (HOOK.T08 to HOOK.T10, FEAT.T06) | Lambda, CodeBuild, ECR |
 
 ## 4. Trust Boundaries
 
@@ -541,9 +544,19 @@ to the whole Output bucket.
 > should be modelled rather than assumed: it grants the account root full
 > `kms:*`, and it carries **no `kms:ViaService` condition**, so a principal in the
 > account that holds the key's data actions can use it directly rather than only
-> through the services that hold the data. The key is a stack resource, so its
-> deletion is a stack-scoped availability event for everything encrypted under
-> it. A Terraform deployment adds one bucket of its own, the custom-resource
+> through the services that hold the data. Since v0.6.16 the stack key has
+> `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`, so the buckets the
+> stack retains on deletion stay readable afterwards, and the key with its
+> root-delegated policy outlives the stack until someone schedules its deletion.
+> A new stack can instead take a customer's own key (`CustomerManagedKmsKeyArn`):
+> a create-time custom resource checks that it is an enabled, symmetric,
+> encrypt/decrypt customer managed key in the stack's account and Region, and any
+> later change that sets, clears or swaps the key is refused. The check does not
+> read the key policy, so a policy that admits `DescribeKey` but withholds the
+> data actions passes and the stack fails at its first write. A supplied key is
+> administered outside the stack: disabling it, scheduling its deletion or
+> narrowing its policy makes every store in the deployment unreadable, and the
+> stack raises no alarm on the key's state. A Terraform deployment adds one bucket of its own, the custom-resource
 > bridge's, which is SSE-KMS with the same key and TLS-only, and holds
 > custom-resource responses, the label stack's template and the resource directory
 > (§7).
@@ -585,7 +598,9 @@ to the whole Output bucket.
   Access Points. `TenantGrantSource` decides who writes a non-Admin's scope
   (`Manual`, `IdpClaim` or `Api`); under the two external sources an unscoped
   non-Admin is denied whatever the isolation mode, and Admin scope edits are
-  refused. Admins are cross-tenant in every mode. Threats: TEN.T01–T05 in
+  refused. Under `IdpClaim`, `TenantSelection=UserSelect` (v0.6.16) lets a user
+  the provider grants several tenants choose the active one among exactly those
+  (`selectActiveTenant`). Admins are cross-tenant in every mode. Threats: TEN.T01–T05 in
   [`tenant-isolation.md`](../feature-threats/tenant-isolation.md)
 - **Infrastructure as Code**: `template.yaml` + nested stacks (`api-resolvers`, `bedrockkb`, `multi-doc-discovery`, feature-platform); feature-platform extensions install as CloudFormation stacks under either deployment route
 
@@ -614,6 +629,16 @@ service role above passed as `--terraform-assume-role-arn` — plus the Cloud Co
 actions for the `awscc` resources and `kms:GenerateDataKey`/`kms:Decrypt` on the
 stack key. Every role the module creates, the custom-resource bridge's included,
 takes `PermissionsBoundaryArn` when it is set.
+
+The Region's API Gateway CloudWatch logging role is one setting per account and
+Region. By default the stack creates that role and sets it
+(`ApiGatewayCloudWatchRole`, `ApiGatewayAccount`, both retained on deletion);
+with `ManageApiGatewayAccountSettings=false` (v0.6.16) it creates neither and
+relies on the Region's existing setting, so several deployments in one Region do
+not overwrite one another. With that setting absent, stage creation at an INFO or
+DEBUG log level fails at create rather than running unlogged. Deleting or
+replacing the shared role later stops REST API execution logging for every
+deployment in the Region, and the stack raises no alarm for it.
 
 ### 7.2 Terraform deployment (experimental)
 
