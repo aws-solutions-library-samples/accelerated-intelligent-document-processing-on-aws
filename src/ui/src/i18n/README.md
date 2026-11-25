@@ -286,8 +286,12 @@ question, not this one's.
 - **Output.** `test-reports/ux-translation-review/<time>-review/`: `findings.md` (a table per
   locale, each finding linked to its screenshot), `findings.json`, `run.json` and `screens/`.
   There is no video: the recorder renders only the review stack `idp-ux-nightly`. The findings are
-  the model's claims for a person to adjudicate, and the screenshots are not redacted, so review a
-  stack that holds sample data only.
+  the model's claims for a person to adjudicate.
+- **What the stack holds is the operator's job.** Nothing checks it: the model sees, and the
+  screenshots keep, whatever the stack's pages show, and the screenshots are not redacted. Point
+  a run only at a stack that holds sample data, and keep its screenshots private: even then, the
+  Users page screenshot (the default persona is an admin) shows the e-mail addresses of the
+  stack's users, the admin's included.
 
 ## The string-debt gate
 
