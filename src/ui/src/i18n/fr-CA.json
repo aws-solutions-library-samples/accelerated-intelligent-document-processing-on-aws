@@ -7612,7 +7612,7 @@
     "sourceHash": "50a40d34eb20d9f5"
   },
   "helpPanel.documentDetails.docsAssessment": {
-    "message": "Évaluation",
+    "message": "Évaluation de la confiance",
     "sourceHash": "7808eeeb45dfa074"
   },
   "helpPanel.documentDetails.docsClassification": {
@@ -9808,7 +9808,7 @@
     "sourceHash": "1bed97651be6b556"
   },
   "reviewBulk.sendToReviewModal.body": {
-    "message": "{count, plural, one {Ce document sera ajouté} other {Ces # documents seront ajoutés}} à la file d’attente de révision « Par défaut ». Les réviseurs voient votre motif avec l’élément; terminer la révision retraite le document avec leurs modifications.",
+    "message": "{count, plural, one {Ce document sera ajouté} other {Ces # documents seront ajoutés}} à la file d’attente de révision « Default ». Les réviseurs voient votre motif avec l’élément; terminer la révision retraite le document avec leurs modifications.",
     "sourceHash": "4ed04ccfd00bcad4"
   },
   "reviewBulk.sendToReviewModal.confirm": {
@@ -10416,11 +10416,11 @@
     "sourceHash": "526e0087cc3f254d"
   },
   "reviewQueues.queueSettings.enabled.constraint": {
-    "message": "Les documents qu’une règle d’acheminement envoie à une file d’attente désactivée sont plutôt dirigés vers la file d’attente par défaut.",
+    "message": "Les documents qu’une règle d’acheminement envoie à une file d’attente désactivée sont plutôt dirigés vers la file d’attente « Default ».",
     "sourceHash": "a9ae01074c7eed20"
   },
   "reviewQueues.queueSettings.enabled.defaultConstraint": {
-    "message": "Tant que la file d’attente par défaut est désactivée, aucun document n’est retenu pour révision.",
+    "message": "Tant que la file d’attente « Default » est désactivée, aucun document n’est retenu pour révision.",
     "sourceHash": "6756407704136a53"
   },
   "reviewQueues.queueSettings.enabled.description": {
@@ -10588,7 +10588,7 @@
     "sourceHash": "00eebfc322473124"
   },
   "reviewQueues.queuesPage.confirmDeleteMoving": {
-    "message": "Supprimer la file d’attente {name} ({id})? Cette action est irréversible. {count, plural, one {# élément sera déplacé} other {# éléments seront déplacés}} vers la file d’attente par défaut.",
+    "message": "Supprimer la file d’attente {name} ({id})? Cette action est irréversible. {count, plural, one {# élément sera déplacé} other {# éléments seront déplacés}} vers la file d’attente « Default ».",
     "sourceHash": "368a813aeb10008f"
   },
   "reviewQueues.queuesPage.countedAt": {
@@ -10608,7 +10608,7 @@
     "sourceHash": "1f099d7d9138e770"
   },
   "reviewQueues.queuesPage.defaultQueueOff": {
-    "message": "La file d’attente de révision par défaut est désactivée; les règles d’acheminement ne sont donc pas évaluées.",
+    "message": "La file d’attente de révision « Default » est désactivée; les règles d’acheminement ne sont donc pas évaluées.",
     "sourceHash": "84b9e314e0cba36b"
   },
   "reviewQueues.queuesPage.deleteDialog.cancel": {
@@ -10632,7 +10632,7 @@
     "sourceHash": "a19203ee4d490ffb"
   },
   "reviewQueues.queuesPage.deletedMoved": {
-    "message": "La file d’attente {name} a été supprimée; ses éléments ont été déplacés vers la file d’attente par défaut.",
+    "message": "La file d’attente {name} a été supprimée; ses éléments ont été déplacés vers la file d’attente « Default ».",
     "sourceHash": "72e8fcd2bf5fe800"
   },
   "reviewQueues.queuesPage.description": {
@@ -10680,7 +10680,7 @@
     "sourceHash": "c2c0cdfa77ffb27b"
   },
   "reviewQueues.queuesPage.openDefaultQueueSettings": {
-    "message": "Ouvrir les paramètres de la file d’attente par défaut",
+    "message": "Ouvrir les paramètres de la file d’attente « Default »",
     "sourceHash": "6c0366e308b68774"
   },
   "reviewQueues.queuesPage.preparing": {
@@ -10688,7 +10688,7 @@
     "sourceHash": "5d1fa38bcf0d88ca"
   },
   "reviewQueues.queuesPage.production.description": {
-    "message": "Files d’attente à l’échelle du système pour les documents traités. Tant que l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente par défaut est activée, les règles d’acheminement de ce profil envoient le document à la file d’attente que désigne une règle d’acheminement. La file d’attente par défaut reçoit les documents retenus par les règles d’acheminement intégrées, ainsi que les documents dont la file d’attente est absente ou désactivée.",
+    "message": "Files d’attente à l’échelle du système pour les documents traités. Tant que l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente « Default » est activée, les règles d’acheminement de ce profil envoient le document à la file d’attente que désigne une règle d’acheminement. La file d’attente « Default » reçoit les documents retenus par les règles d’acheminement intégrées, ainsi que les documents dont la file d’attente est absente ou désactivée.",
     "sourceHash": "e172d23f115c1ced"
   },
   "reviewQueues.queuesPage.production.find": {
@@ -10852,11 +10852,11 @@
     "sourceHash": "c15dfe3136f19693"
   },
   "reviewQueues.references.deleteErrorNote": {
-    "message": "Vous pouvez quand même supprimer la file d’attente. Les documents qu’une règle d’acheminement y envoie iront plutôt à la file d’attente par défaut.",
+    "message": "Vous pouvez quand même supprimer la file d’attente. Les documents qu’une règle d’acheminement y envoie iront plutôt à la file d’attente « Default ».",
     "sourceHash": "71aef0ece3988aba"
   },
   "reviewQueues.references.deleteFallback": {
-    "message": "Les documents que ces règles d’acheminement envoient à cette file d’attente iront plutôt à la file d’attente par défaut.",
+    "message": "Les documents que ces règles d’acheminement envoient à cette file d’attente iront plutôt à la file d’attente « Default ».",
     "sourceHash": "e068396faf0beaf5"
   },
   "reviewQueues.references.deleteHeader": {
@@ -11080,7 +11080,7 @@
     "sourceHash": "a74f8f40bc18fdfe"
   },
   "reviewQueues.routedBy.placedInDefault": {
-    "message": "{why} Le document se trouve plutôt dans la file d’attente par défaut.",
+    "message": "{why} Le document se trouve plutôt dans la file d’attente « Default ».",
     "sourceHash": "961dc25861894c68"
   },
   "reviewQueues.routedBy.rule": {
@@ -11368,11 +11368,11 @@
     "sourceHash": "b5658fc8edda24f9"
   },
   "reviewQueues.toolsPanel.productionCreateAndDelete": {
-    "message": "<b>Créer une file d’attente</b> ajoute une file d’attente que les règles d’acheminement peuvent désigner par son identifiant. La suppression d’une file d’attente déplace ses documents vers la file d’attente par défaut, et affiche d’abord la liste des règles d’acheminement qui la désignent.",
+    "message": "<b>Créer une file d’attente</b> ajoute une file d’attente que les règles d’acheminement peuvent désigner par son identifiant. La suppression d’une file d’attente déplace ses documents vers la file d’attente « Default », et affiche d’abord la liste des règles d’acheminement qui la désignent.",
     "sourceHash": "7ba1a0bfa7f4c572"
   },
   "reviewQueues.toolsPanel.productionDefaultQueue": {
-    "message": "La file d’attente par défaut reçoit les documents retenus par les règles d’acheminement intégrées (extractions échouées, alertes de confiance, champs obligatoires manquants) ainsi que les documents dont la file d’attente est manquante ou désactivée.",
+    "message": "La file d’attente « Default » reçoit les documents retenus par les règles d’acheminement intégrées (extractions échouées, alertes de confiance, champs obligatoires manquants) ainsi que les documents dont la file d’attente est manquante ou désactivée.",
     "sourceHash": "9fcb9ba8c1a04405"
   },
   "reviewQueues.toolsPanel.productionHeading": {
@@ -11384,7 +11384,7 @@
     "sourceHash": "381dda84da9f8327"
   },
   "reviewQueues.toolsPanel.productionRouting": {
-    "message": "Lorsque l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente par défaut est activée, les règles d’acheminement de ce profil décident si le document est révisé et l’envoient vers la file d’attente désignée par une règle d’acheminement. Un avertissement sur cette page indique quand les règles d’acheminement ne sont pas évaluées, et pourquoi.",
+    "message": "Lorsque l’acheminement des révisions est activé dans le profil de configuration d’un document et que la file d’attente « Default » est activée, les règles d’acheminement de ce profil décident si le document est révisé et l’envoient vers la file d’attente désignée par une règle d’acheminement. Un avertissement sur cette page indique quand les règles d’acheminement ne sont pas évaluées, et pourquoi.",
     "sourceHash": "107e039eaaa168ec"
   },
   "reviewQueues.toolsPanel.productionSettings": {
@@ -12440,7 +12440,7 @@
     "sourceHash": "2fa63167ec3c6655"
   },
   "routing.testPanel.fallbackLabel": {
-    "message": "Pourquoi la file d’attente par défaut",
+    "message": "Pourquoi la file d’attente « Default »",
     "sourceHash": "af53a065d2228c42"
   },
   "routing.testPanel.header": {
@@ -12504,7 +12504,7 @@
     "sourceHash": "532eaabd9574880d"
   },
   "routing.warnings.defaultQueueOff": {
-    "message": "La file d’attente de révision par défaut est désactivée : les règles d’acheminement ne sont donc pas évaluées et les documents suivent le flux de révision par page de document. Activez-la dans <link>Gestion des révisions</link>.",
+    "message": "La file d’attente de révision « Default » est désactivée : les règles d’acheminement ne sont donc pas évaluées et les documents suivent le flux de révision par page de document. Activez-la dans <link>Gestion des révisions</link>.",
     "sourceHash": "bf564e5c5ba90e0b"
   },
   "routing.warnings.openProcessingSettings": {
@@ -12636,7 +12636,7 @@
     "sourceHash": "c5dc9791fb2472d1"
   },
   "runPlan.step.assessment": {
-    "message": "Appréciation de la confiance",
+    "message": "Évaluation de la confiance",
     "sourceHash": "7808eeeb45dfa074"
   },
   "runPlan.step.beginning": {
