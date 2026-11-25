@@ -1164,9 +1164,10 @@ account.
 
 **What stays English.** These are not translated:
 
-- the admin, configuration and Test Studio screens, including the configuration editor's help
-  text, and Test Studio's own text on a test-set item's edit page and on a test set's queue page
-  in Review Studio;
+- the text that is not yet in the UI's message catalog on the admin, configuration and Test
+  Studio screens, which are only partly translated, and in what Test Studio shows on a test-set
+  item's edit page and on a test set's queue page in Review Studio. That text includes the
+  configuration editor's help text;
 - `(Active)`, which marks the active configuration profile in the profile lists of the
   **Upload Documents** page and the **Reprocess** and **Skip All Reviews by profile** dialogs;
 - on the **Edit Page Grouping** board, the instructions and announcements a screen reader reads
