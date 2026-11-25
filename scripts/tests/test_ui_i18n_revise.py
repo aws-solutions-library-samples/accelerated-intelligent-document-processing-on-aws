@@ -1213,8 +1213,16 @@ def test_each_attempt_botocore_retried_is_counted_at_its_most_and_shown_apart(
     ) in capsys.readouterr().out
 
 
-def _client_error(code: str) -> ClientError:
-    return ClientError({"Error": {"Code": code, "Message": "no"}}, "Converse")
+def _client_error(code: str, retries: int = 0) -> ClientError:
+    """An error as botocore raises it, with the ``RetryAttempts`` it adds to the error
+    response."""
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": "no"},
+            "ResponseMetadata": {"HTTPStatusCode": 400, "RetryAttempts": retries},
+        },
+        "Converse",
+    )
 
 
 def test_an_aws_error_before_any_answer_writes_nothing(tmp_path, monkeypatch, capsys):
@@ -1230,13 +1238,24 @@ def test_an_aws_error_before_any_answer_writes_nothing(tmp_path, monkeypatch, ca
 
     err = capsys.readouterr().err
     assert "Bedrock refused the run, so nothing was written" in err
-    ceiling = batch_ceiling(layout, client.requests[0])
-    assert f"(its attempts count up to US${ceiling:.2f})" in err
+    # botocore does not retry the refusal, so its one attempt counts at its most.
+    one = batch_ceiling(layout, client.requests[0]) / REVIEW.ATTEMPTS
+    assert f"(its attempts count up to US${one:.2f})" in err
     assert not (layout.repo_root / "test-reports").exists()
     assert _catalog(layout) == _fr()
 
 
-def test_an_aws_error_after_a_batch_writes_what_passed(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "error, attempts",
+    [
+        (_client_error("AccessDeniedException", retries=0), 1),
+        (_client_error("ThrottlingException", retries=2), 3),
+    ],
+    ids=["not retried", "retried twice"],
+)
+def test_an_aws_error_after_a_batch_writes_what_passed(
+    tmp_path, monkeypatch, error, attempts
+):
     en, fr, notes = _many(50)
     layout, report_path, notes_path, _ = _tree(
         tmp_path, monkeypatch, en=en, fr=fr, report=_review_report([]), notes=notes
@@ -1249,7 +1268,7 @@ def test_an_aws_error_after_a_batch_writes_what_passed(tmp_path, monkeypatch):
         try:
             return next(answers)
         except StopIteration:
-            raise _client_error("ThrottlingException") from None
+            raise error from None
 
     client = FakeBedrock(answer)
     _use_client(monkeypatch, client)
@@ -1265,12 +1284,12 @@ def test_an_aws_error_after_a_batch_writes_what_passed(tmp_path, monkeypatch):
         "skipped": 10,
     }
     assert _catalog(layout)["m.039"]["message"] == "Nouveau"
-    # The call that failed after its retries counts at its batch's ceiling.
-    failed = batch_ceiling(layout, client.requests[1])
+    # The failed call counts each attempt it made at the most one attempt can cost.
+    failed = attempts * batch_ceiling(layout, client.requests[1]) / REVIEW.ATTEMPTS
     used = 1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6
     assert record["cost"]["usd"] == round(used + failed, 4)
     assert record["cost"]["retriedUsd"] == round(failed, 4)
-    assert record["cost"]["retriedAttempts"] == REVIEW.ATTEMPTS
+    assert record["cost"]["retriedAttempts"] == attempts
 
 
 # --- what cannot be revised ---------------------------------------------------------

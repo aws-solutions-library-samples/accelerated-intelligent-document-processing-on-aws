@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError, ProfileNotFound
+from botocore.exceptions import ClientError, EndpointConnectionError, ProfileNotFound
 
 pytestmark = pytest.mark.unit
 
@@ -822,8 +822,13 @@ def test_the_real_pricing_file_prices_the_default_model():
 # --- AWS errors, paths and usage ---------------------------------------------------------
 
 
-def _client_error(code: str) -> ClientError:
-    return ClientError({"Error": {"Code": code, "Message": "no"}}, "Converse")
+def _client_error(code: str, retries: int | None = 0) -> ClientError:
+    """An error as botocore raises it, with the ``RetryAttempts`` it adds to the error
+    response (None leaves it out)."""
+    response: dict[str, Any] = {"Error": {"Code": code, "Message": "no"}}
+    if retries is not None:
+        response["ResponseMetadata"] = {"HTTPStatusCode": 400, "RetryAttempts": retries}
+    return ClientError(response, "Converse")
 
 
 def test_an_aws_error_before_any_review_writes_no_report(tmp_path, monkeypatch, capsys):
@@ -839,12 +844,25 @@ def test_an_aws_error_before_any_review_writes_no_report(tmp_path, monkeypatch, 
 
     err = capsys.readouterr().err
     assert "Bedrock refused the run, so no report was written" in err
-    ceiling = batch_ceiling(client.requests[0])
-    assert f"(its attempts count up to US${ceiling:.2f})" in err
+    # botocore does not retry the refusal, so its one attempt counts at its most.
+    one = batch_ceiling(client.requests[0]) / MODULE.ATTEMPTS
+    assert f"(its attempts count up to US${one:.2f})" in err
     assert not (tmp_path / "out").exists()
 
 
-def test_an_aws_error_after_a_batch_writes_a_partial_report(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "error, attempts",
+    [
+        (_client_error("AccessDeniedException", retries=0), 1),
+        (_client_error("ThrottlingException", retries=2), 3),
+        (_client_error("ThrottlingException", retries=None), MODULE.ATTEMPTS),
+        (EndpointConnectionError(endpoint_url="https://bedrock"), MODULE.ATTEMPTS),
+    ],
+    ids=["not retried", "retried twice", "no RetryAttempts", "no response"],
+)
+def test_an_aws_error_after_a_batch_writes_a_partial_report(
+    tmp_path, monkeypatch, error, attempts
+):
     en, fr = _many(41)
     layout, _ = _tree(tmp_path, monkeypatch, en=en, fr=fr)
     answers = iter([agree, None])
@@ -852,7 +870,7 @@ def test_an_aws_error_after_a_batch_writes_a_partial_report(tmp_path, monkeypatc
     def answer(request):
         current = next(answers)
         if current is None:
-            raise _client_error("ThrottlingException")
+            raise error
         return current(request)
 
     client = FakeBedrock(answer)
@@ -863,13 +881,13 @@ def test_an_aws_error_after_a_batch_writes_a_partial_report(tmp_path, monkeypatc
     record = _report(tmp_path)
     assert record["counts"]["same"] == 40
     assert record["counts"]["skipped"] == 1
-    assert "ThrottlingException" in record["stopped"]
-    # The call that failed after its retries counts at its batch's ceiling.
-    failed = batch_ceiling(client.requests[1])
+    assert str(error) in record["stopped"]
+    # The failed call counts each attempt it made at the most one attempt can cost.
+    failed = attempts * batch_ceiling(client.requests[1]) / MODULE.ATTEMPTS
     used = 1_000 * 4e-6 + 500 * 2e-5 + 3_000 * 5e-6
     assert record["cost"]["usd"] == round(used + failed, 4)
     assert record["cost"]["retriedUsd"] == round(failed, 4)
-    assert record["cost"]["retriedAttempts"] == MODULE.ATTEMPTS
+    assert record["cost"]["retriedAttempts"] == attempts
     assert record["cost"]["calls"] == 1
 
 

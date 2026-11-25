@@ -67,9 +67,10 @@ before any batch that could take it past the cap, counting that batch at its
 largest possible size, every retry included. An answered call adds the usage it
 reports, which is its last attempt's, and each attempt botocore retried before it
 (``RetryAttempts``) at the most one attempt can cost: botocore retries a read timeout
-too, and a timed-out attempt may be billed. A call that fails after its retries adds
-its batch at its largest. The report shows that part on a line of its own, since a
-throttled attempt is not billed. ``--dry-run`` prints the plan and the
+too, and a timed-out attempt may be billed. A call that fails adds each attempt it
+made at that most: one for an error botocore does not retry, every attempt after a
+read timeout or a lost connection. The report shows that part on a line of its
+own, since a throttled attempt is not billed. ``--dry-run`` prints the plan and the
 estimate and calls nothing; ``--limit N`` takes the first N entries, for a small
 trial. It runs with the developer's own AWS credentials (``--profile``, or the usual
 AWS environment) in the Region named by ``--region``; nothing in a deployed stack
@@ -855,37 +856,51 @@ class Spend:
     usd: float = 0.0
     calls: int = 0
     tokens: dict[str, int] = field(default_factory=lambda: dict.fromkeys(USAGE_KEYS, 0))
-    #: Of ``usd``, what attempts with no usage of their own add at their most: the
-    #: attempts botocore retried before an answer, and every attempt of a call that failed.
+    #: Of ``usd``, what attempts with no usage of their own add at their most, and how
+    #: many they are (``retried``): the attempts botocore retried before an answer, and
+    #: the attempts a failed call made. An answered call that reports no usage is counted
+    #: at its whole ceiling in ``usd`` only, so its attempts are in neither field.
     retried_usd: float = 0.0
     retried: int = 0
 
 
 def count_call(
-    spend: Spend, rates: Rates, ceiling: float, response: Mapping[str, Any] | None
+    spend: Spend,
+    rates: Rates,
+    ceiling: float,
+    result: Mapping[str, Any] | BaseException,
 ) -> None:
-    """Add one call to ``spend``. ``ceiling`` is the most its batch can cost, every attempt
-    included (``ceiling_usd``), so ``ceiling / ATTEMPTS`` is the most one attempt can cost.
+    """Add one call to ``spend``. ``result`` is the response that answered it, or the AWS
+    error it raised. ``ceiling`` is the most its batch can cost, every attempt included
+    (``ceiling_usd``), so ``ceiling / ATTEMPTS`` is the most one attempt can cost.
 
-    An answered call adds the usage it reports, or the whole ceiling when it reports none.
-    That usage is its last attempt's: each attempt botocore retried before it reported none,
-    and a retried read timeout may have been billed, so each adds the most one attempt can
-    cost, as an unreported usage does. A call that failed after its retries (``response``
-    None) adds the whole ceiling."""
-    if response is None:
-        spend.usd += ceiling
-        spend.retried_usd += ceiling
-        spend.retried += ATTEMPTS
+    An answered call adds the usage it reports. That usage is its last attempt's: each
+    attempt botocore retried before it reported none, and a retried read timeout may have
+    been billed, so each adds the most one attempt can cost, to ``usd`` and, apart, to
+    ``retried_usd`` and ``retried``. An answered call that reports no usage adds its whole
+    ceiling, which covers every attempt, to ``usd`` alone.
+
+    A call that failed adds each attempt it made in the same way. A ``ClientError`` carries
+    the error response, and its ``RetryAttempts`` (``retries_of``) is one less than the
+    attempts made: one for an error botocore does not retry, such as
+    ``AccessDeniedException``. An error with no response, such as a read timeout or a lost
+    connection, counts every attempt botocore may make."""
+    if isinstance(result, BaseException):
+        error = getattr(result, "response", None)
+        attempts = retries_of(error) + 1 if isinstance(error, Mapping) else ATTEMPTS
+        spend.usd += attempts * ceiling / ATTEMPTS
+        spend.retried_usd += attempts * ceiling / ATTEMPTS
+        spend.retried += attempts
         return
     spend.calls += 1
-    usage = usage_of(response)
+    usage = usage_of(result)
     if usage is None:
         spend.usd += ceiling  # an unreported usage is counted at its most
         return
     spend.usd += rates.cost(usage)
     for key, value in usage.items():
         spend.tokens[key] += value
-    retries = retries_of(response)
+    retries = retries_of(result)
     spend.usd += retries * ceiling / ATTEMPTS
     spend.retried_usd += retries * ceiling / ATTEMPTS
     spend.retried += retries
@@ -927,7 +942,7 @@ def review_batches(
         try:
             response = client.converse(**converse_request(model, prefix, batch))
         except errors as exc:
-            count_call(spend, rates, ceiling, None)
+            count_call(spend, rates, ceiling, exc)
             if spend.calls == 0:
                 raise ToolError(
                     f"Bedrock refused the run, so no report was written (its attempts "
