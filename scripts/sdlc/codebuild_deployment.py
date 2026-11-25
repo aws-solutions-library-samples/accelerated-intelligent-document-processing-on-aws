@@ -14221,7 +14221,7 @@ def main():
         # integration_test_deployment.py turns it into the `idp-run-probes` S3
         # object metadata and the buildspec exports it here. Run one probe by
         # hand with `make stacktest-*` (scripts/sdlc/run_stacktest.py /
-        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING=true is still
+        # .claude/skills/run-stack-tests/SKILL.md). (IDP_TEST_APIGW_HOSTING=true is still
         # honored as a legacy alias, now held to the same probe-run timeout as the
         # schedule: on a project below 180 minutes it is refused, not run.)
         probes_enabled = (

@@ -1,1 +1,0 @@
-../../.claude/skills/curate-security-results.md

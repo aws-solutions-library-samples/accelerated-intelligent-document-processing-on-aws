@@ -334,26 +334,20 @@ round-trip:
 
 | Skill file | Read it when you are changing |
 |---|---|
-| `.claude/skills/backend-lambda.md` | Lambda handlers or `idp_common` Python code |
-| `.claude/skills/frontend-ui.md` | React / TypeScript / Cloudscape UI code |
-| `.claude/skills/infrastructure.md` | CloudFormation or SAM templates, nested stacks, GovCloud, log-group naming |
-| `.claude/skills/extraction-pipeline.md` | The processing pipeline, configuration, or agentic extraction |
-| `.claude/skills/testing-qa.md` | Tests — pytest patterns, `moto`, conftest layout |
-| `.claude/skills/documentation.md` | Documentation, the CHANGELOG, or the docs site |
-| `.claude/skills/code-review.md` | Anything — it is the self-review checklist to run before you push |
+| `.claude/skills/backend-lambda/SKILL.md` | Lambda handlers or `idp_common` Python code |
+| `.claude/skills/frontend-ui/SKILL.md` | React / TypeScript / Cloudscape UI code |
+| `.claude/skills/infrastructure/SKILL.md` | CloudFormation or SAM templates, nested stacks, GovCloud, log-group naming |
+| `.claude/skills/extraction-pipeline/SKILL.md` | The processing pipeline, configuration, or agentic extraction |
+| `.claude/skills/testing-qa/SKILL.md` | Tests — pytest patterns, `moto`, conftest layout |
+| `.claude/skills/documentation/SKILL.md` | Documentation, the CHANGELOG, or the docs site |
+| `.claude/skills/code-review/SKILL.md` | Anything — it is the self-review checklist to run before you push |
 
-`.claude/skills/` is **canonical**. The Cline assistant's `.cline/skills/` files
-are **symlinks** to them (under different filenames, e.g. `.cline/skills/docs.md`
-→ `.claude/skills/documentation.md`), so editing a `.claude` skill updates both.
-**Do not create a parallel copy under `.cline/skills/`** — add a symlink instead:
-
-```bash
-ln -s ../../.claude/skills/<name>.md .cline/skills/<name>.md
-```
-
-On a clone with `core.symlinks=false` (some Windows setups) those symlinks
-materialize as text files containing a path. If a skill file looks like a bare
-path, run `git config core.symlinks true` and re-checkout.
+Each skill is `.claude/skills/<name>/SKILL.md`, with `name` and `description`
+front matter (the open [Agent Skills](https://agentskills.io) layout). Claude Code
+and Cline both read `.claude/skills/` directly, and `.agents/skills` is a symlink to
+it for other assistants, so there is exactly one copy of each skill. Add a new skill
+as a new directory there; do not create a copy anywhere else. The front-matter rules
+are in the "Skill format" section of `.claude/skills/documentation/SKILL.md`.
 
 ### Documentation lives in two tiers
 
@@ -371,7 +365,7 @@ Both tiers are real documentation and they cover different things:
 the API detail, and any matching `docs/*.md` page that summarizes it. It is easy
 to update one and forget the other, so check both. Adding or changing a
 selectable Bedrock model touches many more files than you would expect — work
-through the checklist in `.claude/skills/documentation.md` rather than from
+through the checklist in `.claude/skills/documentation/SKILL.md` rather than from
 memory.
 
 To preview the site locally:
@@ -647,7 +641,7 @@ a line-scoped `# nosec <ID> - <reason>`; an unreachable advisory goes in
 `scripts/security/dep_audit_allowlist.json` with a justification; a
 security-matrix or Checkov finding goes in `scripts/srt/issues.json`. Adding a
 suppression without a stated reason will be asked about in review. The procedure
-is in `.claude/skills/srt-security-scan.md`.
+is in `.claude/skills/srt-security-scan/SKILL.md`.
 
 ### Type checking
 
@@ -815,7 +809,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
-| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/`, `src/ui/node_modules` does not match `src/ui/package-lock.json`, or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
+| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build or holds a stale entry, whose English changed after it was translated (`make ui-i18n-drop-stale LOCALE=<locale>` deletes those); check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/`, `src/ui/node_modules` does not match `src/ui/package-lock.json`, or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
 | `make check-ui-string-debt` | Ratchet the UI's hardcoded user-facing strings against `scripts/ui_string_debt.json`: a file may not gain one, an unlisted file may not have any, and the baseline may not be stale (part of `lint`, `fastlint` and `lint-cicd`) |
 | `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |
@@ -858,6 +852,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make ui-build` | Lint, typecheck, and production Vite build |
 | `make ui-i18n-extract` | Re-extract the UI's English message catalog into `src/ui/src/i18n/en.json` (the writer for `check-ui-i18n-catalog`; commit the result) |
 | `make ui-i18n-coverage` | Report translation coverage per locale catalog: missing, stale (English changed since translation) and invalid entries; advisory, never fails (`UI_I18N_COVERAGE_ARGS=--json` for JSON) |
+| `make ui-i18n-todo LOCALE=fr-CA` | Print, as JSON, the entries of a translation catalog that the change editing the English leaves missing or stale, with their English, description and glossary terms |
+| `make ui-i18n-ingest LOCALE=fr-CA FILE=<list>` | Write that list, given a `"message"` per entry, through the UI build's parity check, with each entry's `sourceHash` |
+| `make ui-i18n-drop-stale LOCALE=fr-CA` | Delete the stale and dead entries of a translation catalog, so the English shows until they are translated again |
 | `make docs-setup` | One-time docs site setup |
 | `make docs` | Build and serve the docs site locally |
 
@@ -906,7 +903,7 @@ are, say so in the PR description.
 
 **Region and service availability.** Not every Bedrock model is available in
 every Region. If you add one, follow the model checklist in
-`.claude/skills/documentation.md` — it covers the template enums, pricing,
+`.claude/skills/documentation/SKILL.md` — it covers the template enums, pricing,
 limits, client routing, UI, both documentation tiers, and the CHANGELOG.
 
 **Service quotas.** Bedrock and Textract throughput, Lambda concurrency, and the

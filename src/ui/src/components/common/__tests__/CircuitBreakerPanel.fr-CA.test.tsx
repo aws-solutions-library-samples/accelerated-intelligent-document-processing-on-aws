@@ -3,13 +3,17 @@
 /**
  * The circuit breaker dialog under `fr-CA`: with a fixture catalog its title, a field label, the
  * state, whose French label keeps the stored state `OPEN`, an Admin button and the confirmation
- * button it opens read French. Under `en` the same renders read today's English.
+ * button it opens read French. Under `en` the same renders read today's English. A notice shown
+ * under `en` reads French after a switch to `fr-CA`: the dialog stays mounted, so its notice
+ * outlives a language change.
  */
 import React from 'react';
-import { fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { I18n } from 'aws-amplify/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '../../../test-utils/renderWithIntl';
+import { setFixtureCatalog } from '../../../test-utils/i18nCatalogsMock';
 
 // One value for every render: an Admin, and an open circuit as the badge's hook hands it to the dialog.
 const state = vi.hoisted(() => ({
@@ -59,8 +63,10 @@ const title = (): string | null => createWrapper().findModal()!.findHeader()!.ge
 const stateLabel = (): string | null => createWrapper().findStatusIndicator()!.getElement().textContent;
 
 afterEach(() => {
+  state.onAction.mockReset();
   window.localStorage.clear();
   document.documentElement.lang = '';
+  I18n.setLanguage('en');
 });
 
 describe('the circuit breaker dialog under fr-CA', () => {
@@ -74,6 +80,39 @@ describe('the circuit breaker dialog under fr-CA', () => {
     expect(screen.getByRole('button', { name: 'Reprendre' })).toBeInTheDocument();
     expect(screen.queryByText('Circuit breaker')).toBeNull();
     expect(screen.queryByText('OPEN (paused)')).toBeNull();
+  });
+});
+
+describe('a notice across a switch from en to fr-CA', () => {
+  it.each([
+    {
+      notice: 'the success notice',
+      outcome: () => undefined,
+      en: 'Resume request submitted.',
+      id: 'common.circuitBreakerPanel.resume.submitted',
+      fr: 'Demande de reprise envoyée.',
+    },
+    {
+      notice: 'the notice of a failure without a reason',
+      outcome: () => Promise.reject({}),
+      en: 'Request failed',
+      id: 'common.circuitBreakerPanel.requestFailed',
+      fr: 'Échec de la demande',
+    },
+  ])('rewords $notice', async ({ outcome, en, id, fr }) => {
+    state.onAction.mockImplementation(outcome);
+    const view = renderWithIntl(dialog, { enabledLocales: ['en', 'fr-CA'] });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume processing' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Bedrock quota raised' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    });
+    expect(await screen.findByText(en)).toBeInTheDocument();
+
+    setFixtureCatalog('fr-CA', { [id]: fr });
+    view.setLocale('fr-CA');
+    expect(await screen.findByText(fr)).toBeInTheDocument();
+    expect(screen.queryByText(en)).toBeNull();
   });
 });
 

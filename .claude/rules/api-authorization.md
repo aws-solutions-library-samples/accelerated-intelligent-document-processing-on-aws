@@ -70,10 +70,10 @@ and the Function URL routes that bypass the dispatcher.
   `src/ui/src/hooks/__tests__/use-user-role.appGroups.test.ts`
 
 ## Sources
-- [.claude/skills/api-rbac-test.md](../skills/api-rbac-test.md): the architecture
+- [.claude/skills/api-rbac-test/SKILL.md](../skills/api-rbac-test/SKILL.md): the architecture
   under test, the sources of truth, the policy table, outcome vocabulary and
   triage order
-- [.claude/skills/live-auth-checks.md](../skills/live-auth-checks.md): the
+- [.claude/skills/live-auth-checks/SKILL.md](../skills/live-auth-checks/SKILL.md): the
   pre-token group-mapping trigger and federation checks
 - [docs/rbac.md](../../docs/rbac.md): enforcement layers, scope resolution, status
   mapping and known limitations

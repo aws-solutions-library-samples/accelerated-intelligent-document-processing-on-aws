@@ -19,7 +19,7 @@ Two rules, over every file git tracks or would track:
   expression, ``"1234abcd" * 5``, which is a value and not a literal.
 
 The convention, and how to keep a fixture distinct while following it, is in
-``.claude/skills/testing-qa.md``.
+``.claude/skills/testing-qa/SKILL.md``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ GUIDANCE = (
     "Fake AWS credentials must use AWS's documented placeholder shape so secret "
     "scanners do not report them: end a key ID in EXAMPLE, and build any other "
     '40-character value in the same file as an expression ("1234abcd" * 5). See '
-    "'Fake credentials in fixtures' in .claude/skills/testing-qa.md. If the value is "
+    "'Fake credentials in fixtures' in .claude/skills/testing-qa/SKILL.md. If the value is "
     "a real credential, rotate it before anything else."
 )
 

@@ -70,11 +70,16 @@ without its screenshot counts as not reached.
 
 What it does NOT protect
 ------------------------
-The screenshots are not redacted: a run is pointed only at a stack holding
-shipped sample data. The findings are the model's claims about what it saw. The
-model's ``navigate_page`` can reach any route of the UI and the hosts the proxy
-allows; it cannot run page script. Page text may try to steer the model; the
-only things it can produce are its findings and its screenshots.
+Nothing checks what the stack holds: the model sees, and the screenshots keep,
+whatever its pages show, and the screenshots are not redacted. Pointing a run
+only at a stack holding shipped sample data, and keeping its screenshots
+private, is the operator's job. Even on such a stack, the Users page
+screenshot, taken as the default Admin persona, shows the e-mail addresses of
+the stack's users, the admin's included. The findings are the model's claims
+about what it saw. The model's ``navigate_page`` can reach any route of the UI
+and the hosts the proxy allows; it cannot run page script. Page text may try to
+steer the model; the only things it can produce are its findings and its
+screenshots.
 """
 
 from __future__ import annotations

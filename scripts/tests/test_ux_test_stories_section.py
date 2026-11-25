@@ -89,7 +89,7 @@ story, following the documentation literally; {section.UI_FACTS_CAVEAT}
 {VIDEO}
 
 🤖 Automated first-time-user stories of `01234567` by `{MODEL}` in a confined \
-headless browser against `{STACK}`, following `.claude/skills/ux-test-stories-ci.md`. \
+headless browser against `{STACK}`, following `.claude/skills/ux-test-stories-ci/SKILL.md`. \
 **Advisory only** — it approves nothing and gates nothing.
 """
 

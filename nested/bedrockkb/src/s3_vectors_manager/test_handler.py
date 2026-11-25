@@ -9,7 +9,7 @@ mutations** — one of the useful mutations here is the same LENGTH as the code 
 replaces (swapping the arms of the status ternary), and CPython keys ``.pyc``
 invalidation on ``(mtime, size)``, so it can leave stale bytecode considered valid.
 ``-B`` alone does not help: it stops a ``.pyc`` being written, not one being read.
-See "Proving a test is load-bearing" in ``.claude/skills/testing-qa.md``.
+See "Proving a test is load-bearing" in ``.claude/skills/testing-qa/SKILL.md``.
 """
 
 import logging

@@ -114,7 +114,7 @@ BLOCK_END = "# <<< GENERATED {name}"
 def _premise_vendored_with_provenance(pattern: str) -> tuple[bool, str]:
     """A vendored tree is only vendored while it records what it was copied from.
 
-    ``.claude/skills/sync-pii-anonymizer.md`` re-syncs this tree against the
+    ``.claude/skills/sync-pii-anonymizer/SKILL.md`` re-syncs this tree against the
     upstream commit pinned in its ``PROVENANCE.md``. Without that file the tree
     is no longer a tracked copy of someone else's code, and "not linted against
     our style" stops being a reason.

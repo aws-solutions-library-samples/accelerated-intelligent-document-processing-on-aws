@@ -1806,6 +1806,19 @@ Three things make that true:
   intercepts, failing the execution and throwing away the fully processed
   document at the very last step.
 
+A transient failure inside evaluation is retried rather than scored. When reading a
+section's extraction result, the document, or the baseline from S3 is throttled,
+answered with a 5xx or times out, and when an `LLM`-method judge call fails with a
+throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx or a read
+timeout, the evaluation step fails with `TransientError` without recording a failed
+evaluation, and the state machine retries it with its usual backoff
+([Step Functions Retry Configuration](./configuration.md#step-functions-retry-configuration)).
+So such a failure no longer appears as fields scored as misses or a judge score of
+0.0. If the retries run out, the evaluation is recorded as `FAILED` and the document
+keeps its results. A missing object or an unreadable file keeps its existing outcome,
+and a judge error a retry cannot fix (a request Bedrock rejects, a reply that is not
+JSON) still scores the field 0.0.
+
 If you see `TIMED_OUT`, the document's extraction results are intact — only its
 score is missing. Re-run evaluation for that document after reducing the
 comparison work (see the warning about `LLM` methods inside lists, above). In a

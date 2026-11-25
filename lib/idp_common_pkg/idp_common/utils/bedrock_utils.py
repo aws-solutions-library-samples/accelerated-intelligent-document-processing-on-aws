@@ -49,7 +49,7 @@ from idp_common.lambda_deadline import (
 # ``agentic-extraction`` extras, NOT in lean Lambda extras like ``assessment`` —
 # so importing it at runtime makes this module unimportable from those functions
 # (Runtime.ImportModuleError at cold start, before the handler body runs). Guarded
-# per the project convention in .claude/skills/backend-lambda.md.
+# per the project convention in .claude/skills/backend-lambda/SKILL.md.
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_runtime import BedrockRuntimeClient
     from mypy_boto3_bedrock_runtime.type_defs import (

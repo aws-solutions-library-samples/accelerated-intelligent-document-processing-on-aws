@@ -24,11 +24,11 @@ flowchart LR
     Resolver["Lambda<br/>getLatestPublishedVersion"]
   end
   subgraph Public["Public artifacts S3 bucket"]
-    Templates["idp-main_<version>.yaml<br/>(many)"]
+    Pointer["&lt;prefix&gt;/idp-main-latest.json<br/>(one pointer object)"]
   end
 
   Nav -- "POST /op/getLatestPublishedVersion" --> Resolver
-  Resolver -- "Unsigned ListObjectsV2" --> Templates
+  Resolver -- "GetObject (unsigned, then signed)" --> Pointer
   Resolver -- "{ latestVersion, templateUrl }" --> Nav
   Nav -- "Compare to settings.Version" --> Nav
 ```
@@ -36,10 +36,15 @@ flowchart LR
 1. On Web UI load, a single `getLatestPublishedVersion` request
    (`POST /op/getLatestPublishedVersion`) is issued by `useLatestVersion()` (`src/ui/src/hooks/use-latest-version.ts`).
 2. The resolver Lambda (`src/lambda/version_check_resolver/index.py`)
-   lists the public bucket's prefix for keys matching
-   `<prefix>/idp-main_<version>.yaml`, picks the highest semver, and
-   returns the corresponding HTTPS S3 URL. Results are cached in the
-   warm Lambda for 10 minutes (`VERSION_CHECK_CACHE_TTL`).
+   reads one pointer object, `<prefix>/idp-main-latest.json`, with a
+   single `GetObject` (no listing, so it works against a release bucket
+   that grants anonymous `GetObject` but not `ListBucket`). The pointer
+   holds `version` and `templateUrl`; `idp-cli publish` overwrites it on
+   every publish so it always names the newest release
+   (`_upload_version_pointer` in `lib/idp_sdk/idp_sdk/_core/publish.py`).
+   The resolver returns the pointer's version and template URL. Results
+   are cached in the warm Lambda for 10 minutes
+   (`VERSION_CHECK_CACHE_TTL`).
 3. The UI compares the latest version with `settings.Version` (the
    deployed stack's version, populated by `publish.py`'s `<VERSION>`
    token). If the published version is strictly newer (per
@@ -77,21 +82,23 @@ prefix you're publishing to. This means:
 | Parameter | Default | Description |
 |---|---|---|
 | `PublicArtifactsBucket` | *(substituted by publish — `<bucket>-<region>` of the publishing operator)* | S3 bucket holding the public IDP CloudFormation templates. Set to `""` at deploy time to disable the check (the resolver returns `checkEnabled=false` and the UI hides the indicator). |
-| `PublicArtifactsPrefix` | *(substituted by publish — the publish prefix without version suffix, e.g. `artifacts/genai-idp`)* | S3 key prefix under `PublicArtifactsBucket` where versioned `idp-main_<version>.yaml` templates live. |
+| `PublicArtifactsPrefix` | *(substituted by publish — the publish prefix without version suffix, e.g. `artifacts/genai-idp`)* | S3 key prefix under `PublicArtifactsBucket` that holds the `idp-main-latest.json` pointer. |
 
 The token substitution happens in
 `lib/idp_sdk/idp_sdk/_core/publish.py` via two new tokens
 (`<PUBLIC_ARTIFACTS_BUCKET_TOKEN>`, `<PUBLIC_ARTIFACTS_PREFIX_TOKEN>`)
 mapped to `self.bucket` and `self.prefix` respectively. Because the
 publisher writes the version-stripped prefix here (not
-`prefix_and_version`), the resolver can list **sibling** versioned
-templates published by future `publish` runs — which is exactly what we
-need for "is there a newer version?".
+`prefix_and_version`), the resolver reads the pointer that future
+`publish` runs overwrite — which is exactly what we need for "is there a
+newer version?".
 
-The resolver uses **unsigned/anonymous S3 reads** (botocore
-`UNSIGNED`), so it works against any public bucket without an IAM grant
-against the bucket's account. There is no per-account IAM policy
-required.
+The resolver first makes an **unsigned/anonymous** `GetObject` (botocore
+`UNSIGNED`), so a public bucket needs no IAM grant against the bucket's
+account; on a public release the publisher writes the pointer with a
+`public-read` ACL so that read succeeds. If the unsigned read is refused,
+it retries once with the function's own credentials, which is what lets a
+private bucket work.
 
 ## Role gating for the "Update Stack" link
 
@@ -114,10 +121,11 @@ stack — but rendering the link to non-admins would be misleading.
 | Case | Behaviour |
 |---|---|
 | `PublicArtifactsBucket` parameter empty | Resolver returns `checkEnabled: false`; UI shows no badge |
-| Listing fails (network, perms, region mismatch) | Hook silently catches; no badge shown; no toast |
+| Pointer missing or unreadable (`NoSuchKey`, access denied, not valid JSON, no `version`) | Resolver returns `checkEnabled: true` with no version; no badge shown |
+| Reading the pointer fails otherwise (network, region mismatch) | Resolver returns an `errorMessage` and does not cache it; the hook silently catches; no badge shown; no toast |
 | Current version is a `.dev` build > public latest | Pre-releases sort below the matching final release; no badge shown |
 | GovCloud / private network | Defaults to no public bucket → no badge. Operators can override `PublicArtifactsPrefix` to point at an internal mirror if desired |
-| Pre-release on public bucket | The resolver returns the highest semver including pre-releases; in practice the public bucket only publishes final releases |
+| Pre-release published to the bucket | The pointer names whatever was published last, pre-release or not; in practice the public bucket only publishes final releases |
 
 ## Files
 

@@ -472,7 +472,7 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
 
-check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build or holds a stale entry, whose English changed after it was translated (issues #1770, #2080)
 	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
 	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
 	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it
@@ -1384,7 +1384,7 @@ endif
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
 # machines / IAM roles and deletes them again. Not in CI (they create IAM roles).
-# See .claude/skills/live-auth-checks.md.
+# See .claude/skills/live-auth-checks/SKILL.md.
 live-auth-checks: ## Live authorization checks vs real AWS (throwaway resources, no stack needed)
 	@echo "Running live authorization checks (creates and deletes throwaway resources)..."
 	$(PYTHON) scripts/security/live_checks/verify_idp_group_mapping.py
@@ -1392,11 +1392,11 @@ live-auth-checks: ## Live authorization checks vs real AWS (throwaway resources,
 	@echo -e "$(GREEN)✅ Live authorization checks passed$(NC)"
 
 # Federated sign-in verification. Needs a stack deployed against the throwaway
-# OIDC provider — see .claude/skills/live-auth-checks.md for the sequence, since
+# OIDC provider — see .claude/skills/live-auth-checks/SKILL.md for the sequence, since
 # the provider has to exist before the stack that federates to it.
 verify-idp-federation: ## Federated sign-in checks vs a deployed stack (STACK_NAME, IDP_FUNCTION, POOL_ID, CLIENT_ID, DOMAIN, TRIGGER_FUNCTION)
 ifndef STACK_NAME
-	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks.md)
+	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks/SKILL.md)
 endif
 	$(PYTHON) scripts/security/live_checks/verify_federated_signin.py \
 	    --stack-name $(STACK_NAME) \
@@ -1423,10 +1423,10 @@ endif
 
 # Live check of tenant grants from the IdP claim (TenantGrantSource=IdpClaim), against
 # a stack federated to the throwaway OIDC provider driven to issue Entra-shaped
-# tokens (a `roles` app-role claim). See .claude/skills/live-auth-checks.md.
+# tokens (a `roles` app-role claim). See .claude/skills/live-auth-checks/SKILL.md.
 verify-tenant-grants-federation: ## Tenant grants from the IdP claim vs a federated stack (STACK_NAME, REGION, IDP_FUNCTION, IDP_NAME, POOL_ID, CLIENT_ID, DOMAIN)
 ifndef STACK_NAME
-	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks.md)
+	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks/SKILL.md)
 endif
 	$(RUN_FIRST_PARTY) scripts/security/live_checks/verify_tenant_grants_federation.py \
 	    --stack-name $(STACK_NAME) \
@@ -1440,9 +1440,9 @@ endif
 # Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
 # Browser-driven UX test. Not a self-contained target on purpose: the browsing and
 # the usability judgement are done by the agent following
-# .claude/skills/ux-test.md, so this prepares a throwaway session and prints what
+# .claude/skills/ux-test/SKILL.md, so this prepares a throwaway session and prints what
 # to do next rather than pretending a shell script can assess a user experience.
-ux-test: ## Set up a browser UX-test session (requires STACK_NAME; see .claude/skills/ux-test.md; ux-record-deps for recording)
+ux-test: ## Set up a browser UX-test session (requires STACK_NAME; see .claude/skills/ux-test/SKILL.md; ux-record-deps for recording)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
 endif
@@ -1450,7 +1450,7 @@ endif
 	@$(RUN_FIRST_PARTY) scripts/ux_test_session.py setup $(STACK_NAME) \
 	    --group $(if $(GROUP),$(GROUP),Admin) \
 	    $(if $(REGION),--region $(REGION),)
-	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
+	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test/SKILL.md$(NC)"
 	@echo -e "$(YELLOW)Remember to run the teardown command printed above.$(NC)"
 
 # The UX review recorder (scripts/ux_recorder.py) needs ffmpeg/ffprobe for the
@@ -1491,7 +1491,7 @@ stacktest-tenancy: ## Tenant isolation (TenantIsolationMode=Strict) variant: run
 # only tier that can prove a transform produces a DEPLOYABLE stack — the gap that
 # shipped issues #676, #677 and the SuppressAdminInvite dangling parameter.
 # Each run is a full publish + deploy (~1h+). Not wired into CI; see
-# .claude/skills/transform-deploy-test.md.
+# .claude/skills/transform-deploy-test/SKILL.md.
 _TRANSFORM_ARGS = $(if $(REGION),--region $(REGION),) \
 	$(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL),) \
 	$(if $(STACK_NAME),--stack-name $(STACK_NAME),) \
@@ -1533,7 +1533,7 @@ stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, pro
 # reaches with the posture recorded in scripts/sdlc/sandbox_network_probe.py.
 # Creates and deletes its own throwaway bucket (ab-sandbox-probe-<random>).
 # Exit 0 = matches the recorded posture, 1 = differs, 2 = could not run.
-# Manual only: no CI job runs it (see .claude/skills/run-stack-tests.md).
+# Manual only: no CI job runs it (see .claude/skills/run-stack-tests/SKILL.md).
 stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S3 presigned PUT, raw TCP, credential presence (no stack; [REGION=us-west-2])
 	$(RUN_FIRST_PARTY) scripts/sdlc/sandbox_network_probe.py --region $(if $(REGION),$(REGION),us-west-2) $(if $(JSON_OUT),--json-out $(JSON_OUT),)
 
@@ -1541,9 +1541,9 @@ stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)
 
 # In-place stack upgrade validation (X→Y). No standalone harness in-repo yet —
-# see .claude/skills/test-upgrade.md for the procedure.
+# see .claude/skills/test-upgrade/SKILL.md for the procedure.
 stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrade skill)
-	@echo "Upgrade testing is documented in .claude/skills/test-upgrade.md"
+	@echo "Upgrade testing is documented in .claude/skills/test-upgrade/SKILL.md"
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
@@ -1559,7 +1559,7 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # else the newest; `rotate` takes this week's, as the weekly schedule does). VARIANT=mcp
 # also deploys upstream's MCP integration and runs the guide's manual procedure for it
 # before plan (VARIANT=mcp-datasets adds both test datasets). See docs/testing.md and
-# .claude/skills/release-validation.md (tier J).
+# .claude/skills/release-validation/SKILL.md (tier J).
 #   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
 #       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
 _TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
@@ -1595,7 +1595,7 @@ endif
 # fails the run. The Terraform counterpart of stacktest-upgrade. Budget about two
 # and a half hours. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>;
 # RESUME=1 continues a stopped or failed run from WORK_DIR. See docs/testing.md and
-# .claude/skills/release-validation.md (tier K).
+# .claude/skills/release-validation/SKILL.md (tier K).
 #   make stacktest-terraform-upgrade STACK_NAME=tfup1 ADMIN_EMAIL=you@example.com \
 #       FROM_MODULE_URL=https://.../idp-terraform-<old>.zip \
 #       TO_MODULE_URL=https://.../idp-terraform-<new>.zip
@@ -1810,6 +1810,32 @@ ui-i18n-coverage: ## Report translation coverage for each locale catalog present
 	@# report); in CI that is an error. Exit 2 only when no report could be made.
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
 
+# THE PER-CHANGE TRANSLATION TOOLS (issue #2080), NOT GATES: they call no AWS service and
+# no model, no CI job runs them, they are prerequisites of none of `lint`, `fastlint` or
+# `lint-cicd`, and their names match none of the check shapes test_ci_gate_parity.py
+# classifies by. In the change that edits the English, `ui-i18n-todo` prints the missing
+# and stale entries of src/ui/src/i18n/<LOCALE>.json as JSON (nothing else on stdout);
+# `ui-i18n-ingest FILE=<list>` writes that list once each entry has a "message",
+# refusing any message the build's parity check rejects; `ui-i18n-drop-stale` deletes
+# the stale entries (and the dead ones), so the English shows. `todo` and `ingest` run
+# node out of src/ui/node_modules (the coverage worker), and `ingest` and `drop-stale`
+# write the catalog, which the lock keeps to one writer, so all three take the same lock
+# as the UI targets (issue #1447). FILE is taken from the command line only, not from an
+# environment variable of that common name.
+FILE :=
+ui-i18n-todo: ## List the missing and stale entries of src/ui/src/i18n/<LOCALE>.json as JSON, with their English, description and glossary terms, for the change that edits the English to translate (LOCALE=fr-CA) (issue #2080)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-todo LOCALE=fr-CA$(NC)" >&2; exit 2; fi
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_catalog.py todo --locale $(LOCALE)'
+
+ui-i18n-ingest: ## Write a ui-i18n-todo list, given a "message" per entry, into src/ui/src/i18n/<LOCALE>.json with each entry's sourceHash, refusing any message the build's parity check rejects (LOCALE=fr-CA FILE=<list.json>) (issue #2080)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-ingest LOCALE=fr-CA FILE=todo.json$(NC)" >&2; exit 2; fi
+	@if [ -z "$(FILE)" ]; then echo -e "$(RED)ERROR: FILE is required, e.g. make ui-i18n-ingest LOCALE=fr-CA FILE=todo.json$(NC)" >&2; exit 2; fi
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_catalog.py ingest --locale $(LOCALE) "$(FILE)"'
+
+ui-i18n-drop-stale: ## Delete the stale and dead entries of src/ui/src/i18n/<LOCALE>.json, so the English shows until they are translated again (LOCALE=fr-CA) (issue #2080)
+	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-drop-stale LOCALE=fr-CA$(NC)" >&2; exit 2; fi
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_catalog.py drop-stale --locale $(LOCALE)'
+
 # A DEVELOPER TOOL, NOT A GATE: it calls Amazon Translate with the developer's own
 # AWS credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
 # `fastlint` or `lint-cicd`, and its name matches none of the check shapes
@@ -1845,13 +1871,14 @@ ui-i18n-review: ## Review src/ui/src/i18n/<LOCALE>.json with a Bedrock model and
 # credentials, so no CI job runs it, it is a prerequisite of none of `lint`,
 # `fastlint` or `lint-cicd`, and its name matches none of the check shapes
 # test_ci_gate_parity.py classifies by. It rewrites the entries of
-# src/ui/src/i18n/<LOCALE>.json that a ui-i18n-review report flagged, writes each
-# answer that passes the build's parity check (review and commit them), and writes a
-# provenance file under test-reports/. Flags go through UI_I18N_REVISE_ARGS: start with
+# src/ui/src/i18n/<LOCALE>.json that a ui-i18n-review report flagged, or with
+# --refresh every missing and stale entry, writes each answer that passes the
+# build's parity check (review and commit them), and writes a provenance file under
+# test-reports/. Flags go through UI_I18N_REVISE_ARGS: start with
 # `make ui-i18n-revise LOCALE=fr-CA UI_I18N_REVISE_ARGS="--review <report.json> --dry-run"`,
 # then e.g. `UI_I18N_REVISE_ARGS="--review <report.json> --region ca-central-1 --profile <name>"`.
 UI_I18N_REVISE_ARGS ?=
-ui-i18n-revise: ## Rewrite the entries of src/ui/src/i18n/<LOCALE>.json that a review flagged with a Bedrock model, writing only answers that pass the build's parity check, using your AWS credentials (LOCALE=fr-CA; UI_I18N_REVISE_ARGS="--review <report.json> --dry-run" first) (issue #1770)
+ui-i18n-revise: ## Rewrite the entries of src/ui/src/i18n/<LOCALE>.json that a review flagged, or with --refresh every missing and stale one, with a Bedrock model, writing only answers that pass the build's parity check, using your AWS credentials (LOCALE=fr-CA; UI_I18N_REVISE_ARGS="--review <report.json> --dry-run" or "--refresh --dry-run" first) (issue #1770)
 	@if [ -z "$(LOCALE)" ]; then echo -e "$(RED)ERROR: LOCALE is required, e.g. make ui-i18n-revise LOCALE=fr-CA$(NC)"; exit 2; fi
 	@# It runs node out of src/ui/node_modules (the coverage worker), so it takes the
 	@# same lock as the UI targets (issue #1447).
@@ -2111,7 +2138,7 @@ dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no rege
 
 ##@ Automated review (advisory — reviews an MR, gates nothing)
 # Runs Claude Code over open GitLab MRs or GitHub PRs with
-# .claude/skills/pr-review.md and posts the review as a comment. Deliberately
+# .claude/skills/pr-review/SKILL.md and posts the review as a comment. Deliberately
 # NOT a gate and deliberately NOT check-shaped in name or section: a model's
 # opinion must not decide whether code merges, and
 # scripts/tests/test_ci_gate_parity.py derives its universe of gates from the
@@ -2426,7 +2453,7 @@ endif
 ifndef PREV
 	$(error PREV is not set (previous PUBLISHED release). Usage: make benchmark-release VERSION=0.6.0 PREV=0.5.16)
 endif
-	@command -v claude >/dev/null 2>&1 || { echo -e "$(RED)claude CLI not found. Run the 'run-benchmarks' skill manually (see .claude/skills/run-benchmarks.md).$(NC)"; exit 1; }
+	@command -v claude >/dev/null 2>&1 || { echo -e "$(RED)claude CLI not found. Run the 'run-benchmarks' skill manually (see .claude/skills/run-benchmarks/SKILL.md).$(NC)"; exit 1; }
 	@echo -e "$(CYAN)Invoking Claude Code to run the release benchmark (v$(PREV) published -> v$(VERSION) develop)...$(NC)"
 	@echo -e "$(YELLOW)This deploys/upgrades a real stack and runs live Bedrock jobs (~1-2h, costs \$$). Ctrl-C to abort.$(NC)"
 	claude --dangerously-skip-permissions -p "Use the run-benchmarks skill to produce the release-cycle audit-trail entry comparing the previous PUBLISHED release v$(PREV) to the current develop prerelease v$(VERSION). Follow the skill's 'Release-cycle audit trail' procedure end to end: deploy the published v$(PREV) template$(if $(STACK_NAME), (reuse stack $(STACK_NAME))), run the corefast suite with --native-upload, save + promote baseline, upgrade the SAME stack in place to develop via --from-code --clean-build, re-run corefast, aggregate + compare + figures, then write docs/benchmarking/releases/v$(VERSION).md and append a row to docs/benchmarking/releases/README.md. Work autonomously and report the deltas."

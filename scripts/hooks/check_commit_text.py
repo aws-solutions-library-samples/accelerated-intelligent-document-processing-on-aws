@@ -31,7 +31,7 @@ remedy after the fact is a GitHub Support request.
 Scope is deliberately narrow — addresses, hostnames and identifiers, which are
 mechanical. The judgment that goes with it, such as writing a message at summary
 altitude rather than as an inventory of strings, lives in ``CLAUDE.md`` and
-``.claude/skills/code-review.md``.
+``.claude/skills/code-review/SKILL.md``.
 
 Exit codes: 0 to allow, 2 to block with the reason on stderr. Anything
 unexpected — malformed payload, unreadable stdin — allows the command rather than

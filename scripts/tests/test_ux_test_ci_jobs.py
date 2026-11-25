@@ -1789,7 +1789,7 @@ def test_the_search_target_hands_the_query_over_as_a_query(query: str) -> None:
 @pytest.mark.unit
 def test_the_unattended_skill_is_registered_in_claude_md() -> None:
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    assert ".claude/skills/ux-test-ci.md" in claude_md
+    assert ".claude/skills/ux-test-ci/SKILL.md" in claude_md
 
 
 @pytest.mark.unit

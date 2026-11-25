@@ -217,10 +217,13 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Custom MCP Agent](./docs/custom-MCP-agent.md) - Integrating external MCP servers for custom tools and capabilities
 - [Configuration](./docs/configuration.md) - Configuration and customization options
 - [JSON Schema Migration](./docs/json-schema-migration.md) - JSON Schema format guide and legacy migration details
+- [v0.6.15 → v0.6.16 Migration](./docs/migration-v0615-to-v0616.md) - What changes when upgrading to v0.6.16, including review routing and run plans
 - [Discovery](./docs/discovery.md) - Pattern-neutral discovery process and BDA blueprint automation
 - [Classification](./docs/classification.md) - Customizing document classification
 - [Extraction](./docs/extraction.md) - Customizing information extraction
 - [Human-in-the-Loop Review](./docs/human-review.md) - Human review workflows with built-in review system
+- [Review Routing](./docs/review-routing.md) - Routing rules that decide whether a document is reviewed, in which queue and with which reason
+- [Review Queues](./docs/review-queues.md) - Production and Test Studio queues that hold documents for human review, and how Annotators work them
 - [Assessment](./docs/assessment.md) - Extraction confidence evaluation using LLMs
 - [Rule Validation](./docs/rule-validation.md) - Business rule validation and compliance checking
 - [Evaluation Framework](./docs/evaluation.md) - Accuracy assessment system with analytics database and reporting
@@ -261,7 +264,7 @@ From the first release after 0.6.15, each GitHub Release carries a **solution pr
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 120 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 123 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats

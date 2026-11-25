@@ -31,7 +31,7 @@ Both exit non-zero if any check fails, and print a `PASS`/`FAIL` line per check.
 A third check, `verify_federated_signin.py`, needs a deployed stack and the
 throwaway OIDC provider in `oidc_provider/`; run it with
 `make verify-idp-federation`. The full sequence, and the Cognito behaviours these
-exist to pin down, are in `.claude/skills/live-auth-checks.md`.
+exist to pin down, are in `.claude/skills/live-auth-checks/SKILL.md`.
 
 ## `verify_idp_group_mapping.py`
 
@@ -147,7 +147,7 @@ removes what it created in a `finally`.
 The same harness is the `tenancy` deployment-variant probe: on the weekly
 variant-probe schedule CI deploys a throwaway `TenantIsolationMode=Strict` stack, runs
 it with `--yes`, and tears the stack down. `make stacktest-tenancy` runs that probe
-by hand; see `.claude/skills/run-stack-tests.md`.
+by hand; see `.claude/skills/run-stack-tests/SKILL.md`.
 
 ## Tenant grants from the identity provider's claim
 

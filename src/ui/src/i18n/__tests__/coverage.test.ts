@@ -158,6 +158,21 @@ describe('formatReport', () => {
     expect(text).toMatch(/ {2}dead \(1\): .*\n {4}nav\.gone\n/);
   });
 
+  it('ends each list that is not empty with the make targets that clear it, for its locale', () => {
+    const text = formatReport({ sourceKeys: 4, locales: { 'fr-CA': FR_COVERAGE } }, dir);
+    const translate =
+      'make ui-i18n-todo LOCALE=fr-CA lists them; give each a "message" and run make ui-i18n-ingest LOCALE=fr-CA FILE=<list>';
+    expect(text).toContain(`    nav.upload\n    fix: ${translate}\n`);
+    expect(text).toContain(`    nav.count\n    fix: ${translate}, or delete them with make ui-i18n-drop-stale LOCALE=fr-CA\n`);
+    expect(text).toMatch(
+      / {6}fr-CA\.json: nav\.greeting: .*\n {4}fix: give each a message that passes and run make ui-i18n-ingest LOCALE=fr-CA FILE=<list>; make ui-i18n-todo LOCALE=fr-CA lists those whose English changed, and make ui-i18n-drop-stale LOCALE=fr-CA deletes them\n/,
+    );
+    expect(text).toContain('    nav.gone\n    fix: make ui-i18n-drop-stale LOCALE=fr-CA deletes them\n');
+
+    const complete = { ...FR_COVERAGE, translated: 4, missing: [], stale: [], invalid: [], problems: [], dead: [] };
+    expect(formatReport({ sourceKeys: 4, locales: { 'fr-CA': complete } }, dir)).not.toContain('fix:');
+  });
+
   it('says there is nothing to measure when only en.json exists, naming the directory', () => {
     expect(formatReport({ sourceKeys: 2, locales: {} }, '/x/i18n')).toBe(
       '2 source keys in en.json, no translation catalogs (only en.json is in /x/i18n)\n',

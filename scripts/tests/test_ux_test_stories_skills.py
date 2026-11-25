@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import ast
-import os
 import re
 import sys
 from pathlib import Path
@@ -28,11 +27,9 @@ from ux_runner import (  # noqa: E402
 )
 
 SKILLS = REPO_ROOT / ".claude" / "skills"
-OPERATOR_SKILL = SKILLS / "ux-test-stories.md"
-CI_CONTRACT = SKILLS / "ux-test-stories-ci.md"
-MR_UX_CONTRACT = SKILLS / "ux-test-ci.md"
-CLINE_SKILLS = REPO_ROOT / ".cline" / "skills"
-CLINE_TABLE_SOURCE = SCRIPTS / "tests" / "test_repo_quality_review_skill.py"
+OPERATOR_SKILL = SKILLS / "ux-test-stories" / "SKILL.md"
+CI_CONTRACT = SKILLS / "ux-test-stories-ci" / "SKILL.md"
+MR_UX_CONTRACT = SKILLS / "ux-test-ci" / "SKILL.md"
 MR_UX_TEST_SUITE = SCRIPTS / "tests" / "test_ai_ux_test.py"
 REVIEW_STACK_CHECK = SCRIPTS / "ux_runner" / "session.py"
 MAKEFILE = REPO_ROOT / "Makefile"
@@ -172,19 +169,6 @@ def _tool_vocabulary() -> set[str]:
         | set(ux_story_mcp.BLOCKED_KINDS)
         | arguments
     )
-
-
-def _cline_table() -> dict[str, str]:
-    tree = ast.parse(_text(CLINE_TABLE_SOURCE))
-    for node in tree.body:
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "CLINE_EXEMPT"
-        ):
-            return ast.literal_eval(node.value)
-    raise AssertionError(f"{CLINE_TABLE_SOURCE.name} no longer defines CLINE_EXEMPT")
 
 
 def _develop_backend_re() -> re.Pattern[str]:
@@ -531,28 +515,18 @@ def test_every_make_target_and_script_the_skills_cite_exists() -> None:
 
 
 @pytest.mark.unit
-def test_the_ci_contract_has_a_cline_symlink() -> None:
-    entry = CLINE_SKILLS / "ux-test-stories-ci.md"
-    assert entry.is_symlink()
-    assert os.readlink(entry) == "../../.claude/skills/ux-test-stories-ci.md"
-    assert entry.resolve() == CI_CONTRACT.resolve()
-
-
-@pytest.mark.unit
-def test_the_operator_skill_is_claude_code_only_and_says_why() -> None:
-    linked = {
-        Path(os.path.realpath(entry)).name
-        for entry in CLINE_SKILLS.iterdir()
-        if entry.name.endswith(".md")
-    }
-    assert OPERATOR_SKILL.name not in linked
-    reason = _cline_table().get(OPERATOR_SKILL.name, "")
-    assert "--mcp-config" in reason, reason
-    assert "run_in_background" in reason, reason
+def test_the_operator_skill_says_it_needs_claude_code_and_why() -> None:
+    """Every assistant that reads ``.claude/skills/`` sees this skill, so the skill
+    itself has to say, before its first section, that it depends on Claude Code."""
+    body = _text(OPERATOR_SKILL).split("\n## ", 1)[0]
+    assert "Claude Code" in body
+    assert "--mcp-config" in body
+    assert "run_in_background" in body
 
 
 @pytest.mark.unit
 def test_both_skills_are_registered_in_claude_md() -> None:
     claude_md = _text(REPO_ROOT / "CLAUDE.md")
     for path in (OPERATOR_SKILL, CI_CONTRACT):
-        assert f".claude/skills/{path.name}" in claude_md, path.name
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        assert relative in claude_md, relative

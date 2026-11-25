@@ -184,7 +184,9 @@ pins an export beside its localized cell.
 replays the `i18n:extract` script from `package.json` into a temporary file, by path out of
 `src/ui/node_modules` (never `npx`), and fails with a diff when `en.json` is stale ("Run `make
 ui-i18n-extract` and commit"); it then compiles every other catalog and fails on any problem a
-build would hit. Check-only; part of `lint`, `fastlint` and `lint-cicd`. Off CI without
+build would hit. It also fails on any stale translation, naming `make ui-i18n-todo` then `make
+ui-i18n-ingest` to translate it again, or `make ui-i18n-drop-stale` to delete it. Check-only;
+part of `lint`, `fastlint` and `lint-cicd`. Off CI without
 `src/ui/node_modules`, or on a machine the installed `@formatjs/cli` ships no native binary for
 (the wrapper is installed everywhere, the binary per platform), it prints `⏭️ SKIPPED` (a skip,
 never a pass, naming the cause); in CI either is an error.
@@ -192,7 +194,8 @@ never a pass, naming the cause); in CI either is an error.
 What compiling checks: every entry must be present in `en.json` (an id the English no longer has
 is a dead translation and fails the build), be the `{ message, sourceHash }` shape with a
 well-formed hash, and pass the parity check against its English. The hash's *value* is not
-compared at build time: a stale translation compiles and ships, and the coverage report lists it.
+compared at build time: a stale translation compiles, so `make check-ui-i18n-catalog` fails on it
+instead, and the coverage report lists it.
 An id the translation lacks is fine (English fallback). A problem throws inside the plugin, so
 `vite build` fails naming the catalog, the id and the reason; nothing degraded ships. `formatjs
 extract` itself does not validate ICU syntax, so a malformed English `defaultMessage` is caught
@@ -286,8 +289,12 @@ question, not this one's.
 - **Output.** `test-reports/ux-translation-review/<time>-review/`: `findings.md` (a table per
   locale, each finding linked to its screenshot), `findings.json`, `run.json` and `screens/`.
   There is no video: the recorder renders only the review stack `idp-ux-nightly`. The findings are
-  the model's claims for a person to adjudicate, and the screenshots are not redacted, so review a
-  stack that holds sample data only.
+  the model's claims for a person to adjudicate.
+- **What the stack holds is the operator's job.** Nothing checks it: the model sees, and the
+  screenshots keep, whatever the stack's pages show, and the screenshots are not redacted. Point
+  a run only at a stack that holds sample data, and keep its screenshots private: even then, the
+  Users page screenshot (the default persona is an admin) shows the e-mail addresses of the
+  stack's users, the admin's included.
 
 ## The string-debt gate
 
@@ -399,20 +406,62 @@ re-measure it, and the figures will shrink as the conversion PRs land):
 `<locale>.json`: `translated`, `missing` (no entry, English shown), `stale` (the recorded
 `sourceHash` is not the hash of the current English), `invalid` (what the build rejects, with its
 `problems` in the build's own wording) and `dead` (ids `en.json` no longer has), plus a
-percentage. Every English id lands in exactly one of translated, missing, stale or invalid.
+percentage. Every English id lands in exactly one of translated, missing, stale or invalid. Under
+each list that is not empty, a `fix:` line names the make targets that clear it.
 `UI_I18N_COVERAGE_ARGS=--json` gives the machine-readable form; `--locale fr-CA` narrows it. It is
 advisory: exit 0 for any report, 2 only for a tool error (no `en.json`, malformed JSON, a
 `--locale` with no file); it is in none of `lint`, `fastlint` or `lint-cicd`. `en-XA` is never a
 candidate (it is never a file). This is the figure release notes quote.
 
+## Translating in the same change
+
+A message's translations are added, updated or removed in the change that adds or edits its
+English. The coding agent that edited the screen writes the French, since it knows where each
+message shows; the make targets over [`ui_i18n_catalog.py`](../../../../scripts/ui_i18n_catalog.py)
+do the mechanics. They call no AWS service and no model.
+
+1. Declare or edit the message (see [Writing a message](#writing-a-message)) and run
+   `make ui-i18n-extract`.
+2. `make ui-i18n-todo LOCALE=fr-CA > scratch/todo.json` (after `mkdir -p scratch`; `scratch/` is
+   gitignored) writes the entries to translate as JSON: those the catalog lacks, and the stale
+   ones, whose English changed after they were translated, including those that no longer compile
+   because an argument, a plural or a tag changed. Each carries its English, its `description`,
+   the glossary rows its English uses and, when stale, the translation it holds.
+3. Add each entry's French as a `"message"`, in the glossary's terms and the locale's rules
+   (`STYLE_RULES` in [`ui_i18n_review.py`](../../../../scripts/ui_i18n_review.py) and
+   `REVISE_RULES` in [`ui_i18n_revise.py`](../../../../scripts/ui_i18n_revise.py)). A term the
+   change introduces goes into the glossary in the same change. Large lists can be written and
+   ingested in parts: an entry needs only its `id` and its `message`.
+4. `make ui-i18n-ingest LOCALE=fr-CA FILE=scratch/todo.json` writes them. Each message gets the
+   locale's spacing before punctuation by code, as the Bedrock tools apply it, and the build's
+   parity check; one that fails is refused with the build's wording and its entry keeps its text.
+   A message that passes is written with the `sourceHash` of its English, dead entries are
+   removed, and running the same file again changes nothing. An entry whose `english` is no longer
+   the English is refused: the English changed after the list was made, so list it again.
+5. `make check-ui-i18n-catalog` passes once no entry is stale or rejected by the build.
+
+When the French cannot be written in the change, `make ui-i18n-drop-stale LOCALE=fr-CA` deletes the
+stale entries, and any dead ones, so the screen shows the English until a later change translates
+it. A missing translation never fails a job: the English shows, and `make ui-i18n-coverage` lists
+it.
+
+For catch-up before a release and for audits, the Bedrock tools below run on your own AWS
+credentials: `make ui-i18n-revise` with `--refresh` drafts every missing entry and every stale one
+the build still accepts, then `make ui-i18n-review` with `--provenance` reviews what it wrote, and a
+person samples the result.
+`make ui-i18n-translate` (Amazon Translate) is not part of this flow: its drafts lost too much of
+each message's context.
+
 ## Drafting a translation
 
 `make ui-i18n-translate LOCALE=fr-CA` ([`ui_i18n_translate.py`](../../../../scripts/ui_i18n_translate.py) over
 [`translate-segments.mjs`](../../scripts/i18n/translate-segments.mjs)) drafts, with Amazon Translate, the entries of
-`<locale>.json` that the coverage report calls missing or stale, and writes them with their `sourceHash`. It is a
-developer tool, run with your own AWS credentials: no CI job runs it and no deployed stack calls it. Start with
-`UI_I18N_TRANSLATE_ARGS=--dry-run`, which prints the entries, the characters and the estimated cost and calls
-nothing; a real run needs `--region` (and `--profile` for a named profile), and `--limit N` takes a small batch first.
+`<locale>.json` that the coverage report calls missing or stale, and writes them with their `sourceHash`. It is no
+longer part of the flow (see [Translating in the same change](#translating-in-the-same-change)), and stays for a
+one-off draft. It is a developer tool, run with your own AWS credentials: no CI job runs it and no deployed stack
+calls it. Start with `UI_I18N_TRANSLATE_ARGS=--dry-run`, which prints the entries, the characters and the
+estimated cost and calls nothing; a real run needs `--region` (and `--profile` for a named profile), and
+`--limit N` takes a small batch first.
 A `<locale>.json` in this directory turns that language on in the switcher (`availableLocales` is file presence), so
 a drafted catalog is committed only in the change that enables its language.
 
@@ -425,7 +474,8 @@ a drafted catalog is committed only in the change that enables its language.
 - **The glossary.** [`glossary.fr-CA.csv`](glossary.fr-CA.csv) is imported as the custom terminology `idp-ui-fr-CA`,
   its first two columns only, again whenever they change. Translate applies a term wherever its English occurs, so
   the file holds names and nouns that are safe in every context, never verbs. A multi-word term matched in Title Case
-  English is put back in the glossary's own case. A new screen's new term goes in the same change as the screen.
+  English is put back in the glossary's own case, before the parity check, so the check judges the text written. A new
+  screen's new term goes in the same change as the screen.
 - **Cost.** Translate bills the characters sent. The run refuses to start above `--max-chars` (by default about
   US$5 at the standard rate); a full `fr-CA` pass is far below it.
 - **Provenance.** Each run writes what it sent and received, the terms Translate applied, the terminology hash and,
@@ -455,11 +505,14 @@ estimated cost and calls nothing; a real run needs `--region` (and `--profile` f
 - **What the report says.** Each entry is `same` (no problem, same wording), `same-meaning` (no problem, worded
   otherwise: the current translation stands) or `disagreement` (a person decides, with the model's suggestion beside
   it). An answer that is not well formed is listed as unreviewed and never counted. The agreement figure is the share
-  of reviewed entries with no problem. A suggestion you take is copied into `<locale>.json` by hand, where
-  `make check-ui-i18n-catalog` checks it.
+  of reviewed entries with no problem. A suggestion you take goes into `<locale>.json` through
+  `make ui-i18n-ingest`, as an entry with its `id` and `message` in a list shaped like the one `make ui-i18n-todo`
+  prints, where the build's parity check judges it.
 - **Model and cost.** The default model is `us.anthropic.claude-opus-5-5`; `--model` takes another inference profile
   of it that has a price in `config_library/pricing.yaml`. The run refuses to start above `--max-usd` (US$20 by
-  default) and stops before any batch that could take it past the cap.
+  default) and stops before any batch that could take it past the cap. Each attempt botocore retried, and every
+  attempt of a call that failed, counts at its most, since a timed-out attempt may be billed; the report shows that
+  part on a line of its own.
 - **Permissions.** `bedrock:InvokeModel` on the inference profile and on the foundation model in each Region the
   profile routes to.
 - **Exit status.** 0 when the report covers every entry (or a dry run within the cap), 1 when it is partial (the
@@ -468,20 +521,30 @@ estimated cost and calls nothing; a real run needs `--region` (and `--profile` f
 ## Revising a translation
 
 `make ui-i18n-revise LOCALE=fr-CA` ([`ui_i18n_revise.py`](../../../../scripts/ui_i18n_revise.py)) has the review's
-model write again the entries of `<locale>.json` that a review flagged, and writes each answer that passes the build's
-parity check. It is a developer tool run with your own AWS credentials, like the other two. Start with
+model write again the entries of `<locale>.json` that a review flagged, or with `--refresh` every entry the catalog
+lacks or holds for an older English, and writes each answer that passes the build's parity check. It is a developer
+tool run with your own AWS credentials, like the other two. Start with
 `UI_I18N_REVISE_ARGS="--review <report.json> --dry-run"`, which prints the entries, the batches and the estimated cost
 and calls nothing; a real run needs `--region` (and `--profile` for a named profile).
 
 - **What is revised.** `--review <report.json>` (repeatable) takes a review's disagreements, each with the problems,
   reason and suggestion the review gave, and the entries it could not review. An entry whose translation changed
   after that review is left out. `--notes <file>`, a JSON object of message id to a note, adds entries no review
-  flagged, such as one a screen shows wrongly or one the catalog lacks. Invalid and stale entries are never sent.
+  flagged, such as one a screen shows wrongly or one the catalog lacks. Invalid entries are never sent, and stale
+  ones only with `--refresh`.
+- **Refreshing a catalog.** `--refresh` is the way to bring a catalog up to date with Bedrock after the English
+  changed: it adds every entry `make ui-i18n-coverage` calls missing or stale. A missing entry is drafted from the
+  English, and so is a stale one: its request says that its English changed and carries neither its old translation
+  nor a review's findings about it, and its answer is written with the new `sourceHash` even when the text is the
+  same. It combines with `--review` and `--notes`. `UI_I18N_REVISE_ARGS="--refresh --dry-run"` prints how many
+  entries are missing and stale and the estimated cost; after the run, `make ui-i18n-review` with
+  `--provenance <file>` reviews what it wrote.
 - **What the model is asked.** The review's rules for the locale come first, then the rules for a revision: for
   `fr-CA`, Canadian French wherever it fits (Quebec usage such as courriel, clavardage, téléverser and bogue), a
   no-break space before a colon that ends a phrase and none before `;`, `?` and `!`, then the whole glossary. Per
-  entry it gets the English, its `description`, the current translation, the glossary terms its English uses, and the
-  review's findings and the note when there are any. It answers with the message only.
+  entry it gets the English, its `description`, the current translation (none for a missing or stale entry), the
+  glossary terms its English uses, and the review's findings and the note when there are any. It answers with the
+  message only.
 - **What is written.** Each answer first gets the locale's spacing before punctuation by code, as the drafting tool
   applies it (the model does not keep no-break spaces). The coverage worker then checks every answer with the
   build's parity check. An answer that fails, or is not well formed, is refused with the reason, and its entry keeps
@@ -492,7 +555,8 @@ and calls nothing; a real run needs `--region` (and `--profile` for a named prof
   `test-reports/ui-i18n-revise/`. `make ui-i18n-review` with `--provenance <file>` reviews the entries that run
   wrote. When the same model wrote them, that review is not independent of the revision.
 - **Model and cost.** As the review: `us.anthropic.claude-opus-5-5` by default, a refusal to start above
-  `--max-usd` (US$20 by default), and a stop before any batch that could take the run past it.
+  `--max-usd` (US$20 by default), a stop before any batch that could take the run past it, and retried attempts
+  counted at their most, apart in the provenance.
 - **Exit status.** 0 when every entry sent was answered and checked and none was refused (or a dry run within the
   cap), 1 when an answer was refused or the cap or an AWS error stopped the run (what passed is written, the rest is
   listed), 2 when nothing was written.
@@ -578,9 +642,9 @@ and calls nothing; a real run needs `--region` (and `--profile` for a named prof
 ## What stays English for now
 
 The list a user reads is [Interface language](../../../../docs/web-ui.md#interface-language) in
-the web UI guide; change it together with this section. On the screens that list keeps English,
-the unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
-integer percents built in template strings (`${progressPct}%`) stay until those screens convert.
+the web UI guide; change it together with this section. In the text that list keeps English, the
+unit suffixes on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on
+integer percents built in template strings (`${progressPct}%`) stay until that text converts.
 The follow-ups (keeping the choice with the user account, the configuration editor, stable error
 codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).

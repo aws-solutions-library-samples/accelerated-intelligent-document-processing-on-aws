@@ -1,1 +1,0 @@
-../../.claude/skills/work-the-backlog-hazards.md

@@ -795,7 +795,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.660Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. The flagged environment variables are the fixture's RSA private exponent and OIDC client secret. Both are generated per run by deploy.py (rsa_parameters / secrets.token_urlsafe), sign nothing but this fixture's own test tokens, and are destroyed with the stack. There is no real credential to protect."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. The flagged environment variables are the fixture's RSA private exponent and OIDC client secret. Both are generated per run by deploy.py (rsa_parameters / secrets.token_urlsafe), sign nothing but this fixture's own test tokens, and are destroyed with the stack. There is no real credential to protect."
   },
   {
     "source": "security-matrix",
@@ -810,7 +810,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.660Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. X-Ray tracing on a fixture that lives for the duration of one manual verification run has no operational value; there is nothing to trace it for and nobody to read it."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. X-Ray tracing on a fixture that lives for the duration of one manual verification run has no operational value; there is nothing to trace it for and nobody to read it."
   },
   {
     "source": "security-matrix",
@@ -825,7 +825,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.660Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. CloudWatch alarms presuppose an on-call owner and a lifetime longer than one verification run. A failure here fails the verification script, which is the intended signal."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. CloudWatch alarms presuppose an on-call owner and a lifetime longer than one verification run. A failure here fails the verification script, which is the intended signal."
   },
   {
     "source": "security-matrix",
@@ -840,7 +840,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.661Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: an OIDC provider must accept the arbitrary query and form parameters that /authorize and /token carry (redirect_uri, state, scope, code, grant_type, client_id, client_secret...). Attaching a RequestValidator would reject valid OIDC requests and break the flow this fixture exists to exercise."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: an OIDC provider must accept the arbitrary query and form parameters that /authorize and /token carry (redirect_uri, state, scope, code, grant_type, client_id, client_secret...). Attaching a RequestValidator would reject valid OIDC requests and break the flow this fixture exists to exercise."
   },
   {
     "source": "security-matrix",
@@ -855,7 +855,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.661Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: the discovery document, JWKS, /authorize, /token and /userinfo endpoints must be reachable without AWS authentication for Cognito to federate to them at all. An OIDC provider that required AWS auth could not serve any relying party."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: the discovery document, JWKS, /authorize, /token and /userinfo endpoints must be reachable without AWS authentication for Cognito to federate to them at all. An OIDC provider that required AWS auth could not serve any relying party."
   },
   {
     "source": "security-matrix",
@@ -870,7 +870,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.662Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: AuthorizationType must be NONE so Cognito can reach the OIDC endpoints. Setting AWS_IAM or COGNITO_USER_POOLS here would make the provider unusable as an identity provider."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: AuthorizationType must be NONE so Cognito can reach the OIDC endpoints. Setting AWS_IAM or COGNITO_USER_POOLS here would make the provider unusable as an identity provider."
   },
   {
     "source": "security-matrix",
@@ -885,7 +885,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.662Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: this method serves the unauthenticated OIDC endpoints (discovery, JWKS, /authorize, /token, /userinfo) that a relying party must be able to call."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: this method serves the unauthenticated OIDC endpoints (discovery, JWKS, /authorize, /token, /userinfo) that a relying party must be able to call."
   },
   {
     "source": "security-matrix",
@@ -900,7 +900,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.662Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — AuthorizationType must be NONE for Cognito to reach the OIDC endpoints."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — AuthorizationType must be NONE for Cognito to reach the OIDC endpoints."
   },
   {
     "source": "security-matrix",
@@ -915,7 +915,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-09-09T15:13:50.663Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — the OIDC endpoints are unauthenticated by design."
+    "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks/SKILL.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — the OIDC endpoints are unauthenticated by design."
   },
   {
     "source": "security-matrix",

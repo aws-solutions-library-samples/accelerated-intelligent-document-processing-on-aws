@@ -299,8 +299,9 @@ The solution supports optional Amazon Bedrock Guardrails integration:
     next step reads directly. A guardrail intervention would put the guardrail's
     blocked-output message in its place. They have never sent the guardrail, and
     enabling it is a behaviour change that has not been measured.
-  - **Embeddings** for multi-document discovery, which return vectors rather than
-    text.
+  - **Embeddings** for multi-document discovery and for section classification
+    with `section_classification.method: embeddings`, which return vectors rather
+    than text.
   - **Rule authoring** in the configuration editor, which translates rule text an
     administrator types rather than document text.
 - OpenAI GPT-5.x models are served through the Responses API on the

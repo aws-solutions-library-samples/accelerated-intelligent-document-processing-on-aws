@@ -146,7 +146,7 @@ At release time the contract's **release rules** apply as well:
 it. They apply automatically when the repository's version is a final `X.Y.Z`, so the
 release-prep commit stays red until a maintainer has reviewed the curated files
 against the release's CHANGELOG, added the `changes.yaml` entry and set
-`reviewed_for_version`. The procedure is `.claude/skills/update-solution-profile.md`,
+`reviewed_for_version`. The procedure is `.claude/skills/update-solution-profile/SKILL.md`,
 and the [Release Runbook](./release-runbook.md) names the step. When the GitHub
 Release is published, the **Solution profile release asset** workflow checks out the
 tag, applies the release rules again, builds the tarball, validates the unpacked copy

@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT-0
 """First-time-user stories, each judged from the journal of its own tool calls.
 
-This is the unattended form of ``.claude/skills/ux-test-stories.md``, under the
-contract in ``.claude/skills/ux-test-stories-ci.md``. A **story** in
+This is the unattended form of ``.claude/skills/ux-test-stories/SKILL.md``, under the
+contract in ``.claude/skills/ux-test-stories-ci/SKILL.md``. A **story** in
 ``scripts/ux_stories.toml`` says only what a person wants; one story attempted as
 one persona is a **flow**, keyed ``story@persona``. For every flow this opens one
 confined, signed-in headless Chrome (``ux_runner.session``), hands a pinned
@@ -257,15 +257,15 @@ HARNESS_PATHS = (
     "scripts/ux_stories.toml",
     "scripts/check_markdown_links.py",
     "docs-site/setup.sh",
-    ".claude/skills/ux-test-stories.md",
-    ".claude/skills/ux-test-stories-ci.md",
+    ".claude/skills/ux-test-stories/SKILL.md",
+    ".claude/skills/ux-test-stories-ci/SKILL.md",
 )
 #: This file, as a story job's ``UX_ENTRY`` must name it, relative to the tree.
 ENTRY = "scripts/sdlc/ai_ux_test_stories.py"
 #: The operator skill, whose brief the prompt inlines.
-OPERATOR_SKILL = ".claude/skills/ux-test-stories.md"
+OPERATOR_SKILL = ".claude/skills/ux-test-stories/SKILL.md"
 #: The unattended contract, which the prompt inlines whole.
-CI_CONTRACT = ".claude/skills/ux-test-stories-ci.md"
+CI_CONTRACT = ".claude/skills/ux-test-stories-ci/SKILL.md"
 #: The story server, run by path from the harness.
 STORY_SERVER_SCRIPT = "scripts/ux_story_mcp.py"
 DEFAULT_MODEL = "us.anthropic.claude-opus-5-5"

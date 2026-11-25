@@ -83,6 +83,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -435,7 +436,13 @@ def _read_text(path: Path) -> str | None:
     as text produces findings that can never be acted on. It is a real residual and is
     reported as one: an id embedded in a PDF, an image or a parquet file is not detected
     by this gate.
+
+    A symlink is read as its target path, which is what git stores for it: the
+    content it points at is a tracked path of its own and is read there, and a
+    link to a directory (``.agents/skills``) has no bytes to read otherwise.
     """
+    if path.is_symlink():
+        return os.readlink(path)
     try:
         raw = path.read_bytes()
     except OSError:

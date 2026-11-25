@@ -5,7 +5,15 @@ import React, { useState, useEffect } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Modal, Box, SpaceBetween, Button, Spinner, Alert, Header } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
+import {
+  defineMessages,
+  FormattedMessage,
+  useIntl,
+  type IntlShape,
+  type MessageTag,
+  type NoMessageValues,
+  type TypedMessageDescriptor,
+} from 'react-intl';
 
 import { submitAgentQuery, getAgentJobStatus, listAvailableAgents } from '../../graphql/generated';
 import AgentResultDisplay from '../document-agents-layout/AgentResultDisplay';
@@ -21,12 +29,19 @@ interface DocumentItem {
   [key: string]: unknown;
 }
 
+/**
+ * The job's error: the server's or a thrown error's own text, kept as it arrives, or one of the
+ * dialog's messages, worded at render so it follows a language switch. The minimized chip keeps
+ * the job running while the language menu stays usable.
+ */
+export type TroubleshootError = string | { message: TypedMessageDescriptor<NoMessageValues> };
+
 interface ExistingJob {
   jobId: string;
   status: string;
   result?: string | Record<string, unknown>;
   agentMessages?: unknown[] | Record<string, unknown>;
-  error?: string;
+  error?: TroubleshootError;
   timestamp?: number;
   documentKey?: string;
 }
@@ -47,7 +62,7 @@ interface TroubleshootModalProps {
         status: string | null;
         result: string | Record<string, unknown> | null;
         agentMessages: unknown;
-        error: string | null;
+        error: TroubleshootError | null;
         timestamp: number;
         documentKey: string | undefined;
       }) => void)
@@ -158,6 +173,10 @@ const messages = defineMessages<{
 /** Renders a `<strong>...</strong>` element value: the document key. */
 const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
 
+/** The job's error in the UI language. */
+const errorText = (error: TroubleshootError | null, intl: IntlShape): string | null =>
+  error === null || typeof error === 'string' ? error : intl.formatMessage(error.message);
+
 const TroubleshootModal = ({
   visible,
   onDismiss,
@@ -169,7 +188,7 @@ const TroubleshootModal = ({
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [jobResult, setJobResult] = useState<string | Record<string, unknown> | null>(null);
   const [agentMessages, setAgentMessages] = useState<unknown>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<TroubleshootError | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [_availableAgents, setAvailableAgents] = useState<AgentInfo[]>([]);
@@ -189,6 +208,7 @@ const TroubleshootModal = ({
   // button and "Copy full details" share the same data.
   const isTerminal = jobStatus === 'COMPLETED' || jobStatus === 'FAILED';
   const findings = extractFindingsText(jobResult);
+  const shownError = errorText(error, intl);
   const canReport = isTerminal && (Boolean(findings) || Boolean(error));
 
   const docContext: DocumentContext = {
@@ -196,7 +216,7 @@ const TroubleshootModal = ({
     objectStatus: documentItem?.objectStatus,
     configVersion: documentItem?.configVersion as string | undefined,
     executionArn: documentItem?.executionArn as string | undefined,
-    jobError: error ?? undefined,
+    jobError: shownError ?? undefined,
     findings: findings || undefined,
   };
 
@@ -292,7 +312,7 @@ const TroubleshootModal = ({
       subscribeToJobCompletion(job.jobId);
     } catch (err) {
       logger.error('Error submitting troubleshoot query:', err);
-      setError((err as Error).message || intl.formatMessage(messages.submitFailed));
+      setError((err as Error).message || { message: messages.submitFailed });
       setJobStatus('FAILED');
     } finally {
       setIsSubmitting(false);
@@ -345,7 +365,7 @@ const TroubleshootModal = ({
                 setJobResult(job.result ?? null);
                 clearInterval(intervalId);
               } else if (job.status === 'FAILED') {
-                setError(job.error ?? intl.formatMessage(messages.jobFailed));
+                setError(job.error ?? { message: messages.jobFailed });
                 clearInterval(intervalId);
               }
             }
@@ -478,7 +498,7 @@ const TroubleshootModal = ({
           </Box>
         )}
 
-        {error && <Alert type="error">{error}</Alert>}
+        {shownError && <Alert type="error">{shownError}</Alert>}
 
         {jobStatus && jobStatus !== 'FAILED' && (
           <Alert type={jobStatus === 'COMPLETED' ? 'success' : 'info'}>

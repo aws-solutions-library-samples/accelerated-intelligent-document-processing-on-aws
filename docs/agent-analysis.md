@@ -174,8 +174,16 @@ The analytics agent has access to four specialized tools:
 ### Accessing the Feature
 
 1. Log in to the GenAIIDP Web UI
-2. Navigate to the "Agent Analysis" section in the main navigation
+2. Open the **Document Analytics** page by its address: append `#/documents/agents`
+   to the Web UI URL. The side navigation has no link to it; the breadcrumb trail
+   reads **Document Processing › Documents › Document Analytics**. For a
+   conversational interface reachable from the navigation, use
+   [Agent Chat](agent-companion-chat.md)
 3. You'll see a chat-like interface for querying your document data
+
+The page's agents come from `listAvailableAgents`, and queries go through
+`submitAgentQuery`; both allow the Admin, Author and Viewer groups (see
+[rbac.md](rbac.md)).
 
 ### Agent Selection
 
@@ -190,8 +198,14 @@ The Agent Analysis interface allows you to select from multiple available agents
 **Available Agent Types:**
 
 - **Analytics Agent**: Database queries, SQL generation, and data visualization
-- **Dummy Agent**: Simple calculations and testing capabilities
+- **Error Analyzer Agent**: Diagnoses document processing failures (see [error-analyzer.md](error-analyzer.md))
+- **Code Intelligence Agent**: Code-related assistance and technical documentation (see [code-intelligence.md](code-intelligence.md))
 - **External MCP Agents**: Custom tools and systems integrated via MCP servers
+
+The registered agents are in `lib/idp_common_pkg/idp_common/agents/factory/registry.py`.
+The **Quick Start** agent is registered there too, but it is left out of this list:
+it runs only from its own panel, which offers it to Admins (see
+[Quick Start](quick-start.md)), and `submitAgentQuery` refuses a query that names it.
 
 **Agent Selection Tips:**
 
@@ -318,7 +332,10 @@ agents:
     model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
-**Supported Models:**
+**Supported Models:** the configuration editor offers every model in the
+`agents.chat_companion.model_id` enum of the configuration schema in
+`patterns/unified/template.yaml`, in its `us.`, `eu.` and `global.` forms. Common
+choices:
 
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Default)
 - `us.anthropic.claude-sonnet-4-6` (recommended for complex reasoning)

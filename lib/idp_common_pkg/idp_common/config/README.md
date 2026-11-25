@@ -1459,7 +1459,7 @@ one GovCloud uses.
 `was_offered` decides one thing only — whether a `pricing.yaml` row must be
 retained. A model this solution never made selectable cannot appear in anyone's
 cost report, so it needs no rate, and inventing one would breach the "never invent
-model facts" rule in `.claude/skills/add-model.md`.
+model facts" rule in `.claude/skills/add-model/SKILL.md`.
 
 ## Adding or changing a model
 
@@ -1467,7 +1467,7 @@ Model defaults and inference fields live in `models.py`, and model/feature
 compatibility is enforced in `merge_utils.py`. Adding a selectable Bedrock model
 touches many other files too (template enums, pricing, UI, the bedrock client,
 docs) — follow the checklist in
-[.claude/skills/documentation.md](../../../../.claude/skills/documentation.md).
+[.claude/skills/documentation/SKILL.md](../../../../.claude/skills/documentation/SKILL.md).
 
 Removing one that has reached **end of life** is the reverse walk of that
 checklist, with one exception: the model keeps its `pricing.yaml` entry, its

@@ -57,9 +57,9 @@ permanent.
 ## Sources
 - [CLAUDE.md](../../CLAUDE.md): published-text rules and the `check-commit-text`
   and `check-shared-branch` guards
-- [.claude/skills/code-review.md](../skills/code-review.md): the security and
+- [.claude/skills/code-review/SKILL.md](../skills/code-review/SKILL.md): the security and
   published-text checklist
-- [.claude/skills/pr-review.md](../skills/pr-review.md): security review
+- [.claude/skills/pr-review/SKILL.md](../skills/pr-review/SKILL.md): security review
   criteria and SRT interpretation
 - [docs/dependency-confusion.md](../../docs/dependency-confusion.md): installing
   first-party packages safely

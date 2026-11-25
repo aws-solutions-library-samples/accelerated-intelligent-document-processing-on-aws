@@ -123,15 +123,15 @@ If any issues are found during QA, I MUST fix them before completing the task. I
 ## Domain-Specific Skills
 
 Detailed coding patterns, conventions, checklists and procedures for each area of
-this project live in `.cline/skills/`. Each file there is a symlink to its canonical
-counterpart in `.claude/skills/`, sometimes under a different name; the filename map
-is in the "Two skill systems, one source of truth" section of
-`.claude/skills/documentation.md`, and the skill table in `CLAUDE.md` says when to use
-each one. List `.cline/skills/` for the current set rather than relying on a copy here.
+this project are skills in `.claude/skills/<name>/SKILL.md`, which Cline reads as
+project skills directly. The skill table in `CLAUDE.md` says when to use each one,
+and the "Skill format" section of `.claude/skills/documentation/SKILL.md` describes
+the layout. List `.claude/skills/` for the current set rather than relying on a copy
+here.
 
 ### How to Use Skills
 1. At the start of a task, identify which domain(s) the task touches
-2. Read the relevant skill file(s) from `.cline/skills/`
+2. Read the relevant skill file(s) from `.claude/skills/`
 3. Follow the patterns, templates, and conventions described in the skill
 4. The skill files contain project-specific idioms — prefer them over generic patterns
 5. When in doubt, the skill file conventions take precedence over general best practices

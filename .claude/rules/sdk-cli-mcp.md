@@ -66,5 +66,5 @@ deployed MCP server.
 - [docs/mcp-connector.md](../../docs/mcp-connector.md) and
   [docs/custom-MCP-agent.md](../../docs/custom-MCP-agent.md): connector
   architecture and MCP security practices
-- [.claude/skills/backend-lambda.md](../skills/backend-lambda.md): the banned
+- [.claude/skills/backend-lambda/SKILL.md](../skills/backend-lambda/SKILL.md): the banned
   imports

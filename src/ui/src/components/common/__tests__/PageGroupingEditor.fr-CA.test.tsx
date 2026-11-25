@@ -70,7 +70,7 @@ const FR = {
   'common.pageGrouping.clearSelection': 'Effacer la sélection',
   'common.pageGrouping.addSection': 'Ajouter une section',
   'common.pageGrouping.expand': 'Agrandir',
-  'common.pageGrouping.draggingPages': '{count} pages déplacées',
+  'common.pageGrouping.draggingPages': '{count, plural, one {# page déplacée} other {# pages déplacées}}',
   'common.pageGrouping.cancel': 'Annuler',
   'common.pageGrouping.defaultSave': 'Enregistrer le regroupement',
   'common.pageGrouping.defaultTitle': 'Regroupement des pages',

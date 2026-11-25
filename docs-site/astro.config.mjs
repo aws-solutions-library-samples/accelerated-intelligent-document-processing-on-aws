@@ -121,6 +121,7 @@ export default defineConfig({
             { label: "Review Queues", slug: "review-queues" },
             { label: "Review Routing", slug: "review-routing" },
             { label: "Rule Validation", slug: "rule-validation" },
+            { label: "Z3 Rule Validation Engine", slug: "rule-validation-z3" },
             { label: "Missing Page Handling", slug: "missing-page-handling" },
             {
               label: "OCR Image Sizing Guide",
@@ -350,17 +351,12 @@ export default defineConfig({
               label: "Granular Assessment Retirement",
               slug: "migration-granular-retirement",
             },
+            {
+              label: "Data Mart Migration Runbook",
+              slug: "data-mart-migration-runbook",
+            },
           ],
         },
-        // AUTO-SIDEBAR-START
-        {
-          label: "New & Uncategorized",
-          items: [
-            { label: "Data Mart Migration Runbook", slug: "data-mart-migration-runbook" },
-            { label: "Rule Validation Z3", slug: "rule-validation-z3" },
-          ],
-        },
-        // AUTO-SIDEBAR-END
       ],
     }),
   ],

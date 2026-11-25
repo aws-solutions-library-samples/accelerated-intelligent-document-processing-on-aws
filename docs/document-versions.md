@@ -212,10 +212,14 @@ policy, including why a group check is not a per-document check.
 
 ## Caveats
 
-- **HITL edits after completion.** A version reflects the pipeline output at the
-  moment the workflow completed. If a reviewer edits extraction results via
-  Human-in-the-Loop review *after* completion, those edits modify the current
-  output objects; the version snapshot captured at completion is unchanged.
+- **Review edits.** A version reflects the pipeline output at the moment a run
+  completed, and is never changed afterwards. A reviewer's edits are saved as a
+  draft under the document's `review/` prefix, which is not part of any version.
+  When the review is completed, the run that follows it (starting at Apply Review
+  Changes, see [Runs that follow a review](#reprocessing)) writes the corrections
+  onto the results and records a **new** version when it completes; the versions
+  from before the review keep the machine's values. A rejected review records no
+  version.
 - **Documents processed before this feature.** For documents last processed by a
   release without version history, the prior object *bytes* may still exist as
   noncurrent S3 versions, but there are no run manifests, so those old runs

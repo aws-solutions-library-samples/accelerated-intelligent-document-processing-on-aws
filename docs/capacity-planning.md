@@ -162,7 +162,7 @@ The capacity calculation system provides the following analysis through its reso
 > for each key — so a model the pipeline never calls constrains neither the token
 > limit nor the request limit. The two maps carry the same keys, and a model added
 > to one and not the other is the case the checklist in
-> `.claude/skills/add-model.md` exists to prevent.
+> `.claude/skills/add-model/SKILL.md` exists to prevent.
 >
 > ⚠️ **For a plan that calls only Claude Sonnet 5 or Sonnet 5.5, the request limit is
 > therefore the placeholder above and does not bind.** The processing rate is then
@@ -183,7 +183,7 @@ The capacity calculation system provides the following analysis through its reso
 > read. A model AWS publishes no quota for is mapped to `null`, which gives the
 > same warning without a lookup. Confirm a new code resolves in the Regions you
 > deploy to, with the `aws service-quotas list-service-quotas --service-code
-> bedrock` query in `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
+> bedrock` query in `.claude/skills/add-model/SKILL.md`. `BEDROCK_MODEL_QUOTA_CODES` and
 > `BEDROCK_MODEL_RPM_QUOTA_CODES` in `template.yaml` are the authority for which
 > models are covered — read them rather than a list here, which would go stale on
 > the next model addition.
@@ -228,6 +228,14 @@ escalation, the measured or the default rate and its value. A per-class
 `x-aws-idp-extraction-escalation-model` override is not reflected; the line is
 charged to the global escalation model. The judge and escalation models need
 entries in the quota code maps like any step model.
+
+**Policy rule validation is not planned.** Its Bedrock requests, made by
+`rule_validation.fact_extraction.model` and
+`rule_validation.rule_validation_orchestrator.model` while `rule_validation.enabled`
+is true, are in no line of the plan (`STEP_MODEL_CONFIG_KEYS` and
+`PATTERN_BEDROCK_STEPS` in `src/lambda/calculate_capacity/index.py` hold no
+rule-validation step). For a profile that runs policy rule validation, the reported
+requirement is a floor: add that demand to the models it uses yourself.
 
 **Latency Bar Color Coding**:
 - **Green** (P50, P75): When all model quotas are within limits

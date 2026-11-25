@@ -1277,7 +1277,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
       or account. It is also, by construction, a model with no
       ``config_library/pricing.yaml`` entry — so cost reporting would be broken
       for it regardless. To use a model newer than this release, add it to
-      ``config_library/pricing.yaml`` (see ``.claude/skills/add-model.md``,
+      ``config_library/pricing.yaml`` (see ``.claude/skills/add-model/SKILL.md``,
       which requires that entry anyway).
     - **ARN whose resolved resource is opaque** (an application-inference-profile
       UUID, a provisioned-model name — no ``.``, or UUID-shaped) **→ warning.**

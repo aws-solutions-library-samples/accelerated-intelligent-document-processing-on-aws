@@ -1,1 +1,0 @@
-../../.claude/skills/api-rbac-test.md

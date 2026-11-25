@@ -290,7 +290,7 @@ def test_the_sidecar_route_reads_a_typed_set():
         ("s3://" + BUCKET + "/in/doc.json", b"{}", "does not end in"),
         ("https://example.invalid/x" + da.SIDECAR_SUFFIX, None, "not an s3://"),
         (
-            "s3://" + BUCKET + "/in/missing" + da.SIDECAR_SUFFIX,
+            "s3://" + BUCKET + "/in/doc.pdf" + da.SIDECAR_SUFFIX,
             None,
             "could not be read",
         ),
@@ -568,7 +568,9 @@ def test_an_unexpected_failure_reading_attributes_is_reported_not_raised():
         def get(self, *args, **kwargs):
             raise RuntimeError("boom")
 
-    intake = da.read_object_attributes(Exploding(), BUCKET, s3_client=None)
+    intake = da.read_object_attributes(
+        Exploding(), BUCKET, s3_client=None, document_key="k"
+    )
     assert intake.attributes == {}
     assert intake.dropped and "RuntimeError" in intake.dropped[0][1]
 
@@ -686,6 +688,7 @@ def test_the_sidecar_read_is_bounded_at_the_request_and_the_read():
         {da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/k" + da.SIDECAR_SUFFIX},
         BUCKET,
         client,
+        document_key="k",
     )
     assert intake.attributes == {"a": "b"}
     (call,) = client.calls
@@ -767,3 +770,43 @@ def test_the_configuration_pin_survives_an_attribute_read_that_raises(monkeypatc
     doc = Document.from_s3_event(_event("in/doc.pdf"), "out")
     assert doc.config_version == "v7"
     assert doc.attributes == {}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "sidecar_key",
+    [
+        "other/doc.pdf" + da.SIDECAR_SUFFIX,  # another prefix
+        "in/other.pdf" + da.SIDECAR_SUFFIX,  # another document beside it
+        "in/doc" + da.SIDECAR_SUFFIX,  # a near miss on the name
+        "in/doc.pdf/x" + da.SIDECAR_SUFFIX,  # below the document's key
+    ],
+)
+def test_a_sidecar_that_is_not_the_documents_own_is_never_read(sidecar_key):
+    """Intake reads the sidecar with the stack's role, so it must accept only the
+    one key beside the document; any other key is refused before any read."""
+    client = _RecordingS3(b'{"account_id": "someone-else"}')
+    intake = da.read_object_attributes(
+        {da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/{sidecar_key}"},
+        BUCKET,
+        client,
+        document_key="in/doc.pdf",
+    )
+    assert intake.attributes == {}
+    assert client.calls == []
+    ((what, reason),) = intake.dropped
+    assert what == "(sidecar)"
+    assert "not the document's key" in reason
+
+
+@pytest.mark.unit
+def test_the_documents_own_sidecar_is_read():
+    client = _RecordingS3(b'{"account_id": "mine"}')
+    intake = da.read_object_attributes(
+        {da.SIDECAR_URI_METADATA_KEY: f"s3://{BUCKET}/in/doc.pdf" + da.SIDECAR_SUFFIX},
+        BUCKET,
+        client,
+        document_key="in/doc.pdf",
+    )
+    assert intake.attributes == {"account_id": "mine"}
+    assert da.sidecar_key_for("in/doc.pdf") == "in/doc.pdf" + da.SIDECAR_SUFFIX

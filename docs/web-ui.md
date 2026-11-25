@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators and Reviewers also get their Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 - **Interface language** — use the everyday screens in English or French (Canada), chosen from the language menu in the top navigation (see [Interface language](#interface-language))
 
@@ -608,6 +608,9 @@ rule's label opens it.
 Whether routing rules are evaluated at all is the **Review Routing** switch, in
 **Processing Settings → Review Routing (Optional)**. That section comes after
 **Policy Rule Validation (Optional)**, in the order the pipeline runs the two steps.
+A newly created stack turns Review Routing (`hitl.enabled`) on in the profiles it
+creates; a stack update leaves each profile's switch as it is (see
+[The Review Routing switch](review-routing.md#the-review-routing-switch)).
 
 Routing rules, inputs, tests, the reason and its placeholders, the warnings and the
 DMN format are described in [Review Routing](review-routing.md).
@@ -848,7 +851,9 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   built-in routing rules, a production document that raised confidence alerts, left
   a required field without a value or has a section whose extraction failed goes
   to the Default queue, when Review Routing is on in its configuration and the
-  Default queue is enabled.
+  Default queue is enabled. A newly created stack turns Review Routing
+  (`hitl.enabled`) on in the profiles it creates (see
+  [The Review Routing switch](review-routing.md#the-review-routing-switch)).
   Queues have no threshold of their own: the alerts use each field's own
   threshold, otherwise `hitl.confidence_threshold`. A queue's page lists the
   **Routing rules that use this queue**. Deleting a queue moves its
@@ -1164,9 +1169,10 @@ account.
 
 **What stays English.** These are not translated:
 
-- the admin, configuration and Test Studio screens, including the configuration editor's help
-  text, and Test Studio's own text on a test-set item's edit page and on a test set's queue page
-  in Review Studio;
+- the text that is not yet in the UI's message catalog on the admin, configuration and Test
+  Studio screens, which are only partly translated, and in what Test Studio shows on a test-set
+  item's edit page and on a test set's queue page in Review Studio. That text includes the
+  configuration editor's help text;
 - `(Active)`, which marks the active configuration profile in the profile lists of the
   **Upload Documents** page and the **Reprocess** and **Skip All Reviews by profile** dialogs;
 - on the **Edit Page Grouping** board, the instructions and announcements a screen reader reads
@@ -1190,8 +1196,8 @@ account.
 - document data, always: extracted values, document class names, configuration content and file
   names appear as they were written.
 
-At this release, **2,903 of 2,903** interface messages (**100%**) have a French (Canada)
-translation; a message without one is shown in English.
+A message without a French (Canada) translation is shown in English; `make ui-i18n-coverage`
+lists those messages by id.
 
 Developers: the [i18n README](../src/ui/src/i18n/README.md) explains how a message is declared
 and how a language is added.
