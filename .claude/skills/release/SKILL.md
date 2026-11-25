@@ -19,7 +19,7 @@ Trigger phrases: "release 0.6.17", "ship the release", "do the release now".
 | Phase | Command | Steps |
 |---|---|---|
 | `git` | `make release` | Preflight: `VERSION` final, tree clean, `develop` and `main` identical locally and on both remotes, `main` an ancestor of `develop`, no `v<x.y.z>` tag or GitHub Release yet, the CHANGELOG section's Templates block naming every Region `scripts/aws-release.sh` publishes, and `make solution-profile-check` passing. Then it merges `develop` into `main` with `--no-ff` and the message `Merge branch 'develop' v<x.y.z>`, tags `v<x.y.z>`, and pushes `main` and the tag to both remotes |
-| `publish` | `RELEASE_ACCOUNT_ID=<id> make release PHASE=publish` | Preflight: HEAD is the tag on both remotes, tree clean, `idp-cli --version` matches, and the credentials are for the publishing account. Then it runs `scripts/aws-release.sh` (log in `scratch/release-<x.y.z>-publish.log`). While that runs it creates the GitHub Release as a **draft**, titled `v<x.y.z>`, with the CHANGELOG section from its heading through its Templates block as the notes. It then verifies, without credentials, every Region's versioned template, floating template, `idp-main-latest.json` and template `Description`, and only then publishes the release as latest. After that it runs phase `post` |
+| `publish` | `make release PHASE=publish CONFIRM=<x.y.z>` | Preflight: HEAD is the tag on both remotes, tree clean, `idp-cli --version` matches. The confirmation names the account and role from `aws sts get-caller-identity`, so confirming the version confirms the account too; with `RELEASE_ACCOUNT_ID` set, a different account is refused. Then it runs `scripts/aws-release.sh` (log in `scratch/release-<x.y.z>-publish.log`). While that runs it creates the GitHub Release as a **draft**, titled `v<x.y.z>`, with the CHANGELOG section from its heading through its Templates block as the notes. It then verifies, without credentials, every Region's versioned template, floating template, `idp-main-latest.json` and template `Description`, and only then publishes the release as latest. After that it runs phase `post` |
 | `post` | `make release PHASE=post` | `make docs-deploy` from the tag. Then it switches to `develop`, fast-forwards it to `main`, runs `make version V=<x.y.z+1>.dev1`, commits `Start <x.y.z+1>.dev1 development`, and pushes `develop` to both remotes. `SKIP_DOCS=1` or `SKIP_BUMP=1` leaves out one half |
 
 `DRY_RUN=1` prints every command and runs only the read-only checks; with a dirty tree or
@@ -35,14 +35,14 @@ includes the Bash tool and `!` commands, pass `CONFIRM=<x.y.z>` instead.
    `make release CONFIRM=<x.y.z>`. The user can run that as `! make release CONFIRM=<x.y.z>`;
    run it yourself only if the user's request said to go ahead.
 3. **Credentials.** Ask the user to paste the publishing account's temporary
-   credentials into the session (`! export AWS_ACCESS_KEY_ID=...` and the rest), and
-   for the account id if `RELEASE_ACCOUNT_ID` is not set. Never write the account id into
-   a tracked file: the repository is public and `scripts/check_account_ids.py` refuses
+   credentials into the session (`! export AWS_ACCESS_KEY_ID=...` and the rest). Before
+   confirming, read the account and role the preflight prints, and stop if they are not
+   the publishing account. Never write the account id into a tracked file: the repository is public and `scripts/check_account_ids.py` refuses
    it. Environment credentials take precedence over `AWS_PROFILE`, which is what the
    account check guards.
 4. **Phase `publish`.** The publish takes a long time, so run it in the background and
    wait for the notification rather than polling:
-   `RELEASE_ACCOUNT_ID=<id> make release PHASE=publish CONFIRM=<x.y.z>`.
+   `make release PHASE=publish CONFIRM=<x.y.z>`.
 5. **Report.** Give the release URL (`gh release view v<x.y.z> --json url`), the
    verification result per Region, the docs deploy result, and the new `develop`
    version and commit. Check that the *Solution profile release asset* workflow

@@ -20,9 +20,11 @@ which are pasted into the shell between them:
 Phase "publish" ends by running phase "post" (make docs-deploy, then fast-forward
 develop to main, make version V=<x.y.z+1>.dev1, commit and push to both remotes).
 
-Phase "publish" reads the expected account id from RELEASE_ACCOUNT_ID (or
---account). It is never written into this file, because this repository is
-public and scripts/check_account_ids.py refuses a committed account id.
+Phase "publish" names the account and role the credentials belong to in its
+confirmation, so CONFIRM=<x.y.z> also confirms the account. RELEASE_ACCOUNT_ID (or
+--account), when set, makes that a strict check instead. The id is never written
+into this file, because this repository is public and scripts/check_account_ids.py
+refuses a committed account id.
 
 The GitHub Release is created as a draft while the artifacts upload, and is
 published only once every template URL in its notes resolves without
@@ -210,7 +212,7 @@ def preflight_git(version: str) -> None:
     say("  ok: solution profile reviewed for this version")
 
 
-def preflight_publish(version: str, account: str | None) -> None:
+def preflight_publish(version: str, account: str | None) -> str:
     say("Preflight (publish)")
     tag = f"v{version}"
     problems = []
@@ -243,10 +245,7 @@ def preflight_publish(version: str, account: str | None) -> None:
             f"idp-cli reports {cli!r}, not {version}: it is installed from another checkout. Run `make setup`."
         )
     say(f"  ok: {cli}")
-    if not account:
-        raise ReleaseError(
-            "Set RELEASE_ACCOUNT_ID (or pass --account) to the publishing account id."
-        )
+    identity = "(dry run: no credentials checked)"
     if (
         DRY_RUN
         and not os.environ.get("AWS_ACCESS_KEY_ID")
@@ -259,15 +258,20 @@ def preflight_publish(version: str, account: str | None) -> None:
         ident = json.loads(
             run(["aws", "sts", "get-caller-identity", "--output", "json"])
         )
-        if ident["Account"] != account:
+        identity = f"account {ident['Account']} as {ident['Arn']}"
+        if account and ident["Account"] != account:
             raise ReleaseError(
-                f"Credentials are for account {ident['Account']}, not {account}. Paste the publishing account's "
-                "temporary credentials (environment variables beat AWS_PROFILE) and rerun with PHASE=publish."
+                f"Credentials are for account {ident['Account']}, not RELEASE_ACCOUNT_ID {account}. "
+                "Paste the publishing account's temporary credentials (environment variables beat "
+                "AWS_PROFILE) and rerun with PHASE=publish."
             )
         say(
-            f"  ok: credentials are for the publishing account ({ident['Arn'].split('/')[-2] if '/' in ident['Arn'] else ident['Arn']})"
+            f"  ok: credentials are for the publishing account ({identity})"
+            if account
+            else f"  credentials: {identity} (set RELEASE_ACCOUNT_ID to check it strictly)"
         )
     release_notes(version)
+    return identity
 
 
 # ---------------------------------------------------------------------- phases
@@ -318,7 +322,7 @@ def phase_git(version: str, assume_yes: bool) -> None:
     say(
         f"\nPhase git done. HEAD is main at {tag}.\n"
         "Next: paste the publishing account's temporary credentials into this shell, then\n"
-        "  RELEASE_ACCOUNT_ID=<id> make release PHASE=publish"
+        f"  make release PHASE=publish CONFIRM={version}"
     )
 
 
@@ -373,11 +377,12 @@ def verify_artifacts(version: str) -> list[str]:
 
 
 def phase_publish(version: str, account: str | None, assume_yes: bool) -> None:
-    preflight_publish(version, account)
+    identity = preflight_publish(version, account)
     tag = f"v{version}"
     confirm(
         version,
-        f"About to publish {tag} publicly with {RELEASE_SCRIPT.name} and create the GitHub Release {tag} (draft until verified).",
+        f"About to publish {tag} publicly with {RELEASE_SCRIPT.name}, using {identity}, "
+        f"and create the GitHub Release {tag} (draft until verified).",
         assume_yes,
     )
 
