@@ -1,0 +1,762 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-vdxcvpsm"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>v0.6.15 → v0.6.16 Migration | GenAI IDP</title><link rel="canonical" href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/migration-v0615-to-v0616/"/><link rel="sitemap" href="/accelerated-intelligent-document-processing-on-aws/sitemap-index.xml"/><link rel="shortcut icon" href="/accelerated-intelligent-document-processing-on-aws/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v7.4.12"/><meta name="generator" content="Starlight v0.41.4"/><meta property="og:title" content="v0.6.15 → v0.6.16 Migration"/><meta property="og:type" content="article"/><meta property="og:url" content="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/migration-v0615-to-v0616/"/><meta property="og:locale" content="en"/><meta property="og:description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><meta property="og:site_name" content="GenAI IDP"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg><svg aria-hidden="true" class="dark astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg><svg aria-hidden="true" class="auto astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg></template><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/print.ehPL0gv-.css" media="print"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/common.DrVeimLH.css"><style>@layer starlight.components{.card:where(.astro-zts4jgjd){--sl-card-border:var(--sl-color-purple);--sl-card-bg:var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);flex-direction:column;gap:clamp(.5rem,.125rem + 1vw,1rem);padding:clamp(1rem,.125rem + 3vw,2.5rem)}.card:where(.astro-zts4jgjd):nth-child(4n+1){--sl-card-border:var(--sl-color-orange);--sl-card-bg:var(--sl-color-orange-low)}.card:where(.astro-zts4jgjd):nth-child(4n+3){--sl-card-border:var(--sl-color-green);--sl-card-bg:var(--sl-color-green-low)}.card:where(.astro-zts4jgjd):nth-child(4n+4){--sl-card-border:var(--sl-color-red);--sl-card-bg:var(--sl-color-red-low)}.card:where(.astro-zts4jgjd):nth-child(4n+5){--sl-card-border:var(--sl-color-blue);--sl-card-bg:var(--sl-color-blue-low)}.title:where(.astro-zts4jgjd){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);align-items:center;gap:1rem}.card:where(.astro-zts4jgjd) .icon:where(.astro-zts4jgjd){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);border-radius:.25rem;flex-shrink:0;padding:.2em}.card:where(.astro-zts4jgjd) .body:where(.astro-zts4jgjd){font-size:clamp(var(--sl-text-sm), calc(.5rem + 1vw), var(--sl-text-body));margin:0}.card-grid:where(.astro-lmor3ela){grid-template-columns:100%;gap:1rem;display:grid}.card-grid:where(.astro-lmor3ela)>*{margin-top:0!important}@media (width>=50rem){.card-grid:where(.astro-lmor3ela){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-lmor3ela){--stagger-height:5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-lmor3ela)>:nth-child(2n){transform:translateY(var(--stagger-height))}}.sl-link-card:where(.astro-vodiqeol){border:1px solid var(--sl-color-gray-5);box-shadow:var(--sl-shadow-sm);border-radius:.5rem;grid-template-columns:1fr auto;gap:.5rem;padding:1rem;display:grid;position:relative}a:where(.astro-vodiqeol){line-height:var(--sl-line-height-headings);text-decoration:none}a:where(.astro-vodiqeol):before{content:"";position:absolute;inset:0}.stack:where(.astro-vodiqeol){flex-direction:column;gap:.5rem}.title:where(.astro-vodiqeol){color:var(--sl-color-white);font-weight:600;font-size:var(--sl-text-lg)}.description:where(.astro-vodiqeol){color:var(--sl-color-gray-3);line-height:1.5}.icon:where(.astro-vodiqeol){color:var(--sl-color-gray-3)}.sl-link-card:where(.astro-vodiqeol):hover{background:var(--sl-color-gray-7,var(--sl-color-gray-6));border-color:var(--sl-color-gray-2)}.sl-link-card:where(.astro-vodiqeol):hover .icon:where(.astro-vodiqeol){color:var(--sl-color-white)}}
+@layer starlight.components{svg:where(.astro-n5k4ipy7){color:var(--sl-icon-color);font-size:var(--sl-icon-size,1em);width:1em;height:1em}}
+</style><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/page.cNngjUgL.js"></script></head><body class="astro-vdxcvpsm"><a class="sl-skip-link astro-vxeigawq" href="#_top">Skip to content</a><div class="page sl-flex astro-gqpr5s5a"><header class="header astro-gqpr5s5a"><div class="header astro-nczgtkxc"><div class="title-wrapper sl-flex astro-nczgtkxc"><a href="/accelerated-intelligent-document-processing-on-aws/" class="site-title sl-flex astro-clw6ags5"><img class="light:sl-hidden print:hidden astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-dark.CDSNlVMV.svg" width="120" height="32"><img class="dark:sl-hidden print:block astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-light.CszXvHpe.svg" width="120" height="32"><span class="astro-clw6ags5" translate="no">GenAI IDP</span></a></div><div class="sl-flex print:hidden astro-nczgtkxc"><site-search class="astro-nczgtkxc astro-r5ar4xm7" data-translations="{&quot;placeholder&quot;:&quot;Search&quot;}"><button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-r5ar4xm7"><svg aria-hidden="true" class="astro-r5ar4xm7 astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg><span class="sl-hidden md:sl-block astro-r5ar4xm7" aria-hidden="true">Search</span><kbd class="sl-hidden md:sl-flex astro-r5ar4xm7" style="display: none;"><kbd class="astro-r5ar4xm7">Ctrl</kbd><kbd class="astro-r5ar4xm7">K</kbd></kbd></button><dialog style="padding:0" aria-label="Search" class="astro-r5ar4xm7"><div class="dialog-frame sl-flex astro-r5ar4xm7"><button data-close-modal class="sl-flex md:sl-hidden astro-r5ar4xm7">Cancel</button><div class="search-container astro-r5ar4xm7"><div id="starlight__search" class="astro-r5ar4xm7"></div></div></div></dialog></site-search><script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/Search.astro_astro_type_script_index_0_lang.BC-LT3sv.js"></script></div><div class="sl-hidden md:sl-flex print:hidden right-group astro-nczgtkxc"><div class="sl-flex social-icons astro-nczgtkxc"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script><script type="module">var e=`starlight-theme`,t=e=>e===`auto`||e===`dark`||e===`light`?e:`auto`,n=()=>t(typeof localStorage<`u`&&localStorage.getItem(e));function r(t){typeof localStorage<`u`&&localStorage.setItem(e,t===`light`||t===`dark`?t:``)}var i=()=>matchMedia(`(prefers-color-scheme: light)`).matches?`light`:`dark`;function a(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e===`auto`?i():e,r(e)}matchMedia(`(prefers-color-scheme: light)`).addEventListener(`change`,()=>{n()===`auto`&&a(`auto`)});var o=class extends HTMLElement{constructor(){super(),a(n()),this.querySelector(`select`)?.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&a(t(e.currentTarget.value))})}};customElements.define(`starlight-theme-select`,o);</script><script type="module">var e=class extends HTMLElement{constructor(){super();let e=this.querySelector(`select`);e&&(e.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=e.currentTarget.value)}),window.addEventListener(`pageshow`,t=>{if(!t.persisted)return;let n=e.querySelector(`option[selected]`)?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}};customElements.define(`starlight-lang-select`,e);</script></div></div></header><nav class="sidebar print:hidden astro-gqpr5s5a" aria-label="Main"><starlight-menu-button class="print:hidden astro-vvx7mffu"><button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-vvx7mffu"><svg aria-hidden="true" class="open-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg><svg aria-hidden="true" class="close-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="m13.41 12 6.3-6.29a1.004 1.004 0 1 0-1.42-1.42L12 10.59l-6.29-6.3a1.004 1.004 0 0 0-1.42 1.42l6.3 6.29-6.3 6.29a1 1 0 0 0 0 1.42.998.998 0 0 0 1.42 0l6.29-6.3 6.29 6.3a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.42L13.41 12Z"/></svg></button></starlight-menu-button><script type="module">var e=class extends HTMLElement{btn=this.querySelector(`button`);constructor(){super(),this.btn.addEventListener(`click`,()=>this.toggleExpanded());let e=this.closest(`nav`);e&&e.addEventListener(`keyup`,e=>this.closeOnEscape(e)),matchMedia(`(min-width: 50em)`).addEventListener(`change`,()=>this.setExpanded(!1))}setExpanded(e){this.setAttribute(`aria-expanded`,String(e)),document.body.toggleAttribute(`data-mobile-menu-expanded`,e),document.querySelectorAll(`.main-frame, .sl-skip-link`).forEach(t=>{t.toggleAttribute(`inert`,e)})}toggleExpanded(){this.setExpanded(this.getAttribute(`aria-expanded`)!==`true`)}closeOnEscape(e){e.code===`Escape`&&(this.setExpanded(!1),this.btn.focus())}};customElements.define(`starlight-menu-button`,e);</script><div id="starlight__sidebar" class="sidebar-pane astro-gqpr5s5a"><div class="sidebar-content sl-flex astro-gqpr5s5a"><sl-sidebar-state-persist data-hash="1boo5fk" class="astro-f5yvicm7"><script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script><ul class="top-level astro-ojxuodky"><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Overview</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="0"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/" class="astro-ojxuodky"><span class="astro-ojxuodky">Welcome</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-in-action/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP in Action</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/references/" class="astro-ojxuodky"><span class="astro-ojxuodky">Blogs, Customer Stories &amp; Research</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/workshops/" class="astro-ojxuodky"><span class="astro-ojxuodky">Hands-on Workshops</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/solution-profile/" class="astro-ojxuodky"><span class="astro-ojxuodky">Solution Profile</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/fit-check/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fit Check</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Core</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="1"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/quick-start/" class="astro-ojxuodky"><span class="astro-ojxuodky">Quick Start</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-deployment-ai-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">AI-Guided Deployment Walkthrough</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/terraform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Terraform Deployment (Experimental)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/terraform-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Migrating from genai-idp-terraform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/headless-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Headless Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/apigateway-hosting/" class="astro-ojxuodky"><span class="astro-ojxuodky">API Gateway Hosting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment-private-network/" class="astro-ojxuodky"><span class="astro-ojxuodky">Private Network Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/vpc-secured-mode/" class="astro-ojxuodky"><span class="astro-ojxuodky">VPC-Secured Mode</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-profiles/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Profiles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/multi-tenancy/" class="astro-ojxuodky"><span class="astro-ojxuodky">Multi-Tenant Isolation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Versions (renamed)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-configuration-best-practices/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Best Practices</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/json-schema-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">JSON Schema Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/web-ui/" class="astro-ojxuodky"><span class="astro-ojxuodky">Web UI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-appsync-to-rest/" class="astro-ojxuodky"><span class="astro-ojxuodky">UI ⇄ Backend Transport (AppSync → REST)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-cli/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP CLI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-sdk/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP SDK</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idpcommon-api-reference/" class="astro-ojxuodky"><span class="astro-ojxuodky">idp_common API Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/demo-videos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Demo Videos</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/troubleshooting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Troubleshooting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/error-analyzer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Error Analyzer</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Processing Modes</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="2"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-1/" class="astro-ojxuodky"><span class="astro-ojxuodky">BDA Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-2/" class="astro-ojxuodky"><span class="astro-ojxuodky">Pipeline Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Discovery</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/policy-discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Policy Discovery</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Document Processing Features</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="3"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/classification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction &amp; Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment-bounding-boxes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment Bounding Boxes (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/few-shot-examples/" class="astro-ojxuodky"><span class="astro-ojxuodky">Few-Shot Examples</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/human-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Human-in-the-Loop Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/review-queues/" class="astro-ojxuodky"><span class="astro-ojxuodky">Review Queues</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/review-routing/" class="astro-ojxuodky"><span class="astro-ojxuodky">Review Routing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation-z3/" class="astro-ojxuodky"><span class="astro-ojxuodky">Z3 Rule Validation Engine</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/missing-page-handling/" class="astro-ojxuodky"><span class="astro-ojxuodky">Missing Page Handling</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/ocr-image-sizing-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">OCR Image Sizing Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/languages/" class="astro-ojxuodky"><span class="astro-ojxuodky">Languages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Evaluation &amp; Testing</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="4"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/testing/" class="astro-ojxuodky"><span class="astro-ojxuodky">Testing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Evaluation Framework</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation-enhanced-reporting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Enhanced Reporting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/test-studio/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Studio</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/creating-custom-test-sets/" class="astro-ojxuodky"><span class="astro-ojxuodky">Creating Custom Test Sets</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mlflow-integration/" class="astro-ojxuodky"><span class="astro-ojxuodky">MLflow Experiment Tracking</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Validation</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="5"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation Records</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0611/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.11</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0612/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.12</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.13</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0614/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.14</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.6</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.8</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v069/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.9</span></a></li></ul></details></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Benchmarks &amp; Performance</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="6"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmarking Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/config-guidance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Guidance</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Audit Trail</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="7"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit Trail</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.0 vs v0.5.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0611/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.11 vs v0.6.10</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0612/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.12 vs v0.6.11</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.13 vs v0.6.12</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0614/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.14 vs v0.6.13</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.5 vs v0.6.4</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fix Verification: v0.6.5 correctness fixes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.6 vs v0.6.5</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v067/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.7</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.8</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v069/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.9</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Studies</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="8"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/advanced-extraction-refinements/" class="astro-ojxuodky"><span class="astro-ojxuodky">Advanced Extraction — Seven Candidate Refinements, Measured</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/classification-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification Confidence — Does the Score Carry Signal?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/confidence-calibration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Confidence Calibration — Can the Score Route Human Review?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/feature-multi-instance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Study: multi-instance sections (#715 / #753)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/greedy-decoding-tool-use/" class="astro-ojxuodky"><span class="astro-ojxuodky">Greedy Decoding and Invalid Tool-Use Sequences</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-cache-padding-proposal/" class="astro-ojxuodky"><span class="astro-ojxuodky">Should we pad prompts to clear the cache minimum?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-caching/" class="astro-ojxuodky"><span class="astro-ojxuodky">Prompt Caching — Measured Behaviour</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark Studies</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/schema-restatement-tokens/" class="astro-ojxuodky"><span class="astro-ojxuodky">Schema Restatement — What Turning It Off Actually Costs</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-scaling-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction Scaling Guide</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">AI Agents &amp; Analytics</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="9"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-analysis/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Analysis</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-companion-chat/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Companion Chat</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/code-intelligence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Code Intelligence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/knowledge-base/" class="astro-ojxuodky"><span class="astro-ojxuodky">Knowledge Base</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-mcp-agent/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom MCP Agent</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-connector/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Connector</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-server/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Server</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Integration &amp; Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="10"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform-developer-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform Developer Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/marketplace-subscription-next-steps/" class="astro-ojxuodky"><span class="astro-ojxuodky">After Subscribing on AWS Marketplace</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="11"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/auto-optimizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Auto Optimizer (Beta)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/decision-model-decider/" class="astro-ojxuodky"><span class="astro-ojxuodky">Decision Model: Strands Decider</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-monitor/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP Monitor</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/pii-anonymizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">PII Anonymization</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/confbench-testset/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set - ConfBench</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-data-generator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set Generator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-document-status/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Document Status (feature add-on)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-health-insurance-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Health Insurance Review</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-attributes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Attributes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/post-processing-lambda-hook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Post-Processing Lambda Hook</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/lambda-hook-inference/" class="astro-ojxuodky"><span class="astro-ojxuodky">Lambda Hook Inference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/decision-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">Decision Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/nova-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Nova Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-model-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom Model Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/service-tiers/" class="astro-ojxuodky"><span class="astro-ojxuodky">Service Tiers</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Monitoring &amp; Operations</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="12"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/monitoring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Monitoring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting Database</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting SQL Layer</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Capacity Planning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cost-calculator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cost Calculator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/circuit-breaker/" class="astro-ojxuodky"><span class="astro-ojxuodky">Circuit Breaker</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cross-account-bedrock/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cross-Account Bedrock</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/version-update-indicator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Version Update Indicator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Runbook</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Planning &amp; Security</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="13"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/threat-model/" class="astro-ojxuodky"><span class="astro-ojxuodky">Threat Model</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/malware-scanning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Malware Scanning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/customer-managed-kms-key/" class="astro-ojxuodky"><span class="astro-ojxuodky">Customer Managed KMS Key</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/well-architected/" class="astro-ojxuodky"><span class="astro-ojxuodky">Well-Architected Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/aws-services-and-roles/" class="astro-ojxuodky"><span class="astro-ojxuodky">AWS Services &amp; IAM Roles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rbac/" class="astro-ojxuodky"><span class="astro-ojxuodky">Role-Based Access Control (RBAC)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/external-idp/" class="astro-ojxuodky"><span class="astro-ojxuodky">External Identity Provider</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">GovCloud</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="14"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-operations/" class="astro-ojxuodky"><span class="astro-ojxuodky">Operations</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-batch-api/" class="astro-ojxuodky"><span class="astro-ojxuodky">Batch API</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/eu-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">EU Region Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/canada-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">Canada (Central) Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/openai-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">OpenAI Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/grok-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">xAI Grok Models</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Development Setup</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="15"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-linux/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Linux</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-macos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: macOS</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-wsl/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: WSL</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-windows/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Windows</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/using-notebooks-with-idp-common/" class="astro-ojxuodky"><span class="astro-ojxuodky">Using Notebooks</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-mirroring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Dependency Mirroring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" class="astro-ojxuodky"><span class="astro-ojxuodky">Installing First-Party Packages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Migration</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="16"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0615-to-v0616/" aria-current="page" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.6.15 → v0.6.16 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0612-to-v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.6.12 → v0.6.13 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v05-to-v06/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.5 → v0.6 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v04-to-v05/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.4 → v0.5 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-granular-retirement/" class="astro-ojxuodky"><span class="astro-ojxuodky">Granular Assessment Retirement</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/data-mart-migration-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Data Mart Migration Runbook</span></a></li></ul></details></li></ul><script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script></sl-sidebar-state-persist><div class="md:sl-hidden"><div class="mobile-preferences sl-flex astro-b5gddk54"><div class="social-icons astro-b5gddk54"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script></div></div></div></div></nav><div class="main-frame astro-gqpr5s5a"><script type="module">var e=document.getElementById(`starlight__sidebar`),t=e?.querySelector(`sl-sidebar-state-persist`),n=`sl-sidebar-state`,r=()=>{let r=[],i=t?.dataset.hash||``;try{let e=sessionStorage.getItem(n),t=JSON.parse(e||`{}`);Array.isArray(t.open)&&t.hash===i&&(r=t.open)}catch{}return{hash:i,open:r,scroll:e?.scrollTop||0}},i=e=>{try{sessionStorage.setItem(n,JSON.stringify(e))}catch{}},a=()=>i(r()),o=(e,t)=>{let n=r();n.open[t]=e,i(n)};t?.addEventListener(`click`,e=>{if(!(e.target instanceof Element))return;let t=e.target.closest(`summary`)?.closest(`details`);if(!t)return;let n=t.querySelector(`sl-sidebar-restore`),r=parseInt(n?.dataset.index||``);isNaN(r)||o(!t.open,r)}),addEventListener(`visibilitychange`,()=>{document.visibilityState===`hidden`&&a()});</script><div class="lg:sl-flex astro-abfeecmu"><aside class="right-sidebar-container print:hidden astro-abfeecmu"><div class="right-sidebar astro-abfeecmu"><div class="lg:sl-hidden astro-q5mffni3"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-5ulgm6bh"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-5ulgm6bh"><details id="starlight__mobile-toc" class="astro-5ulgm6bh"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-5ulgm6bh"><span class="toggle sl-flex astro-5ulgm6bh">On this page<svg aria-hidden="true" class="caret astro-5ulgm6bh astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-5ulgm6bh"></span></summary><div class="dropdown astro-5ulgm6bh"><ul class="isMobile astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#before-you-upgrade" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Before you upgrade</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#what-stays-the-same" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">What stays the same</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#processing-changes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Processing changes</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#a-run-starts-at-the-step-it-needs" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">A run starts at the step it needs</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#review-routing-step" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Review Routing step</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#new-stacks-turn-review-routing-on" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">New stacks turn Review Routing on</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#policy-rule-validation-and-review" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Policy rule validation and review</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#the-rule-validation-preset-is-now-a-bank-statement-review" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">The rule-validation preset is now a bank statement review</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#state-names" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">State names</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#hooks" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Hooks</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#review-status-object-schema-version-11" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Review status object: schema version 1.1</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#api-changes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">API changes</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#sdk-cli-and-mcp" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">SDK, CLI and MCP</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#names-in-the-web-ui" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Names in the web UI</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reporting" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reporting</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#other-behaviour-changes-in-this-release" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Other behaviour changes in this release</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#deleting-a-document-purges-every-version-of-its-upload" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Deleting a document purges every version of its upload</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#status-filters-select-documents-and-accept-only-real-statuses" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Status filters select documents, and accept only real statuses</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#prefix-mappings" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Prefix mappings</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#a-prompt-with-more-than-one-document_image-fails-the-document" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">A prompt with more than one {DOCUMENT_IMAGE} fails the document</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#a-content-filter-block-fails-only-its-section" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">A content-filter block fails only its section</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#eu-profiles-saved-before-this-release-keep-a-us-model-id" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">EU profiles saved before this release keep a us. model id</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#quick-start-is-admin-only" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Quick Start is Admin-only</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#deleting-the-stack-keeps-its-kms-key" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Deleting the stack keeps its KMS key</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#new-stack-parameters" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">New stack parameters</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#document-attribute-sidecars" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Document attribute sidecars</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#terraform-upgrades-keep-the-deployments-parameter-values" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Terraform upgrades keep the deployment’s parameter values</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#nodejs-26-to-publish-or-build-from-source" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Node.js 26 to publish or build from source</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#numpy-2-and-pyarrow-26" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">numpy 2 and pyarrow 26</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#during-the-upgrade" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">During the upgrade</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#rollback" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Rollback</span></a></li></ul></div></details></nav></mobile-starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.BcSo_yiZ.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-q5mffni3"><div class="sl-container astro-q5mffni3"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#before-you-upgrade" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Before you upgrade</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#what-stays-the-same" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">What stays the same</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#processing-changes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Processing changes</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#a-run-starts-at-the-step-it-needs" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">A run starts at the step it needs</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#review-routing-step" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Review Routing step</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#new-stacks-turn-review-routing-on" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">New stacks turn Review Routing on</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#policy-rule-validation-and-review" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Policy rule validation and review</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#the-rule-validation-preset-is-now-a-bank-statement-review" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">The rule-validation preset is now a bank statement review</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#state-names" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">State names</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#hooks" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Hooks</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#review-status-object-schema-version-11" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Review status object: schema version 1.1</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#api-changes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">API changes</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#sdk-cli-and-mcp" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">SDK, CLI and MCP</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#names-in-the-web-ui" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Names in the web UI</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reporting" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reporting</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#other-behaviour-changes-in-this-release" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Other behaviour changes in this release</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#deleting-a-document-purges-every-version-of-its-upload" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Deleting a document purges every version of its upload</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#status-filters-select-documents-and-accept-only-real-statuses" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Status filters select documents, and accept only real statuses</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#prefix-mappings" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Prefix mappings</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#a-prompt-with-more-than-one-document_image-fails-the-document" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">A prompt with more than one {DOCUMENT_IMAGE} fails the document</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#a-content-filter-block-fails-only-its-section" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">A content-filter block fails only its section</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#eu-profiles-saved-before-this-release-keep-a-us-model-id" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">EU profiles saved before this release keep a us. model id</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#quick-start-is-admin-only" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Quick Start is Admin-only</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#deleting-the-stack-keeps-its-kms-key" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Deleting the stack keeps its KMS key</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#new-stack-parameters" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">New stack parameters</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#document-attribute-sidecars" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Document attribute sidecars</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#terraform-upgrades-keep-the-deployments-parameter-values" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Terraform upgrades keep the deployment’s parameter values</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#nodejs-26-to-publish-or-build-from-source" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Node.js 26 to publish or build from source</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#numpy-2-and-pyarrow-26" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">numpy 2 and pyarrow 26</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#during-the-upgrade" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">During the upgrade</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#rollback" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Rollback</span></a></li></ul></nav></starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/TableOfContents.astro_astro_type_script_index_0_lang.Csloo1VZ.js"></script></div></div></div></aside><div class="main-pane astro-abfeecmu"><main data-pagefind-body class="astro-vdxcvpsm" lang="en" dir="ltr"><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><h1 id="_top" class="astro-2sm4b3ln">v0.6.15 → v0.6.16 Migration</h1></div></div><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><div class="sl-markdown-content"><p>Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0</p>
+<div class="sl-heading-wrapper level-h1"><h1 id="v0615--v0616-migration">v0.6.15 → v0.6.16 Migration</h1><a class="sl-anchor-link" href="#v0615--v0616-migration"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “v0.6.15 → v0.6.16 Migration”</span></a></div>
+<p>v0.6.16 adds <a href="../review-routing/">review routing</a> (routing rules that decide
+whether a document is reviewed, in which review queue and with which reason for the
+reviewer) and gives every processing run a <strong>run plan</strong> that says at which step the
+run starts and which steps it leaves out. Both change the processing workflow: a
+Review Routing step is added after policy rule validation, a run after a completed
+review starts at a new step that applies the review, and several states of the
+workflow have new names.</p>
+<p><strong>You do not need to edit a configuration to keep processing documents on a stack
+you update.</strong> An update leaves the Review Routing switch (<code dir="auto">hitl.enabled</code>) of every
+profile as it is, and a profile that has no routing rules of its own holds the
+documents it held before: a document with confidence alerts or missing required
+fields goes to the Default review queue when Review Routing is on. It holds one
+more: a document with a section whose extraction failed without failing the
+document, which v0.6.15 let complete unreviewed (see
+<a href="../extraction-and-confidence/#where-a-failed-section-shows-up">Where a failed section shows up</a>).
+Every other document is not reviewed. <strong>A stack you create with v0.6.16 turns Review Routing on</strong>; see
+<a href="#new-stacks-turn-review-routing-on">New stacks turn Review Routing on</a>. This page
+lists what behaves differently, what to check if you integrate with the workflow,
+the API, the SDK or the review status object, and what a rollback does. The other
+changes in this release that an upgrade makes visible (document deletion, status
+filters, prefix mappings, prompts, Quick Start, the stack’s KMS key, new stack
+parameters and Terraform upgrades) are in
+<a href="#other-behaviour-changes-in-this-release">Other behaviour changes in this release</a>.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="before-you-upgrade">Before you upgrade</h2><a class="sl-anchor-link" href="#before-you-upgrade"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Before you upgrade”</span></a></div>
+<p>Check each of these that applies to you:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>If you …</th><th>Read</th></tr></thead><tbody><tr><td>create a new stack and process documents with nobody reviewing them</td><td><a href="#new-stacks-turn-review-routing-on">New stacks turn Review Routing on</a></td></tr><tr><td>deploy pipeline hooks (Feature Platform features or your own hook Lambdas)</td><td><a href="#hooks">Hooks</a></td></tr><tr><td>read <code dir="auto">review/status.json</code></td><td><a href="#review-status-object-schema-version-11">Review status object</a></td></tr><tr><td>call the UI API directly (<code dir="auto">reprocessDocument</code>, <code dir="auto">listReviewQueues</code>, <code dir="auto">processChanges</code>)</td><td><a href="#api-changes">API changes</a></td></tr><tr><td>reprocess documents with the SDK, the CLI or the MCP tool</td><td><a href="#sdk-cli-and-mcp">SDK, CLI and MCP</a></td></tr><tr><td>have dashboards, alarms or tooling that name Step Functions states</td><td><a href="#state-names">State names</a></td></tr><tr><td>use policy rule validation together with review</td><td><a href="#policy-rule-validation-and-review">Policy rule validation and review</a></td></tr><tr><td>deployed with the <code dir="auto">rule-validation</code> Configuration Preset, or use its healthcare samples</td><td><a href="#the-rule-validation-preset-is-now-a-bank-statement-review">The rule-validation preset is now a bank statement review</a></td></tr><tr><td>query the reporting database</td><td><a href="#reporting">Reporting</a></td></tr><tr><td>document or script the configuration page</td><td><a href="#names-in-the-web-ui">Names in the web UI</a></td></tr><tr><td>delete documents, filter by status, use prefix mappings, deploy in an EU Region, deploy with Terraform, or write hooks or extensions</td><td><a href="#other-behaviour-changes-in-this-release">Other behaviour changes in this release</a></td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h2"><h2 id="what-stays-the-same">What stays the same</h2><a class="sl-anchor-link" href="#what-stays-the-same"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “What stays the same”</span></a></div>
+<ul>
+<li>Statuses, the tracking table’s keys, the S3 layout of results and the review
+queue item states are unchanged.</li>
+<li>Documents in review when the stack is updated can be completed, rejected or
+removed afterwards (see <a href="#during-the-upgrade">During the upgrade</a>).</li>
+<li>Step Functions execution names are built as before, so a redelivered message
+still cannot start a second execution.</li>
+<li>A document reviewed from the document page while the Default review queue is
+disabled (see <a href="../human-review/">Human Review</a>) is processed as before: it is
+not held, and it runs again from the beginning when its review is completed.</li>
+<li>Configuration profiles need no conversion. A profile, or a revision a document
+is pinned to, that has no <code dir="auto">routing</code> section takes the table the <code dir="auto">default</code> profile
+holds: the built-in routing rules, until an Admin changes <code dir="auto">default</code>’s.</li>
+<li><strong>The Review Routing switch of an existing profile.</strong> A stack update writes no
+value for <code dir="auto">hitl.enabled</code>: a profile that has it off stays off, and one that has it
+on stays on. Only a preset or a custom configuration that sets <code dir="auto">hitl.enabled</code>
+itself is applied on an update, as for every other setting.</li>
+</ul>
+<div class="sl-heading-wrapper level-h2"><h2 id="processing-changes">Processing changes</h2><a class="sl-anchor-link" href="#processing-changes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Processing changes”</span></a></div>
+<div class="sl-heading-wrapper level-h3"><h3 id="a-run-starts-at-the-step-it-needs">A run starts at the step it needs</h3><a class="sl-anchor-link" href="#a-run-starts-at-the-step-it-needs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “A run starts at the step it needs”</span></a></div>
+<p>Every message that starts a run carries a run plan: the kind of run (a new
+upload, a reprocess, saved edits, a completed review, a rejected review, a review
+that was removed or skipped, a send-back, a restart of a failed run), the step it
+starts at, and the optional steps it skips. The first state of the workflow,
+<code dir="auto">CheckRunPlan</code>, sends the run to that step.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Run</th><th>v0.6.15</th><th>v0.6.16</th></tr></thead><tbody><tr><td>New upload</td><td>every step</td><td>every step</td></tr><tr><td>After a completed review</td><td>from the beginning, with each step detecting that its work exists</td><td>starts at <strong>Apply Review Changes</strong>, then policy rule validation, Review Routing, summarization, evaluation. When the reviewer changed the page grouping (Pipeline mode), the sections that were added or whose pages changed are extracted first, and the review is applied to the new values</td></tr><tr><td>After a rejected review</td><td>from the beginning, ending at the review check</td><td>ends the document as <code dir="auto">REJECTED</code> without invoking a Lambda function</td></tr><tr><td>After a review is removed or skipped</td><td>from the beginning</td><td>starts at policy rule validation</td></tr><tr><td>After a review is sent back (new)</td><td>—</td><td>starts at classification, or at the beginning in BDA mode; the review’s corrections are discarded</td></tr><tr><td>Reprocess</td><td>from the beginning, or from classification or extraction with the SDK</td><td>from any step, on every surface (web UI, SDK, CLI, MCP)</td></tr><tr><td>Process Changes after edits</td><td>from the beginning, with each step detecting that its work exists</td><td>starts at the first step the edits affect: policy rule validation when only field values were edited</td></tr></tbody></table>
+<p>A run that starts later does not repeat the steps before it, so it is faster and
+costs less. The Processing Flow viewer shows the steps a run left out as
+<strong>Skipped</strong>.</p>
+<p><strong>A reviewer chooses no step.</strong> Where the run after a review starts is decided by
+the system, from the document as it is when the review ends. The dialog that
+finishes a review (<strong>Process Changes</strong> on a queue item) and the confirmation of
+<strong>Process Changes</strong> on a document outside a review both list the steps the run
+will do, each marked as running, skipped or not enabled, before you confirm. See
+<a href="../review-queues/#how-a-review-ends">How a review ends</a>.</p>
+<p>The run plan is in the execution input, as <code dir="auto">runPlan</code>. A message with no plan
+(one queued before the update) runs every step, as before.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="review-routing-step">Review Routing step</h3><a class="sl-anchor-link" href="#review-routing-step"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Review Routing step”</span></a></div>
+<p>The new <code dir="auto">RoutingStep</code> (Review Routing) runs after policy rule validation in both
+modes and decides whether the document is held. In v0.6.15 the decision was made by
+the step that assembles the document’s results, before policy rule validation. A
+document it holds carries the routing rule that placed it, a reason for the
+reviewer and the policy rules it failed. See <a href="../review-routing/">Review Routing</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="new-stacks-turn-review-routing-on">New stacks turn Review Routing on</h3><a class="sl-anchor-link" href="#new-stacks-turn-review-routing-on"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “New stacks turn Review Routing on”</span></a></div>
+<p>Whether documents are held for review is the <strong>Review Routing</strong> switch of each
+configuration profile (<code dir="auto">hitl.enabled</code>).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Stack</th><th>Review Routing after the deployment</th></tr></thead><tbody><tr><td>A stack <strong>updated</strong> to v0.6.16</td><td>Unchanged in every profile. A managed profile that the update adds takes the value of <code dir="auto">default</code></td></tr><tr><td>A stack <strong>created</strong> with v0.6.16</td><td><strong>On</strong> in <code dir="auto">default</code> and in the managed profiles the stack creates, unless the preset or the custom configuration sets <code dir="auto">hitl.enabled</code> itself</td></tr><tr><td>A <a href="../headless-deployment/">headless deployment</a>, created or updated</td><td>Off: it has no review queues</td></tr></tbody></table>
+<p>On a new stack, a document with a failed section, a confidence alert or a missing
+required field therefore waits in the Default review queue, with status
+<code dir="auto">HITL_IN_PROGRESS</code>, until
+a person finishes its review. In v0.6.15 a new stack came up with the switch off,
+unless the configuration it was deployed with turned it on.</p>
+<p><strong>If nobody reviews the documents</strong> (a batch job, a load test, an integration that
+waits for every document to reach <code dir="auto">COMPLETED</code>), turn Review Routing off in the
+profile the documents are processed with:</p>
+<ul>
+<li>
+<p>In the web UI: <strong>Configuration › Processing Settings › Review Routing
+(Optional)</strong>, switch <strong>Review Routing</strong> off, and save.</p>
+</li>
+<li>
+<p>With the CLI, upload a file that holds only the switch; every other setting
+keeps its value:</p>
+<div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">hitl</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">false</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="hitl:  enabled: false"><div></div></button></div></figure></div>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--config-file</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">review-routing-off.yaml</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--config-profile</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">default</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="idp-cli config-upload --stack-name my-stack \    --config-file review-routing-off.yaml --config-profile default"><div></div></button></div></figure></div>
+</li>
+<li>
+<p>For a stack that should come up with it off, set <code dir="auto">hitl.enabled: false</code> in the
+configuration the stack is deployed with (<code dir="auto">CustomConfigPath</code>, or
+<code dir="auto">idp-cli deploy --custom-config</code>).</p>
+</li>
+</ul>
+<p>The cases are listed in
+<a href="../review-routing/#the-review-routing-switch">The Review Routing switch</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="policy-rule-validation-and-review">Policy rule validation and review</h3><a class="sl-anchor-link" href="#policy-rule-validation-and-review"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Policy rule validation and review”</span></a></div>
+<p>Because routing can read policy rule verdicts, policy rule validation runs
+<strong>before</strong> a document is held. When the review is completed, it runs <strong>again</strong>
+on the corrected values. A document that is reviewed therefore runs policy rule
+validation twice, where v0.6.15 ran it once, after the review. If you use both
+features, expect the Bedrock cost of policy rule validation to double for
+reviewed documents; documents that are not reviewed are unaffected.</p>
+<p>Two further changes to policy rule validation:</p>
+<ul>
+<li>Every policy rule has a stable id, <code dir="auto">policy_type.rule_key</code>, and every result a
+normalised <code dir="auto">verdict</code> (<code dir="auto">pass</code>, <code dir="auto">fail</code>, <code dir="auto">not_found</code>, <code dir="auto">unknown</code>) beside its
+recommendation text. Both are in <code dir="auto">consolidated_summary.json</code> and in the
+Markdown report.</li>
+<li>The verdict pass runs for every document, including a document with one
+section, which previously got facts and no verdict. It makes one model call
+per policy rule the symbolic engine did not decide.</li>
+</ul>
+<p>See <a href="../rule-validation/">Rule Validation</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="the-rule-validation-preset-is-now-a-bank-statement-review">The rule-validation preset is now a bank statement review</h3><a class="sl-anchor-link" href="#the-rule-validation-preset-is-now-a-bank-statement-review"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “The rule-validation preset is now a bank statement review”</span></a></div>
+<p>The <code dir="auto">rule-validation</code> preset no longer holds the healthcare prior-authorization
+configuration. It holds the policy rules of
+<code dir="auto">samples/rule-validation/bank-statement-review-policy.pdf</code> and validates
+<code dir="auto">samples/bank-statement-multipage.pdf</code>, so rule validation, Policy Discovery and the
+review routing showcase share one sample domain. The healthcare samples
+<code dir="auto">medicare_respiratory_pa_packet.pdf</code> and <code dir="auto">NCCI Medicare Policy Manual.pdf</code> are
+removed from <code dir="auto">samples/rule-validation/</code>.</p>
+<p>A stack deployed with <strong>Configuration Preset</strong> <code dir="auto">rule-validation</code> takes the bank
+statement configuration as its <code dir="auto">default</code> profile on its next update, replacing the
+prior-authorization classes, policy classes and policy rules <code dir="auto">default</code> held. Another
+profile keeps every setting it saved, and takes the new <code dir="auto">default</code>’s value for any
+setting it does not hold.</p>
+<p>⚠️ <strong>Action:</strong> if you process prior-authorization documents with <code dir="auto">default</code> on such a
+stack, copy it into a profile of your own before you upgrade (<strong>Create profile</strong> in
+the Configuration Profiles table) and make that profile active. The Health Insurance
+Review sample feature keeps the prior-authorization classes and policy rules in its
+own configuration preset, but ships no sample document.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="state-names">State names</h3><a class="sl-anchor-link" href="#state-names"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “State names”</span></a></div>
+<p>States of the workflow were renamed so that names say what a state does. If a
+dashboard, an alarm, a Logs Insights query or a script names one of them, update
+it.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>v0.6.15</th><th>v0.6.16</th></tr></thead><tbody><tr><td><code dir="auto">RouteByProcessingMode</code></td><td><code dir="auto">CheckProcessingMode</code></td></tr><tr><td><code dir="auto">BDA_CheckExistingData</code></td><td><code dir="auto">CheckExistingBdaData</code></td></tr><tr><td><code dir="auto">BDA_InvokeDataAutomation</code></td><td><code dir="auto">InvokeDataAutomationStep</code></td></tr><tr><td><code dir="auto">BDA_ProcessResultsStep</code></td><td><code dir="auto">BDA_AssembleDocumentStep</code></td></tr><tr><td><code dir="auto">BDA_ProcessResultsSkip</code></td><td><code dir="auto">AssembleExistingDocumentStep</code></td></tr><tr><td><code dir="auto">Pipeline_ProcessResultsStep</code></td><td><code dir="auto">Pipeline_AssembleDocumentStep</code></td></tr><tr><td><code dir="auto">ShardModeChoice</code></td><td><code dir="auto">CheckShardMode</code></td></tr><tr><td><code dir="auto">CheckRuleValidationEnabled</code></td><td><code dir="auto">CheckPolicyRuleValidationEnabled</code></td></tr><tr><td><code dir="auto">SetEmptyRuleValidationResult</code></td><td><code dir="auto">SetEmptyPolicyRuleValidationResult</code></td></tr><tr><td><code dir="auto">SetSkippedRuleValidationResult</code></td><td><code dir="auto">SetSkippedPolicyRuleValidationResult</code></td></tr><tr><td><code dir="auto">ProcessRuleValidationSections</code></td><td><code dir="auto">ValidatePolicyRulesBySection</code></td></tr><tr><td><code dir="auto">RuleValidationStep</code></td><td><code dir="auto">PolicyRuleValidationStep</code></td></tr><tr><td><code dir="auto">RuleValidationSectionComplete</code></td><td><code dir="auto">PolicyRuleValidationSectionComplete</code></td></tr><tr><td><code dir="auto">RuleValidationOrchestration</code></td><td><code dir="auto">PolicyRuleConsolidationStep</code></td></tr><tr><td><code dir="auto">CheckHITLRequired</code></td><td><code dir="auto">CheckRoutingDecision</code></td></tr><tr><td><code dir="auto">MarkHITLPending</code></td><td>removed</td></tr><tr><td><code dir="auto">RecordEvaluationFailure</code></td><td><code dir="auto">RecordEvaluationFailureStep</code></td></tr><tr><td><code dir="auto">FailState</code></td><td><code dir="auto">WorkflowFailed</code></td></tr></tbody></table>
+<p>New states: <code dir="auto">CheckRunPlan</code> (the first state), <code dir="auto">StartAtClassification</code>,
+<code dir="auto">StartAtExtraction</code>, <code dir="auto">StartAtExtractionForSections</code>, <code dir="auto">StartAtAssessment</code>,
+<code dir="auto">StartAtPolicyRuleValidation</code>, <code dir="auto">SelectAllSections</code>, <code dir="auto">CheckSectionStart</code>,
+<code dir="auto">CheckAssessmentSkipped</code>, <code dir="auto">CheckReviewToApply</code>, <code dir="auto">SelectAssembledDocument</code>,
+<code dir="auto">ApplyReviewChangesStep</code>, <code dir="auto">SkipPolicyRuleValidation</code>, <code dir="auto">RoutingStep</code>,
+<code dir="auto">CheckSummarizationSkipped</code>, <code dir="auto">SkipSummarization</code>, <code dir="auto">CheckEvaluationSkipped</code> and
+<code dir="auto">SkipEvaluation</code>. <code dir="auto">CheckReviewToApply</code> and <code dir="auto">SelectAssembledDocument</code> come after the
+Pipeline assembly: they send a run that follows a completed review and extracted
+sections again to <code dir="auto">ApplyReviewChangesStep</code>, and every other run on to policy rule
+validation.</p>
+<p>Two Lambda functions are added, <code dir="auto">RoutingFunction</code> and
+<code dir="auto">ApplyReviewChangesFunction</code>, each with its own log group. Like every function
+of the workflow, they are named after the nested pattern stack:
+<code dir="auto">/&#x3C;StackName>-PATTERNSTACK-&#x3C;id>/lambda/&#x3C;name></code>.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="hooks">Hooks</h2><a class="sl-anchor-link" href="#hooks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Hooks”</span></a></div>
+<p>Pipeline hooks fire for the steps a run <strong>does</strong>. A run that starts at a later
+step does not fire the hooks of the steps before it, and a step the run plan
+skips does not fire its hook. A step that the configuration turns off still
+fires its hook, as before.</p>
+<p>What this changes for a hook:</p>
+<ul>
+<li><code dir="auto">preprocessing</code>, <code dir="auto">postOcr</code>, <code dir="auto">postClassification</code> and <code dir="auto">postExtraction</code> fire on
+the run that does those steps, and <strong>not</strong> on the run after a completed review,
+which starts after them. In v0.6.15 they fired on both. The one exception is
+<code dir="auto">postExtraction</code>, which fires on that run for each section it extracts again
+because the reviewer changed the page grouping.</li>
+<li><code dir="auto">postRuleValidation</code> fires <strong>before</strong> a document is held for review, and again
+on the run after the review is completed. In v0.6.15 it fired after the review
+only.</li>
+<li><code dir="auto">postSummarization</code> and <code dir="auto">postprocessing</code> fire on a run that reaches those
+steps. A run that ends by holding the document in a review queue does not reach
+them, so they do not fire while a document waits in a queue.</li>
+</ul>
+<p>To let a hook tell the runs apart, the payload has three new top-level fields:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td><code dir="auto">runKind</code></td><td><code dir="auto">new_upload</code>, <code dir="auto">reprocess</code>, <code dir="auto">saved_edits</code>, <code dir="auto">review_completed</code>, <code dir="auto">review_rejected</code>, <code dir="auto">review_skipped</code>, <code dir="auto">sent_back</code>, <code dir="auto">restart_failed</code> or <code dir="auto">legacy_review</code>; <code dir="auto">unplanned</code> for a run with no run plan</td></tr><tr><td><code dir="auto">startStep</code></td><td>The step the run started at, for example <code dir="auto">beginning</code>, <code dir="auto">extraction</code> or <code dir="auto">apply_review_changes</code></td></tr><tr><td><code dir="auto">reviewed</code></td><td><code dir="auto">true</code> when the document’s review was completed and this run does not extract again</td></tr></tbody></table>
+<p>A hook that needs the values no review will change should use
+<code dir="auto">postSummarization</code> or <code dir="auto">postprocessing</code>: a run reaches them only when the
+document is not held. A <code dir="auto">postRuleValidation</code> hook sees the values before a
+possible review, and sees them again, with <code dir="auto">reviewed: true</code>, on the run after a
+completed review. When that run extracts sections again first, it carries
+<code dir="auto">runKind</code> <code dir="auto">review_completed</code> with <code dir="auto">startStep</code> <code dir="auto">extraction</code> and <code dir="auto">reviewed: false</code>,
+because the newly extracted values are not confirmed by a reviewer; test
+<code dir="auto">reviewed</code>, not <code dir="auto">runKind</code>, to act on confirmed values. The existing payload fields
+are unchanged. The Health Insurance Review sample feature (0.2.3) stores <code dir="auto">reviewed</code>
+and <code dir="auto">runKind</code> with each claim status. See
+<a href="../feature-platform-developer-guide/">Feature Platform developer guide</a>.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="review-status-object-schema-version-11">Review status object: schema version 1.1</h2><a class="sl-anchor-link" href="#review-status-object-schema-version-11"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Review status object: schema version 1.1”</span></a></div>
+<p><code dir="auto">review/status.json</code> moves from schema version <code dir="auto">1.0</code> to <code dir="auto">1.1</code>. The change is
+additive:</p>
+<ul>
+<li><code dir="auto">schema_version</code> is <code dir="auto">"1.1"</code>.</li>
+<li>A new optional property <code dir="auto">routed_by</code> holds the routing rule that placed the
+document and what its reviewer is told: <code dir="auto">table_id</code>, <code dir="auto">rule_id</code>, <code dir="auto">rule_label</code>,
+<code dir="auto">placed_queue</code>, <code dir="auto">fallback_reason</code>, <code dir="auto">reason</code>, <code dir="auto">reason_source</code>, <code dir="auto">policy_failures</code>
+(each with <code dir="auto">rule_id</code>, <code dir="auto">policy</code>, <code dir="auto">name</code>, <code dir="auto">reason</code> and <code dir="auto">pages</code>) and
+<code dir="auto">policy_failure_count</code>. It is <code dir="auto">null</code> for an item no routing rule placed (for
+example one created by <strong>Send to review</strong>). <code dir="auto">reason</code> can hold extracted values,
+so treat the object as document content.</li>
+<li>The reason <code dir="auto">kind</code> values now include <code dir="auto">missing_required</code> and <code dir="auto">extraction_failed</code>
+in the schema.</li>
+</ul>
+<p>A consumer that checks for <code dir="auto">schema_version == "1.0"</code> exactly has to accept
+<code dir="auto">"1.1"</code>. A consumer that ignores unknown properties needs no change. See
+<a href="../review-queues/#review-status-for-downstream-consumers">Review status for downstream consumers</a>.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="api-changes">API changes</h2><a class="sl-anchor-link" href="#api-changes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “API changes”</span></a></div>
+<p>Two operations of the UI API return a different shape:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Operation</th><th>v0.6.15</th><th>v0.6.16</th></tr></thead><tbody><tr><td><code dir="auto">reprocessDocument</code></td><td><code dir="auto">Boolean</code></td><td><code dir="auto">ReprocessResult</code>: <code dir="auto">queued</code>, and for each document <code dir="auto">status</code> (<code dir="auto">QUEUED</code>, <code dir="auto">REFUSED</code> or <code dir="auto">FAILED</code>), <code dir="auto">startStep</code>, <code dir="auto">reason</code> and <code dir="auto">message</code>. It also takes <code dir="auto">startStep</code> and <code dir="auto">skipSteps</code></td></tr><tr><td><code dir="auto">listReviewQueues</code></td><td>a list of queue definitions</td><td>a page: <code dir="auto">items</code> and <code dir="auto">nextToken</code>. It takes <code dir="auto">limit</code> and <code dir="auto">nextToken</code></td></tr></tbody></table>
+<p><code dir="auto">processChanges</code> keeps its arguments, and its answer gains <code dir="auto">startStep</code> and <code dir="auto">steps</code>:
+the step the run it queued starts at, and every step with its state.</p>
+<p>New operations: <code dir="auto">getReprocessOptions</code>, <code dir="auto">sendBackReviewItem</code>,
+<code dir="auto">getReviewCompletionPlan</code>, <code dir="auto">getProcessChangesPlan</code>, <code dir="auto">testRoutingTable</code>,
+<code dir="auto">getReviewQueueReferences</code> and <code dir="auto">convertRoutingDmn</code>. <code dir="auto">sendBackReviewItem</code> takes the
+document, the review cycle and an optional note, and no start step: the run starts
+at classification, or at the beginning in BDA mode. The two plan operations read
+what finishing a review, and what Process Changes, would run, and start nothing.
+Review items gain <code dir="auto">queueName</code>, <code dir="auto">routedBy</code> (with <code dir="auto">reason</code>, <code dir="auto">policyFailures</code> and
+<code dir="auto">policyFailureCount</code>) and <code dir="auto">processingMode</code>, and documents gain <code dir="auto">ReviewQueue</code>,
+<code dir="auto">ReviewQueueName</code> and <code dir="auto">ReviewRoutedBy</code>. <code dir="auto">updateConfiguration</code> answers with
+<code dir="auto">warnings</code> when a save leaves a routing rule that reads a policy rule result while
+policy rule validation does not run. The groups each operation admits are in
+<a href="../rbac/">RBAC</a>.</p>
+<p><strong>Reload the web UI after the update.</strong> A browser tab loaded before the update
+runs the previous UI, which expects the previous shapes of these two
+operations.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="sdk-cli-and-mcp">SDK, CLI and MCP</h2><a class="sl-anchor-link" href="#sdk-cli-and-mcp"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “SDK, CLI and MCP”</span></a></div>
+<p>Reprocessing is done by the stack, not by the client. The SDK and the CLI invoke
+the stack’s reprocess function, so every surface applies the same rules: which
+steps a document can start at, what is cleared first, and what is refused.</p>
+<ul>
+<li><strong>Permissions.</strong> The caller’s credentials need <code dir="auto">lambda:InvokeFunction</code> on the
+stack’s reprocess resolver function (and on the review queues resolver
+function for <code dir="auto">client.review_queues</code> and <code dir="auto">idp-cli review-queues</code>), and
+<code dir="auto">cloudformation:DescribeStackResources</code> and <code dir="auto">cloudformation:DescribeStacks</code> to
+find them through the nested API resolver stack. In v0.6.15 a reprocess needed
+access to the tracking table, the buckets and the document queue instead.</li>
+<li><strong>SDK.</strong> <code dir="auto">client.document.reprocess(document_id, step=…, skip=…)</code> and
+<code dir="auto">client.batch.reprocess(…)</code> take any step, and return each document’s status,
+reason and message. <code dir="auto">rerun()</code> remains as a deprecated alias.
+<code dir="auto">client.document.reprocess_options(…)</code> lists the steps a document can start at.</li>
+<li><strong>CLI.</strong> <code dir="auto">idp-cli reprocess --step &#x3C;step> [--skip &#x3C;step> …]</code>; <code dir="auto">rerun-inference</code>
+remains as an alias. The step names are <code dir="auto">beginning</code> (alias <code dir="auto">ocr</code>),
+<code dir="auto">classification</code>, <code dir="auto">extraction</code>, <code dir="auto">assessment</code>, <code dir="auto">policy_rule_validation</code>,
+<code dir="auto">summarization</code>, <code dir="auto">evaluation</code>, and <code dir="auto">resume</code> for a failed document.</li>
+<li><strong>MCP.</strong> The <code dir="auto">reprocess</code> tool keeps its name; <code dir="auto">step</code> accepts the same steps and
+<code dir="auto">skip</code> is new.</li>
+<li><strong>A stack that has not been updated</strong> does not have the functions. The v0.6.16
+SDK and CLI say so and name the release; update the stack, or use the v0.6.15
+client with it.</li>
+</ul>
+<p>A document a reprocess refuses is a result, not an error: the call succeeds and
+that document’s status is <code dir="auto">REFUSED</code> with a reason code such as
+<code dir="auto">RUN_IN_PROGRESS</code>, <code dir="auto">OUTPUT_MISSING</code> or <code dir="auto">STEP_NOT_IN_MODE</code>. See
+<a href="../idp-sdk/">IDP SDK</a> and <a href="../idp-cli/">IDP CLI</a>.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="names-in-the-web-ui">Names in the web UI</h2><a class="sl-anchor-link" href="#names-in-the-web-ui"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Names in the web UI”</span></a></div>
+<p>The configuration keys are unchanged. On <strong>Configuration › Processing Settings</strong>
+the sections for the two steps have these names, and are in the order the pipeline
+runs the steps:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Section</th><th>Holds</th><th>Key</th></tr></thead><tbody><tr><td><strong>Policy Rule Validation (Optional)</strong></td><td>Whether policy rule validation runs, and its settings. The policy rules are on the <strong>Policy Schema</strong> tab</td><td><code dir="auto">rule_validation</code></td></tr><tr><td><strong>Review Routing (Optional)</strong></td><td>The <strong>Review Routing</strong> switch, the confidence threshold, whether a missing required field is reviewed, and the Inbox and bulk-skip settings</td><td><code dir="auto">hitl</code></td></tr></tbody></table>
+<p>The routing rules are on the new <strong>Routing Rules</strong> tab, after <strong>Policy Schema</strong>
+(key <code dir="auto">routing</code>). The report of a document’s policy rule results is the <strong>Policy
+Rule Validation Summary</strong>, on the document page’s and the edit page’s <strong>Reports</strong>
+menu, and the pipeline steps are named <strong>Policy Rule Validation</strong>, <strong>Review
+Routing</strong> and <strong>Apply Review Changes</strong> wherever a step is listed.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="reporting">Reporting</h2><a class="sl-anchor-link" href="#reporting"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Reporting”</span></a></div>
+<ul>
+<li>The <code dir="auto">rule_validation_details</code> table gains the columns <code dir="auto">rule_id</code> and <code dir="auto">verdict</code>.</li>
+<li><code dir="auto">document_reviews.top_reason_kind</code> is <code dir="auto">routing_rule</code> for a document that a
+routing rule placed with no confidence alert, no missing required field and no
+failed section, and <code dir="auto">extraction_failed</code> for a document whose first review reason
+is a section whose extraction failed.</li>
+<li><code dir="auto">document_reviews</code> gains the column <code dir="auto">routing_reason</code>: the reason of the routing
+rule that placed the document, as written, with its placeholders unfilled. See
+<a href="../reporting-database/#document-reviews-table">Reporting Database</a>.</li>
+</ul>
+<div class="sl-heading-wrapper level-h2"><h2 id="other-behaviour-changes-in-this-release">Other behaviour changes in this release</h2><a class="sl-anchor-link" href="#other-behaviour-changes-in-this-release"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Other behaviour changes in this release”</span></a></div>
+<p>These changes are not part of Review Routing or run plans, but an upgrade makes
+each of them visible. The <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/CHANGELOG.md">CHANGELOG</a>
+has the full entry for each.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="deleting-a-document-purges-every-version-of-its-upload">Deleting a document purges every version of its upload</h3><a class="sl-anchor-link" href="#deleting-a-document-purges-every-version-of-its-upload"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Deleting a document purges every version of its upload”</span></a></div>
+<p>The input bucket is versioned. Deleting a document (web UI, <code dir="auto">idp-cli delete-documents</code>, the SDK, or the PII Anonymizer’s <em>redact copy and stop</em> mode)
+now deletes every version and delete marker of the document’s upload, so a deleted
+document’s upload can no longer be restored from the input bucket’s noncurrent
+versions. A CLI or SDK caller needs <code dir="auto">s3:ListBucketVersions</code> and
+<code dir="auto">s3:DeleteObjectVersion</code> on the input bucket in its own IAM policy; without them
+the current object is still removed, but the document is reported as failed,
+naming the input bucket, because the versions remain. See
+<a href="../idp-cli/#delete-documents">delete-documents</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="status-filters-select-documents-and-accept-only-real-statuses">Status filters select documents, and accept only real statuses</h3><a class="sl-anchor-link" href="#status-filters-select-documents-and-accept-only-real-statuses"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Status filters select documents, and accept only real statuses”</span></a></div>
+<p><code dir="auto">idp-cli delete-documents --status-filter</code> and the SDK’s
+<code dir="auto">client.batch.delete_documents(status_filter=...)</code> used to match no document at
+all, so a script that passed a filter deleted nothing. They now match the status
+the pipeline records, so <strong>the same script now deletes the documents it names</strong>.
+Check such scripts before you run them against an updated stack.</p>
+<p>The CLI’s status options (<code dir="auto">delete-documents --status-filter</code>, <code dir="auto">status --object-status</code>) and the SDK’s <code dir="auto">status_filter</code> accept only the statuses a
+document can be recorded with, and refuse anything else, including <code dir="auto">PROCESSING</code>;
+the SDK raises <code dir="auto">IDPConfigurationError</code>. Use the step status you mean, such as
+<code dir="auto">RUNNING</code>, <code dir="auto">OCR</code> or <code dir="auto">EXTRACTING</code>. <code dir="auto">idp-cli status --batch-id</code> with no
+<code dir="auto">--object-status</code> now also finds documents at a processing step, aborted,
+rejected or waiting for review. See <a href="../idp-cli/#status">status</a> and
+<a href="../idp-sdk/#batchdelete_documents">batch.delete_documents()</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="prefix-mappings">Prefix mappings</h3><a class="sl-anchor-link" href="#prefix-mappings"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Prefix mappings”</span></a></div>
+<ul>
+<li>A prefix mapping that names a configuration profile which does not exist now
+refuses the document: it is recorded as <strong>Failed</strong> with a reason naming the
+mapping and the missing profile, where it used to be processed under the profile
+its upload named or the active one. See
+<a href="../configuration-profiles/#a-mapping-whose-profile-does-not-exist">A mapping whose profile does not exist</a>.</li>
+<li>Only <code dir="auto">test-studio</code> and <code dir="auto">pii-anonymizer</code>, the <code dir="auto">submission-source</code> values Test
+Studio and the PII Anonymizer write, exempt an object from prefix mappings. An
+object carrying any other value is mapped like an ordinary upload. See
+<a href="../configuration-profiles/#documents-this-deployment-submits-itself-are-exempt">Documents this deployment submits itself are exempt</a>.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="a-prompt-with-more-than-one-document_image-fails-the-document">A prompt with more than one <code dir="auto">{DOCUMENT_IMAGE}</code> fails the document</h3><a class="sl-anchor-link" href="#a-prompt-with-more-than-one-document_image-fails-the-document"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “A prompt with more than one {DOCUMENT_IMAGE} fails the document”</span></a></div>
+<p>A classification or extraction prompt that contains <code dir="auto">{DOCUMENT_IMAGE}</code> more than
+once used to be accepted with a log warning; a document sent with it now fails
+with <code dir="auto">found N occurrences, but exactly 1 is required</code>. Run <code dir="auto">idp-cli config-validate</code> on your profiles, which reports these prompts, and remove the
+extra placeholders. See
+<a href="../extraction-and-confidence/#image-placement-with-document_image">Image placement</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="a-content-filter-block-fails-only-its-section">A content-filter block fails only its section</h3><a class="sl-anchor-link" href="#a-content-filter-block-fails-only-its-section"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “A content-filter block fails only its section”</span></a></div>
+<p>When Amazon Bedrock’s content filter withholds the extraction model’s reply for
+one section, that section is shown as <strong>Failed</strong> with an <code dir="auto">extraction_failed</code>
+issue and the rest of the document completes, where the whole document used to
+fail. With Review Routing on, such a document is held for review (see
+<a href="../extraction-and-confidence/#where-a-failed-section-shows-up">Where a failed section shows up</a>).</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="eu-profiles-saved-before-this-release-keep-a-us-model-id">EU profiles saved before this release keep a <code dir="auto">us.</code> model id</h3><a class="sl-anchor-link" href="#eu-profiles-saved-before-this-release-keep-a-us-model-id"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “EU profiles saved before this release keep a us. model id”</span></a></div>
+<p>A model setting that a configuration leaves out now takes the stack’s Region’s
+inference profile, so an EU stack gets the <code dir="auto">eu.</code> profile. A configuration profile
+you created in an EU stack before this release stored the <code dir="auto">us.</code> id it was given
+as an explicit value, and keeps it; the update rewrites only the profiles the
+deployment itself provides. In such a profile, choose the model again (or restore
+it from the default) for each step that fails with an invalid model identifier.
+See <a href="../eu-region-model-support/">EU Region Model Support</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="quick-start-is-admin-only">Quick Start is Admin-only</h3><a class="sl-anchor-link" href="#quick-start-is-admin-only"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Quick Start is Admin-only”</span></a></div>
+<p>Only Admins see Quick Start and only Admins can send it a message; both chat
+routes refuse a Quick Start message from any other group. On a stack deployed
+with <code dir="auto">EnableQuickStartWidget=false</code>, the chat routes also refuse every Quick Start
+message, where the parameter used to hide Quick Start in the web UI only. See
+<a href="../quick-start/#web-ui">Quick Start</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="deleting-the-stack-keeps-its-kms-key">Deleting the stack keeps its KMS key</h3><a class="sl-anchor-link" href="#deleting-the-stack-keeps-its-kms-key"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Deleting the stack keeps its KMS key”</span></a></div>
+<p>The KMS key the stack creates now carries <code dir="auto">DeletionPolicy: Retain</code>, so the
+retained buckets it encrypts stay readable after the stack is deleted. The key
+is billed until you schedule it for deletion; <code dir="auto">idp-cli delete</code> names it and
+prints the command. See <a href="../idp-cli/#the-retained-kms-key">The retained KMS key</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="new-stack-parameters">New stack parameters</h3><a class="sl-anchor-link" href="#new-stack-parameters"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “New stack parameters”</span></a></div>
+<p>All three default to the previous behaviour.</p>
+<ul>
+<li><code dir="auto">TenantSelection</code> (default <code dir="auto">Disabled</code>) lets a user whom the identity provider
+grants two or more tenants choose the active one. It requires
+<code dir="auto">TenantGrantSource=IdpClaim</code>. See
+<a href="../multi-tenancy/#letting-a-user-choose-among-their-tenants">Letting a user choose among their tenants</a>.</li>
+<li><code dir="auto">ManageApiGatewayAccountSettings</code> (default <code dir="auto">true</code>) decides whether the stack
+sets the Region’s API Gateway CloudWatch logging role. Set it to <code dir="auto">false</code> on
+every deployment in a Region but one. See
+<a href="../monitoring/#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role">Monitoring</a>.</li>
+<li><code dir="auto">CustomerManagedKmsKeyArn</code> (default empty) uses a KMS key of your own instead
+of the one the stack creates. It can be set only when a stack is <strong>created</strong>;
+an update that sets, clears or changes it is refused and rolled back. See
+<a href="../customer-managed-kms-key/">Customer Managed KMS Key</a>.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="document-attribute-sidecars">Document attribute sidecars</h3><a class="sl-anchor-link" href="#document-attribute-sidecars"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Document attribute sidecars”</span></a></div>
+<p>A JSON sidecar of document attributes must be stored at the document’s own key
+plus <code dir="auto">.idp-attributes.json</code>. An object whose key ends in <code dir="auto">.idp-attributes.json</code>
+is treated as a sidecar and not processed. See
+<a href="../document-attributes/#s3-upload-a-json-sidecar">S3 upload: a JSON sidecar</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="terraform-upgrades-keep-the-deployments-parameter-values">Terraform upgrades keep the deployment’s parameter values</h3><a class="sl-anchor-link" href="#terraform-upgrades-keep-the-deployments-parameter-values"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Terraform upgrades keep the deployment’s parameter values”</span></a></div>
+<p>An <code dir="auto">idp-cli deploy --terraform</code> upgrade now keeps the value the deployment has
+for every parameter you do not pass, as a CloudFormation update does, reading it
+from the deployment’s label stack. It used to keep only the parameters passed to
+earlier deploys from the same directory, so a parameter never passed took the new
+release’s default. A parameter new in this release takes its default. See
+<a href="../terraform/#upgrading">Upgrading</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="nodejs-26-to-publish-or-build-from-source">Node.js 26 to publish or build from source</h3><a class="sl-anchor-link" href="#nodejs-26-to-publish-or-build-from-source"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Node.js 26 to publish or build from source”</span></a></div>
+<p>Building the web UI from a checkout, and so <code dir="auto">idp-cli publish</code>, <code dir="auto">publish.py</code> and
+<code dir="auto">make setup-node</code>, needs Node.js 26 or later. A stack update builds the web UI in
+CodeBuild with Node.js 26 and needs nothing from you. See
+<a href="../deployment/#dependencies">Deployment</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="numpy-2-and-pyarrow-26">numpy 2 and pyarrow 26</h3><a class="sl-anchor-link" href="#numpy-2-and-pyarrow-26"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “numpy 2 and pyarrow 26”</span></a></div>
+<p><code dir="auto">idp_common</code>’s <code dir="auto">ocr</code>, <code dir="auto">multi_document_discovery</code> and <code dir="auto">all</code> extras pin numpy 2,
+and its <code dir="auto">reporting</code>, <code dir="auto">test</code> and <code dir="auto">all</code> extras pin pyarrow 26, as do the Lambda
+layers and images built from them. The solution’s results and Parquet files are
+unchanged. A pipeline hook or extension that installs <code dir="auto">idp_common</code> with those
+extras, or imports numpy or pyarrow from the reporting layer, gets the new major
+versions and should be tested against them.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="during-the-upgrade">During the upgrade</h2><a class="sl-anchor-link" href="#during-the-upgrade"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “During the upgrade”</span></a></div>
+<p><strong>Runs in progress.</strong> An execution that is running when the state machine is
+updated finishes on the definition it started with. If it ends by holding the
+document for review, the document is in the Default queue and can be reviewed
+after the update like any other. Executions started after the update use the new
+definition.</p>
+<p><strong>Documents in review.</strong> A document held before the update is completed,
+rejected or removed after it with the new behaviour: completing it starts a run
+at Apply Review Changes (or at extraction, for a section that has no extracted
+values), rejecting it ends it as <code dir="auto">REJECTED</code> without a Lambda invocation, and
+removing it starts a run at policy rule validation. Its review record gets no
+<code dir="auto">routed_by</code>, since no routing rule placed it, so its Review Reason panel shows the
+alerts and no routing notice.</p>
+<p><strong>The Review Routing switch.</strong> The update changes it in no profile (see
+<a href="#new-stacks-turn-review-routing-on">New stacks turn Review Routing on</a>).</p>
+<p><strong>Messages already queued.</strong> A message queued before the update has no run plan
+and starts a run of every step, in which each step detects work that exists, as
+in v0.6.15.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="rollback">Rollback</h2><a class="sl-anchor-link" href="#rollback"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Rollback”</span></a></div>
+<p>Rolling the stack back to v0.6.15 is possible, with these effects:</p>
+<ul>
+<li><strong>Runs started on the v0.6.16 definition</strong> that are in progress during the
+rollback finish on that definition and call functions the rollback removes, so
+they fail at the routing step. Reprocess those documents afterwards.</li>
+<li><strong>Profiles saved by v0.6.15 lose their <code dir="auto">routing</code> section</strong>, because that
+release does not know the section and writes the profile without it. Export
+the routing tables first (see
+<a href="../review-routing/#dmn-xml-export-and-import">DMN XML export and import</a>) if
+you intend to update again.</li>
+<li><strong>Review queues other than Default</strong> stay in the review table. v0.6.15 routes
+every held document to the Default queue and its web UI cannot create a queue,
+but it lists the existing queues and their documents can be worked.</li>
+<li><strong>Review items</strong> keep the fields v0.6.16 wrote (<code dir="auto">routed_by</code> with its reason and
+failed policy rules, the placement count, the processing mode, the page layout
+recorded at placement and the start of the run after the review). v0.6.15 ignores
+them.</li>
+<li><strong><code dir="auto">review/status.json</code></strong> objects written by v0.6.16 keep schema version <code dir="auto">1.1</code>
+until the document is reviewed again.</li>
+</ul></div><footer class="sl-flex astro-xhxjzfa7"><div class="meta sl-flex astro-xhxjzfa7"></div><div class="pagination-links print:hidden astro-jgq3vlii" dir="ltr"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" rel="prev" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg><span class="astro-jgq3vlii">Previous<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Installing First-Party Packages</span></span></a><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0612-to-v0613/" rel="next" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg><span class="astro-jgq3vlii">Next<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">v0.6.12 → v0.6.13 Migration</span></span></a></div></footer></div></div></main></div></div></div></div></body></html>

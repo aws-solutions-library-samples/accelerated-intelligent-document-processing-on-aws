@@ -1,0 +1,1248 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-vdxcvpsm"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Review Routing | GenAI IDP</title><link rel="canonical" href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/review-routing/"/><link rel="sitemap" href="/accelerated-intelligent-document-processing-on-aws/sitemap-index.xml"/><link rel="shortcut icon" href="/accelerated-intelligent-document-processing-on-aws/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v7.4.12"/><meta name="generator" content="Starlight v0.41.4"/><meta property="og:title" content="Review Routing"/><meta property="og:type" content="article"/><meta property="og:url" content="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/review-routing/"/><meta property="og:locale" content="en"/><meta property="og:description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><meta property="og:site_name" content="GenAI IDP"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg><svg aria-hidden="true" class="dark astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg><svg aria-hidden="true" class="auto astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg></template><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/print.ehPL0gv-.css" media="print"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/common.DrVeimLH.css"><style>@layer starlight.components{.card:where(.astro-zts4jgjd){--sl-card-border:var(--sl-color-purple);--sl-card-bg:var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);flex-direction:column;gap:clamp(.5rem,.125rem + 1vw,1rem);padding:clamp(1rem,.125rem + 3vw,2.5rem)}.card:where(.astro-zts4jgjd):nth-child(4n+1){--sl-card-border:var(--sl-color-orange);--sl-card-bg:var(--sl-color-orange-low)}.card:where(.astro-zts4jgjd):nth-child(4n+3){--sl-card-border:var(--sl-color-green);--sl-card-bg:var(--sl-color-green-low)}.card:where(.astro-zts4jgjd):nth-child(4n+4){--sl-card-border:var(--sl-color-red);--sl-card-bg:var(--sl-color-red-low)}.card:where(.astro-zts4jgjd):nth-child(4n+5){--sl-card-border:var(--sl-color-blue);--sl-card-bg:var(--sl-color-blue-low)}.title:where(.astro-zts4jgjd){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);align-items:center;gap:1rem}.card:where(.astro-zts4jgjd) .icon:where(.astro-zts4jgjd){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);border-radius:.25rem;flex-shrink:0;padding:.2em}.card:where(.astro-zts4jgjd) .body:where(.astro-zts4jgjd){font-size:clamp(var(--sl-text-sm), calc(.5rem + 1vw), var(--sl-text-body));margin:0}.card-grid:where(.astro-lmor3ela){grid-template-columns:100%;gap:1rem;display:grid}.card-grid:where(.astro-lmor3ela)>*{margin-top:0!important}@media (width>=50rem){.card-grid:where(.astro-lmor3ela){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-lmor3ela){--stagger-height:5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-lmor3ela)>:nth-child(2n){transform:translateY(var(--stagger-height))}}.sl-link-card:where(.astro-vodiqeol){border:1px solid var(--sl-color-gray-5);box-shadow:var(--sl-shadow-sm);border-radius:.5rem;grid-template-columns:1fr auto;gap:.5rem;padding:1rem;display:grid;position:relative}a:where(.astro-vodiqeol){line-height:var(--sl-line-height-headings);text-decoration:none}a:where(.astro-vodiqeol):before{content:"";position:absolute;inset:0}.stack:where(.astro-vodiqeol){flex-direction:column;gap:.5rem}.title:where(.astro-vodiqeol){color:var(--sl-color-white);font-weight:600;font-size:var(--sl-text-lg)}.description:where(.astro-vodiqeol){color:var(--sl-color-gray-3);line-height:1.5}.icon:where(.astro-vodiqeol){color:var(--sl-color-gray-3)}.sl-link-card:where(.astro-vodiqeol):hover{background:var(--sl-color-gray-7,var(--sl-color-gray-6));border-color:var(--sl-color-gray-2)}.sl-link-card:where(.astro-vodiqeol):hover .icon:where(.astro-vodiqeol){color:var(--sl-color-white)}}
+@layer starlight.components{svg:where(.astro-n5k4ipy7){color:var(--sl-icon-color);font-size:var(--sl-icon-size,1em);width:1em;height:1em}}
+</style><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/page.cNngjUgL.js"></script></head><body class="astro-vdxcvpsm"><a class="sl-skip-link astro-vxeigawq" href="#_top">Skip to content</a><div class="page sl-flex astro-gqpr5s5a"><header class="header astro-gqpr5s5a"><div class="header astro-nczgtkxc"><div class="title-wrapper sl-flex astro-nczgtkxc"><a href="/accelerated-intelligent-document-processing-on-aws/" class="site-title sl-flex astro-clw6ags5"><img class="light:sl-hidden print:hidden astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-dark.CDSNlVMV.svg" width="120" height="32"><img class="dark:sl-hidden print:block astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-light.CszXvHpe.svg" width="120" height="32"><span class="astro-clw6ags5" translate="no">GenAI IDP</span></a></div><div class="sl-flex print:hidden astro-nczgtkxc"><site-search class="astro-nczgtkxc astro-r5ar4xm7" data-translations="{&quot;placeholder&quot;:&quot;Search&quot;}"><button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-r5ar4xm7"><svg aria-hidden="true" class="astro-r5ar4xm7 astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg><span class="sl-hidden md:sl-block astro-r5ar4xm7" aria-hidden="true">Search</span><kbd class="sl-hidden md:sl-flex astro-r5ar4xm7" style="display: none;"><kbd class="astro-r5ar4xm7">Ctrl</kbd><kbd class="astro-r5ar4xm7">K</kbd></kbd></button><dialog style="padding:0" aria-label="Search" class="astro-r5ar4xm7"><div class="dialog-frame sl-flex astro-r5ar4xm7"><button data-close-modal class="sl-flex md:sl-hidden astro-r5ar4xm7">Cancel</button><div class="search-container astro-r5ar4xm7"><div id="starlight__search" class="astro-r5ar4xm7"></div></div></div></dialog></site-search><script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/Search.astro_astro_type_script_index_0_lang.BC-LT3sv.js"></script></div><div class="sl-hidden md:sl-flex print:hidden right-group astro-nczgtkxc"><div class="sl-flex social-icons astro-nczgtkxc"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script><script type="module">var e=`starlight-theme`,t=e=>e===`auto`||e===`dark`||e===`light`?e:`auto`,n=()=>t(typeof localStorage<`u`&&localStorage.getItem(e));function r(t){typeof localStorage<`u`&&localStorage.setItem(e,t===`light`||t===`dark`?t:``)}var i=()=>matchMedia(`(prefers-color-scheme: light)`).matches?`light`:`dark`;function a(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e===`auto`?i():e,r(e)}matchMedia(`(prefers-color-scheme: light)`).addEventListener(`change`,()=>{n()===`auto`&&a(`auto`)});var o=class extends HTMLElement{constructor(){super(),a(n()),this.querySelector(`select`)?.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&a(t(e.currentTarget.value))})}};customElements.define(`starlight-theme-select`,o);</script><script type="module">var e=class extends HTMLElement{constructor(){super();let e=this.querySelector(`select`);e&&(e.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=e.currentTarget.value)}),window.addEventListener(`pageshow`,t=>{if(!t.persisted)return;let n=e.querySelector(`option[selected]`)?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}};customElements.define(`starlight-lang-select`,e);</script></div></div></header><nav class="sidebar print:hidden astro-gqpr5s5a" aria-label="Main"><starlight-menu-button class="print:hidden astro-vvx7mffu"><button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-vvx7mffu"><svg aria-hidden="true" class="open-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg><svg aria-hidden="true" class="close-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="m13.41 12 6.3-6.29a1.004 1.004 0 1 0-1.42-1.42L12 10.59l-6.29-6.3a1.004 1.004 0 0 0-1.42 1.42l6.3 6.29-6.3 6.29a1 1 0 0 0 0 1.42.998.998 0 0 0 1.42 0l6.29-6.3 6.29 6.3a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.42L13.41 12Z"/></svg></button></starlight-menu-button><script type="module">var e=class extends HTMLElement{btn=this.querySelector(`button`);constructor(){super(),this.btn.addEventListener(`click`,()=>this.toggleExpanded());let e=this.closest(`nav`);e&&e.addEventListener(`keyup`,e=>this.closeOnEscape(e)),matchMedia(`(min-width: 50em)`).addEventListener(`change`,()=>this.setExpanded(!1))}setExpanded(e){this.setAttribute(`aria-expanded`,String(e)),document.body.toggleAttribute(`data-mobile-menu-expanded`,e),document.querySelectorAll(`.main-frame, .sl-skip-link`).forEach(t=>{t.toggleAttribute(`inert`,e)})}toggleExpanded(){this.setExpanded(this.getAttribute(`aria-expanded`)!==`true`)}closeOnEscape(e){e.code===`Escape`&&(this.setExpanded(!1),this.btn.focus())}};customElements.define(`starlight-menu-button`,e);</script><div id="starlight__sidebar" class="sidebar-pane astro-gqpr5s5a"><div class="sidebar-content sl-flex astro-gqpr5s5a"><sl-sidebar-state-persist data-hash="1boo5fk" class="astro-f5yvicm7"><script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script><ul class="top-level astro-ojxuodky"><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Overview</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="0"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/" class="astro-ojxuodky"><span class="astro-ojxuodky">Welcome</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-in-action/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP in Action</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/references/" class="astro-ojxuodky"><span class="astro-ojxuodky">Blogs, Customer Stories &amp; Research</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/workshops/" class="astro-ojxuodky"><span class="astro-ojxuodky">Hands-on Workshops</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/solution-profile/" class="astro-ojxuodky"><span class="astro-ojxuodky">Solution Profile</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/fit-check/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fit Check</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Core</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="1"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/quick-start/" class="astro-ojxuodky"><span class="astro-ojxuodky">Quick Start</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-deployment-ai-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">AI-Guided Deployment Walkthrough</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/terraform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Terraform Deployment (Experimental)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/terraform-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Migrating from genai-idp-terraform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/headless-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Headless Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/apigateway-hosting/" class="astro-ojxuodky"><span class="astro-ojxuodky">API Gateway Hosting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment-private-network/" class="astro-ojxuodky"><span class="astro-ojxuodky">Private Network Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/vpc-secured-mode/" class="astro-ojxuodky"><span class="astro-ojxuodky">VPC-Secured Mode</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-profiles/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Profiles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/multi-tenancy/" class="astro-ojxuodky"><span class="astro-ojxuodky">Multi-Tenant Isolation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Versions (renamed)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-configuration-best-practices/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Best Practices</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/json-schema-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">JSON Schema Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/web-ui/" class="astro-ojxuodky"><span class="astro-ojxuodky">Web UI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-appsync-to-rest/" class="astro-ojxuodky"><span class="astro-ojxuodky">UI ⇄ Backend Transport (AppSync → REST)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-cli/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP CLI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-sdk/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP SDK</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idpcommon-api-reference/" class="astro-ojxuodky"><span class="astro-ojxuodky">idp_common API Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/demo-videos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Demo Videos</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/troubleshooting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Troubleshooting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/error-analyzer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Error Analyzer</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Processing Modes</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="2"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-1/" class="astro-ojxuodky"><span class="astro-ojxuodky">BDA Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-2/" class="astro-ojxuodky"><span class="astro-ojxuodky">Pipeline Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Discovery</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/policy-discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Policy Discovery</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Document Processing Features</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="3"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/classification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction &amp; Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment-bounding-boxes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment Bounding Boxes (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/few-shot-examples/" class="astro-ojxuodky"><span class="astro-ojxuodky">Few-Shot Examples</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/human-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Human-in-the-Loop Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/review-queues/" class="astro-ojxuodky"><span class="astro-ojxuodky">Review Queues</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/review-routing/" aria-current="page" class="astro-ojxuodky"><span class="astro-ojxuodky">Review Routing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation-z3/" class="astro-ojxuodky"><span class="astro-ojxuodky">Z3 Rule Validation Engine</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/missing-page-handling/" class="astro-ojxuodky"><span class="astro-ojxuodky">Missing Page Handling</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/ocr-image-sizing-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">OCR Image Sizing Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/languages/" class="astro-ojxuodky"><span class="astro-ojxuodky">Languages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Evaluation &amp; Testing</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="4"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/testing/" class="astro-ojxuodky"><span class="astro-ojxuodky">Testing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Evaluation Framework</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation-enhanced-reporting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Enhanced Reporting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/test-studio/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Studio</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/creating-custom-test-sets/" class="astro-ojxuodky"><span class="astro-ojxuodky">Creating Custom Test Sets</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mlflow-integration/" class="astro-ojxuodky"><span class="astro-ojxuodky">MLflow Experiment Tracking</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Validation</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="5"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation Records</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0611/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.11</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0612/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.12</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.13</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0614/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.14</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.6</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.8</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v069/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.9</span></a></li></ul></details></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Benchmarks &amp; Performance</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="6"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmarking Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/config-guidance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Guidance</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Audit Trail</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="7"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit Trail</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.0 vs v0.5.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0611/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.11 vs v0.6.10</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0612/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.12 vs v0.6.11</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.13 vs v0.6.12</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0614/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.14 vs v0.6.13</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.5 vs v0.6.4</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fix Verification: v0.6.5 correctness fixes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.6 vs v0.6.5</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v067/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.7</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.8</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v069/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.9</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Studies</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="8"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/advanced-extraction-refinements/" class="astro-ojxuodky"><span class="astro-ojxuodky">Advanced Extraction — Seven Candidate Refinements, Measured</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/classification-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification Confidence — Does the Score Carry Signal?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/confidence-calibration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Confidence Calibration — Can the Score Route Human Review?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/feature-multi-instance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Study: multi-instance sections (#715 / #753)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/greedy-decoding-tool-use/" class="astro-ojxuodky"><span class="astro-ojxuodky">Greedy Decoding and Invalid Tool-Use Sequences</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-cache-padding-proposal/" class="astro-ojxuodky"><span class="astro-ojxuodky">Should we pad prompts to clear the cache minimum?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-caching/" class="astro-ojxuodky"><span class="astro-ojxuodky">Prompt Caching — Measured Behaviour</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark Studies</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/schema-restatement-tokens/" class="astro-ojxuodky"><span class="astro-ojxuodky">Schema Restatement — What Turning It Off Actually Costs</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-scaling-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction Scaling Guide</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">AI Agents &amp; Analytics</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="9"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-analysis/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Analysis</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-companion-chat/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Companion Chat</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/code-intelligence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Code Intelligence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/knowledge-base/" class="astro-ojxuodky"><span class="astro-ojxuodky">Knowledge Base</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-mcp-agent/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom MCP Agent</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-connector/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Connector</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-server/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Server</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Integration &amp; Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="10"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform-developer-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform Developer Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/marketplace-subscription-next-steps/" class="astro-ojxuodky"><span class="astro-ojxuodky">After Subscribing on AWS Marketplace</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="11"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/auto-optimizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Auto Optimizer (Beta)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/decision-model-decider/" class="astro-ojxuodky"><span class="astro-ojxuodky">Decision Model: Strands Decider</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-monitor/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP Monitor</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/pii-anonymizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">PII Anonymization</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/confbench-testset/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set - ConfBench</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-data-generator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set Generator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-document-status/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Document Status (feature add-on)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-health-insurance-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Health Insurance Review</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-attributes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Attributes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/post-processing-lambda-hook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Post-Processing Lambda Hook</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/lambda-hook-inference/" class="astro-ojxuodky"><span class="astro-ojxuodky">Lambda Hook Inference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/decision-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">Decision Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/nova-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Nova Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-model-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom Model Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/service-tiers/" class="astro-ojxuodky"><span class="astro-ojxuodky">Service Tiers</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Monitoring &amp; Operations</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="12"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/monitoring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Monitoring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting Database</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting SQL Layer</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Capacity Planning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cost-calculator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cost Calculator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/circuit-breaker/" class="astro-ojxuodky"><span class="astro-ojxuodky">Circuit Breaker</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cross-account-bedrock/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cross-Account Bedrock</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/version-update-indicator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Version Update Indicator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Runbook</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Planning &amp; Security</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="13"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/threat-model/" class="astro-ojxuodky"><span class="astro-ojxuodky">Threat Model</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/malware-scanning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Malware Scanning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/customer-managed-kms-key/" class="astro-ojxuodky"><span class="astro-ojxuodky">Customer Managed KMS Key</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/well-architected/" class="astro-ojxuodky"><span class="astro-ojxuodky">Well-Architected Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/aws-services-and-roles/" class="astro-ojxuodky"><span class="astro-ojxuodky">AWS Services &amp; IAM Roles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rbac/" class="astro-ojxuodky"><span class="astro-ojxuodky">Role-Based Access Control (RBAC)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/external-idp/" class="astro-ojxuodky"><span class="astro-ojxuodky">External Identity Provider</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">GovCloud</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="14"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-operations/" class="astro-ojxuodky"><span class="astro-ojxuodky">Operations</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-batch-api/" class="astro-ojxuodky"><span class="astro-ojxuodky">Batch API</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/eu-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">EU Region Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/canada-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">Canada (Central) Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/openai-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">OpenAI Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/grok-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">xAI Grok Models</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Development Setup</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="15"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-linux/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Linux</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-macos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: macOS</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-wsl/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: WSL</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-windows/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Windows</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/using-notebooks-with-idp-common/" class="astro-ojxuodky"><span class="astro-ojxuodky">Using Notebooks</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-mirroring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Dependency Mirroring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" class="astro-ojxuodky"><span class="astro-ojxuodky">Installing First-Party Packages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Migration</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="16"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0615-to-v0616/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.6.15 → v0.6.16 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0612-to-v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.6.12 → v0.6.13 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v05-to-v06/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.5 → v0.6 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v04-to-v05/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.4 → v0.5 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-granular-retirement/" class="astro-ojxuodky"><span class="astro-ojxuodky">Granular Assessment Retirement</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/data-mart-migration-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Data Mart Migration Runbook</span></a></li></ul></details></li></ul><script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script></sl-sidebar-state-persist><div class="md:sl-hidden"><div class="mobile-preferences sl-flex astro-b5gddk54"><div class="social-icons astro-b5gddk54"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script></div></div></div></div></nav><div class="main-frame astro-gqpr5s5a"><script type="module">var e=document.getElementById(`starlight__sidebar`),t=e?.querySelector(`sl-sidebar-state-persist`),n=`sl-sidebar-state`,r=()=>{let r=[],i=t?.dataset.hash||``;try{let e=sessionStorage.getItem(n),t=JSON.parse(e||`{}`);Array.isArray(t.open)&&t.hash===i&&(r=t.open)}catch{}return{hash:i,open:r,scroll:e?.scrollTop||0}},i=e=>{try{sessionStorage.setItem(n,JSON.stringify(e))}catch{}},a=()=>i(r()),o=(e,t)=>{let n=r();n.open[t]=e,i(n)};t?.addEventListener(`click`,e=>{if(!(e.target instanceof Element))return;let t=e.target.closest(`summary`)?.closest(`details`);if(!t)return;let n=t.querySelector(`sl-sidebar-restore`),r=parseInt(n?.dataset.index||``);isNaN(r)||o(!t.open,r)}),addEventListener(`visibilitychange`,()=>{document.visibilityState===`hidden`&&a()});</script><div class="lg:sl-flex astro-abfeecmu"><aside class="right-sidebar-container print:hidden astro-abfeecmu"><div class="right-sidebar astro-abfeecmu"><div class="lg:sl-hidden astro-q5mffni3"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-5ulgm6bh"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-5ulgm6bh"><details id="starlight__mobile-toc" class="astro-5ulgm6bh"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-5ulgm6bh"><span class="toggle sl-flex astro-5ulgm6bh">On this page<svg aria-hidden="true" class="caret astro-5ulgm6bh astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-5ulgm6bh"></span></summary><div class="dropdown astro-5ulgm6bh"><ul class="isMobile astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#table-of-contents" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Table of Contents</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#overview" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#when-a-document-is-held" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">When a document is held</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-review-routing-switch" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The Review Routing switch</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-built-in-routing-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The built-in routing rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#routing-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Routing rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#inputs" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Inputs</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#tests" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Tests</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#inputs-that-are-lists" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Inputs that are lists</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#outcomes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Outcomes</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-reason" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The reason</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#failed-policy-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Failed policy rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#when-the-queue-cannot-take-the-document" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">When the queue cannot take the document</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reviewed-documents-and-the-placement-limit" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reviewed documents and the placement limit</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#editing-the-table" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Editing the table</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#warnings" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Warnings</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#testing-a-table" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Testing a table</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#dmn-xml-export-and-import" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">DMN XML export and import</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#limits" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Limits</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#policy-rule-verdicts-in-routing-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Policy rule verdicts in routing rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-showcase-preset" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The showcase preset</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#configuration-reference" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Configuration reference</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#logs-and-metrics" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Logs and metrics</span></a></li></ul></div></details></nav></mobile-starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.BcSo_yiZ.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-q5mffni3"><div class="sl-container astro-q5mffni3"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#table-of-contents" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Table of Contents</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#overview" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#when-a-document-is-held" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">When a document is held</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-review-routing-switch" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The Review Routing switch</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-built-in-routing-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The built-in routing rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#routing-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Routing rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#inputs" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Inputs</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#tests" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Tests</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#inputs-that-are-lists" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Inputs that are lists</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#outcomes" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Outcomes</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-reason" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The reason</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#failed-policy-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Failed policy rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#when-the-queue-cannot-take-the-document" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">When the queue cannot take the document</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reviewed-documents-and-the-placement-limit" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reviewed documents and the placement limit</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#editing-the-table" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Editing the table</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#warnings" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Warnings</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#testing-a-table" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Testing a table</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#dmn-xml-export-and-import" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">DMN XML export and import</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#limits" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Limits</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#policy-rule-verdicts-in-routing-rules" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Policy rule verdicts in routing rules</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#the-showcase-preset" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">The showcase preset</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#configuration-reference" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Configuration reference</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#logs-and-metrics" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Logs and metrics</span></a></li></ul></nav></starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/TableOfContents.astro_astro_type_script_index_0_lang.Csloo1VZ.js"></script></div></div></div></aside><div class="main-pane astro-abfeecmu"><main data-pagefind-body class="astro-vdxcvpsm" lang="en" dir="ltr"><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><h1 id="_top" class="astro-2sm4b3ln">Review Routing</h1></div></div><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><div class="sl-markdown-content"><p>Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0</p>
+<div class="sl-heading-wrapper level-h1"><h1 id="review-routing">Review Routing</h1><a class="sl-anchor-link" href="#review-routing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Review Routing”</span></a></div>
+<div class="sl-heading-wrapper level-h2"><h2 id="table-of-contents">Table of Contents</h2><a class="sl-anchor-link" href="#table-of-contents"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Table of Contents”</span></a></div>
+<ul>
+<li><a href="#overview">Overview</a></li>
+<li><a href="#when-a-document-is-held">When a document is held</a></li>
+<li><a href="#the-review-routing-switch">The Review Routing switch</a></li>
+<li><a href="#the-built-in-routing-rules">The built-in routing rules</a></li>
+<li><a href="#routing-rules">Routing rules</a></li>
+<li><a href="#inputs">Inputs</a></li>
+<li><a href="#tests">Tests</a></li>
+<li><a href="#inputs-that-are-lists">Inputs that are lists</a></li>
+<li><a href="#outcomes">Outcomes</a></li>
+<li><a href="#the-reason">The reason</a></li>
+<li><a href="#failed-policy-rules">Failed policy rules</a></li>
+<li><a href="#when-the-queue-cannot-take-the-document">When the queue cannot take the document</a></li>
+<li><a href="#reviewed-documents-and-the-placement-limit">Reviewed documents and the placement limit</a></li>
+<li><a href="#editing-the-table">Editing the table</a></li>
+<li><a href="#warnings">Warnings</a></li>
+<li><a href="#testing-a-table">Testing a table</a></li>
+<li><a href="#dmn-xml-export-and-import">DMN XML export and import</a></li>
+<li><a href="#limits">Limits</a></li>
+<li><a href="#policy-rule-verdicts-in-routing-rules">Policy rule verdicts in routing rules</a></li>
+<li><a href="#the-showcase-preset">The showcase preset</a></li>
+<li><a href="#configuration-reference">Configuration reference</a></li>
+<li><a href="#logs-and-metrics">Logs and metrics</a></li>
+</ul>
+<div class="sl-heading-wrapper level-h2"><h2 id="overview">Overview</h2><a class="sl-anchor-link" href="#overview"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Overview”</span></a></div>
+<p>Review Routing decides, for each processed document, whether a person reviews it
+and in which <a href="../review-queues/">review queue</a>. The decision is made by a
+<strong>routing table</strong>: an ordered list of <strong>routing rules</strong>, each with conditions, an
+outcome and a reason for the reviewer. The first enabled routing rule whose
+conditions all hold decides. A document that matches no routing rule gets the
+table’s <strong>default outcome</strong>.</p>
+<p>Each configuration profile has one routing table, in its <code dir="auto">routing</code> section. The
+table is versioned with the profile, so a document is routed by the table of the
+configuration revision it is processed with. A revision that holds no <code dir="auto">routing</code>
+section, such as one saved before routing tables existed, routes with the table the
+<code dir="auto">default</code> profile holds, as it takes every setting it lacks from <code dir="auto">default</code> (see
+<a href="../configuration-profiles/#selecting-a-revision-for-processing-or-testing">Selecting a revision for processing or testing</a>):
+the built-in routing rules unless an Admin changed <code dir="auto">default</code>’s.</p>
+<p>The table is evaluated once per run, by the <strong>Review Routing</strong> step, which comes
+after policy rule validation and before summarization, in both Pipeline mode and
+BDA mode:</p>
+<div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">… → Extraction → Assessment → Policy Rule Validation → Review Routing → Summarization → Evaluation</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="… → Extraction → Assessment → Policy Rule Validation → Review Routing → Summarization → Evaluation"><div></div></button></div></figure></div>
+<p>A routing rule can therefore read everything the earlier steps produced:
+extracted values, confidence alerts, missing required fields, sections whose
+extraction failed, the classes of the document’s sections, and the verdicts of
+<a href="../rule-validation/">policy rules</a>. A document the table sends to a queue stops
+there (status <code dir="auto">HITL_IN_PROGRESS</code>) until its review ends; a document it does not
+send to a queue goes on to summarization.</p>
+<p>A profile that has never been edited routes as the
+<a href="#the-built-in-routing-rules">built-in routing rules</a> say: a document with a
+section whose extraction failed, with confidence alerts or with missing required
+fields goes to the Default queue.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="when-a-document-is-held">When a document is held</h2><a class="sl-anchor-link" href="#when-a-document-is-held"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “When a document is held”</span></a></div>
+<p>A routing rule can hold a document only when all of these are true. When one of
+them is false the Review Routing step lets the document continue, and its log line
+says why (see <a href="#logs-and-metrics">Logs and metrics</a>):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>What must be true</th><th>Logged when it is not</th></tr></thead><tbody><tr><td>The document was not submitted by a Test Studio run. Those documents are reviewed as test-set work and are never placed in a production queue</td><td><code dir="auto">test_studio</code></td></tr><tr><td>The stack has review queues. A <a href="../headless-deployment/">headless deployment</a> has none</td><td><code dir="auto">no_review_store</code></td></tr><tr><td><strong>Review Routing</strong> is on in the document’s configuration profile: <code dir="auto">hitl.enabled: true</code> (see <a href="#the-review-routing-switch">The Review Routing switch</a>)</td><td><code dir="auto">hitl_off</code></td></tr><tr><td>The <strong>Default</strong> review queue is enabled (<strong>Review Studio › Review Management</strong>). While it is disabled, no document is held, whichever queue a routing rule names</td><td><code dir="auto">default_queue_off</code></td></tr></tbody></table>
+<p>A Default queue whose settings cannot be read for a moment (a throttled or timed-out
+read) is not taken for a queue that is off: the step is retried.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="the-review-routing-switch">The Review Routing switch</h2><a class="sl-anchor-link" href="#the-review-routing-switch"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “The Review Routing switch”</span></a></div>
+<p><strong>Review Routing</strong> is a setting of each configuration profile (<code dir="auto">hitl.enabled</code>). In
+the web UI it is the <strong>Review Routing</strong> switch in <strong>Configuration → Processing
+Settings → Review Routing (Optional)</strong>, the section after <strong>Policy Rule Validation
+(Optional)</strong>. While it is off no document of that profile is held, whatever the
+routing rules say.</p>
+<p>The same section holds the two settings the built-in routing rules read,
+<strong>Confidence threshold</strong> (<code dir="auto">hitl.confidence_threshold</code>) and <strong>Review missing required
+fields</strong> (<code dir="auto">hitl.route_missing_required_fields</code>), and the Inbox and bulk-skip
+settings, which apply whether or not Review Routing is on.</p>
+<p><strong>Its value on a new stack.</strong> A newly created stack turns Review Routing on in the
+profiles it creates (<code dir="auto">default</code> and the managed profiles), so documents with a
+failed section, confidence alerts or missing required fields wait in the Default
+queue for a reviewer. These cases differ:</p>
+<ul>
+<li>A preset or a custom configuration that sets <code dir="auto">hitl.enabled</code> itself decides: the
+value it sets is applied, on a new stack and on each update.</li>
+<li>Otherwise a stack update does not change the switch. Each profile keeps the value
+it has, and a managed profile that an update adds takes the value of <code dir="auto">default</code>.</li>
+<li>A <a href="../headless-deployment/">headless deployment</a> has no review queues, and its
+profiles are left with Review Routing off.</li>
+</ul>
+<p>A profile you create later takes the value of the profile it is created from
+(<code dir="auto">default</code>, for a new profile name uploaded with the CLI or the SDK), unless the
+configuration you save sets <code dir="auto">hitl.enabled</code>.</p>
+<p><strong>Turning it off for unattended processing.</strong> A stack that processes documents with
+nobody reviewing them (a batch job, a load test, a pipeline that waits for every
+document to complete) needs the switch off, or documents with a low-confidence field
+wait in the Default queue. Turn it off in the profile the documents are processed
+with:</p>
+<ul>
+<li>
+<p>In the web UI: <strong>Configuration → Processing Settings → Review Routing
+(Optional)</strong>, switch <strong>Review Routing</strong> off, and save.</p>
+</li>
+<li>
+<p>With the CLI or the SDK, upload a file that holds only the switch. An upload is
+merged into the profile, so every other setting keeps its value:</p>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">hitl</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">false</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="hitl:  enabled: false"><div></div></button></div></figure></div>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--config-file</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">review-routing-off.yaml</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--config-profile</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">default</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="idp-cli config-upload --stack-name my-stack \    --config-file review-routing-off.yaml --config-profile default"><div></div></button></div></figure></div>
+</li>
+<li>
+<p>For a stack that should never start with it on, set <code dir="auto">hitl.enabled: false</code> in the
+custom configuration the stack is deployed with (<code dir="auto">CustomConfigPath</code>, or
+<code dir="auto">idp-cli deploy --custom-config</code>).</p>
+</li>
+</ul>
+<div class="sl-heading-wrapper level-h2"><h2 id="the-built-in-routing-rules">The built-in routing rules</h2><a class="sl-anchor-link" href="#the-built-in-routing-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “The built-in routing rules”</span></a></div>
+<p>Every profile starts with these routing rules, and a <code dir="auto">routing</code> section with no
+table is read as this one:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Order</th><th>Id</th><th>Conditions</th><th>Outcome</th><th>Reason</th></tr></thead><tbody><tr><td>1</td><td><code dir="auto">builtin-extraction-failed</code></td><td>The document has not been reviewed, and the extraction of at least one section failed without failing the document</td><td>Default queue</td><td><code dir="auto">Sections whose extraction failed: {extraction_failed_count}. They have no extracted values: enter them from the document.</code></td></tr><tr><td>2</td><td><code dir="auto">builtin-confidence-alerts</code></td><td>The document has not been reviewed, and at least one field is under its confidence threshold</td><td>Default queue</td><td><code dir="auto">Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them.</code></td></tr><tr><td>3</td><td><code dir="auto">builtin-missing-required</code></td><td>The document has not been reviewed, <code dir="auto">hitl.route_missing_required_fields</code> is on, and at least one required field has no extracted value</td><td>Default queue</td><td><code dir="auto">Required fields with no value: {missing_required_field_count}. Fill them in from the document.</code></td></tr></tbody></table>
+<p>Default outcome: no review.</p>
+<p>The failed extraction comes first because such a section has no fields, so its
+required fields are missing too, and the first routing rule that matches gives the
+reviewer the reason. See
+<a href="../extraction-and-confidence/#where-a-failed-section-shows-up">Where a failed section shows up</a>.</p>
+<p>They are ordinary routing rules. You can disable them, reorder them, change their
+queue or their reason, or delete them, and <strong>More actions › Restore built-in
+routing rules</strong> on the Routing Rules tab puts back the ones the table no longer
+has. A table holds only what its routing rules say: one with no routing rule that
+tests <code dir="auto">extraction_failed_count</code> does not hold a document for a failed section.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="routing-rules">Routing rules</h2><a class="sl-anchor-link" href="#routing-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Routing rules”</span></a></div>
+<p>A routing rule has:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Part</th><th>Meaning</th></tr></thead><tbody><tr><td><strong>Id</strong></td><td>Identifies the routing rule in the document’s routing record, in logs and in DMN files. Lower-case letters, digits, hyphens, dots and underscores; unique in the table. On the Routing Rules tab it cannot be changed after the routing rule is added</td></tr><tr><td><strong>Label</strong></td><td>The name reviewers see on a document the routing rule placed in a queue (“Routed by rule: …”). Optional</td></tr><tr><td><strong>Enabled</strong></td><td>A disabled routing rule is kept in the table and never evaluated</td></tr><tr><td><strong>Conditions</strong></td><td>Each condition is an <a href="#inputs">input</a> and a <a href="#tests">test</a> on its value. The routing rule matches a document when <strong>every</strong> condition holds. A routing rule with no conditions matches every document</td></tr><tr><td><strong>Outcome</strong></td><td><strong>Send to a review queue</strong> (and which one), or <strong>No review</strong>. See <a href="#outcomes">Outcomes</a></td></tr><tr><td><strong>Reason</strong></td><td>What the reviewer is told about a document the routing rule placed in a queue. Optional. See <a href="#the-reason">The reason</a></td></tr></tbody></table>
+<p>Routing rules are tried in the order they are listed, and the first match decides.
+Put the specific routing rules first: one placed after a routing rule that matches
+every document it would match can never decide, and the Routing Rules tab lists
+such routing rules under <strong>Routing rules that can never match</strong>.</p>
+<p>A “No review” routing rule is how you exempt documents from a later one. For
+example, a first routing rule “document class is <code dir="auto">Receipt</code> → No review” keeps
+receipts out of review whatever the routing rules after it say.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="inputs">Inputs</h2><a class="sl-anchor-link" href="#inputs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Inputs”</span></a></div>
+<p>An input is one fact about the processed document. Some inputs take a <strong>path</strong>
+that says which field, policy rule, policy type or class they read.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Input</th><th>Path</th><th>Value</th><th>Example condition</th></tr></thead><tbody><tr><td><code dir="auto">document_class</code></td><td>—</td><td>The class of the document’s first section</td><td><code dir="auto">document_class</code> test <code dir="auto">"Invoice"</code></td></tr><tr><td><code dir="auto">section_classes</code></td><td>—</td><td>The classes of the document’s sections (a list)</td><td><code dir="auto">section_classes</code>, any, test <code dir="auto">"Bank-checks"</code></td></tr><tr><td><code dir="auto">class_present</code></td><td>class</td><td>True when at least one section of the document has that class, false when none has</td><td><code dir="auto">class_present</code> path <code dir="auto">Bank-checks</code> test <code dir="auto">false</code></td></tr><tr><td><code dir="auto">page_count</code></td><td>—</td><td>Number of pages</td><td><code dir="auto">page_count</code> test <code dir="auto">> 50</code></td></tr><tr><td><code dir="auto">section_count</code></td><td>—</td><td>Number of sections</td><td><code dir="auto">section_count</code> test <code dir="auto">[2..5]</code></td></tr><tr><td><code dir="auto">confidence_alert_count</code></td><td>—</td><td>Fields under their confidence threshold, over the sections that have not been confirmed by a review</td><td><code dir="auto">confidence_alert_count</code> test <code dir="auto">> 0</code></td></tr><tr><td><code dir="auto">missing_required_field_count</code></td><td>—</td><td>Required fields with no extracted value, over the same sections</td><td><code dir="auto">missing_required_field_count</code> test <code dir="auto">>= 2</code></td></tr><tr><td><code dir="auto">extraction_failed_count</code></td><td>—</td><td>Sections whose extraction failed without failing the document, over the same sections. Such a section has no extracted values and raises no confidence alert</td><td><code dir="auto">extraction_failed_count</code> test <code dir="auto">> 0</code></td></tr><tr><td><code dir="auto">route_missing_required_fields</code></td><td>—</td><td>The setting <code dir="auto">hitl.route_missing_required_fields</code> (true when unset)</td><td><code dir="auto">route_missing_required_fields</code> test <code dir="auto">true</code></td></tr><tr><td><code dir="auto">field_value</code></td><td><code dir="auto">[Class:]field.path</code></td><td>The value of an extracted field in every section (of that class, when the path names one); a list</td><td><code dir="auto">field_value</code> path <code dir="auto">Invoice:GrossTotal</code>, any, test <code dir="auto">> 1000</code></td></tr><tr><td><code dir="auto">policy_rule_verdict</code></td><td><code dir="auto">policy_type.rule_key</code></td><td>The verdict of one policy rule: <code dir="auto">pass</code>, <code dir="auto">fail</code>, <code dir="auto">not_found</code> or <code dir="auto">unknown</code>; no value when the policy rule was not evaluated</td><td><code dir="auto">policy_rule_verdict</code> path <code dir="auto">invoice_controls.total_matches_lines</code> test <code dir="auto">"fail"</code></td></tr><tr><td><code dir="auto">failed_policy_rule_count</code></td><td>policy type, or empty for all</td><td>Policy rules whose verdict is <code dir="auto">fail</code></td><td><code dir="auto">failed_policy_rule_count</code> test <code dir="auto">> 0</code></td></tr><tr><td><code dir="auto">reviewed</code></td><td>—</td><td>True when every section of the document has been confirmed by a completed review</td><td><code dir="auto">reviewed</code> test <code dir="auto">false</code></td></tr><tr><td><code dir="auto">processing_mode</code></td><td>—</td><td><code dir="auto">pipeline</code> or <code dir="auto">bda</code></td><td><code dir="auto">processing_mode</code> test <code dir="auto">"bda"</code></td></tr></tbody></table>
+<p>Notes on the values:</p>
+<ul>
+<li>Sections whose class is excluded from processing are left out of every input.</li>
+<li>A <strong>field path</strong> is the field’s name in the class schema, with dots for nested
+fields and an index for a list item: <code dir="auto">Vendor.Name</code>, <code dir="auto">LineItems[0].Amount</code>.
+Prefix it with a class and a colon to read sections of that class only. When a
+profile is saved, the path must exist in the class it names, or in at least one
+class when it names none.</li>
+<li>A <strong>policy rule</strong> is named <code dir="auto">policy_type.rule_key</code>, the id shown beside each policy
+rule in the Policy Rule Validation Summary.</li>
+<li>A <strong>class</strong> for <code dir="auto">class_present</code> is one of the profile’s document classes, and is
+compared without regard to case. <code dir="auto">class_present</code> is how a routing rule catches a
+package that lacks a document it should contain: <code dir="auto">class_present</code> path
+<code dir="auto">Bank-checks</code> test <code dir="auto">false</code> holds for a lending package with no bank check. When a
+profile is saved, the class must be a class of the profile.</li>
+<li><code dir="auto">confidence_alert_count</code> counts what the document page shows as confidence
+alerts: each field against its own threshold, otherwise against
+<code dir="auto">hitl.confidence_threshold</code> (see
+<a href="../extraction-and-confidence/">Extraction and Confidence</a>).</li>
+<li>An input the document has no value for is empty. This is the case for
+<code dir="auto">document_class</code> on a document with no sections, and for <code dir="auto">policy_rule_verdict</code>
+when policy rule validation did not run. <a href="#tests">Tests</a> says how an empty
+value compares.</li>
+</ul>
+<div class="sl-heading-wrapper level-h2"><h2 id="tests">Tests</h2><a class="sl-anchor-link" href="#tests"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tests”</span></a></div>
+<p>A test is written in the cell syntax of DMN decision tables (S-FEEL unary tests).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Test</th><th>Holds when the value …</th></tr></thead><tbody><tr><td><code dir="auto">-</code></td><td>Always (the condition is not used)</td></tr><tr><td><code dir="auto">"Invoice"</code></td><td>equals the text <code dir="auto">Invoice</code> (case-sensitive)</td></tr><tr><td><code dir="auto">"Invoice", "Credit-Note"</code></td><td>equals one of the listed values</td></tr><tr><td><code dir="auto">not("Receipt")</code></td><td>is not <code dir="auto">Receipt</code></td></tr><tr><td><code dir="auto">!= "Receipt"</code></td><td>is not <code dir="auto">Receipt</code></td></tr><tr><td><code dir="auto">1000</code> or <code dir="auto">= 1000</code></td><td>equals 1000</td></tr><tr><td><code dir="auto">> 1000</code>, <code dir="auto">>= 1000</code>, <code dir="auto">&#x3C; 5</code>, <code dir="auto">&#x3C;= 5</code></td><td>compares that way with the number</td></tr><tr><td><code dir="auto">[1..10]</code></td><td>is from 1 to 10, both included</td></tr><tr><td><code dir="auto">(1..10)</code></td><td>is between 1 and 10, both excluded</td></tr><tr><td><code dir="auto">[1000..5000)</code></td><td>is at least 1000 and less than 5000</td></tr><tr><td><code dir="auto">true</code>, <code dir="auto">false</code></td><td>is that boolean</td></tr><tr><td><code dir="auto">> date("2026-01-01")</code></td><td>is a date after 1 January 2026</td></tr><tr><td><code dir="auto">null</code></td><td>is empty</td></tr></tbody></table>
+<p>How values are compared:</p>
+<ul>
+<li><strong>Numbers</strong> are compared exactly. An extracted value that is text holding a
+number (<code dir="auto">"1250.00"</code>) is read as that number. A value that is not a number does
+not satisfy a numeric test, and is not an error.</li>
+<li><strong>Text</strong> is compared as it is: <code dir="auto">"invoice"</code> does not match <code dir="auto">Invoice</code>.</li>
+<li><strong>Dates</strong> are written <code dir="auto">date("YYYY-MM-DD")</code> and compare with a value in ISO form
+(<code dir="auto">2026-03-31</code>, or the date part of <code dir="auto">2026-03-31T10:15:00Z</code>).</li>
+<li><strong>Booleans</strong> are <code dir="auto">true</code> and <code dir="auto">false</code>, without quotes. A boolean is never read as
+a number.</li>
+<li>An <strong>empty value</strong> equals nothing, so <code dir="auto">"Invoice"</code> does not hold for it, and
+<code dir="auto">!= "Invoice"</code> and <code dir="auto">not("Invoice")</code> do. A comparison (<code dir="auto">&#x3C;</code>, <code dir="auto">></code>, a range) with an
+empty value, or with a value of another type, holds neither way: <code dir="auto">> 1000</code> does
+not hold, and neither does <code dir="auto">not(> 1000)</code>. Use <code dir="auto">null</code> to test for emptiness.</li>
+</ul>
+<p>A test that cannot be read is refused when the profile is saved, with the routing
+rule, the input and the position of the error.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="inputs-that-are-lists">Inputs that are lists</h2><a class="sl-anchor-link" href="#inputs-that-are-lists"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Inputs that are lists”</span></a></div>
+<p><code dir="auto">section_classes</code> and <code dir="auto">field_value</code> have one value per section. For these the
+condition also says how the test is applied (<strong>Match</strong>):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Match</th><th>The condition holds when …</th></tr></thead><tbody><tr><td><code dir="auto">any</code></td><td>the test holds for at least one value</td></tr><tr><td><code dir="auto">all</code></td><td>there is at least one value and the test holds for every one</td></tr><tr><td><code dir="auto">count</code></td><td>the test holds for the <strong>number</strong> of values</td></tr></tbody></table>
+<p>Examples: <code dir="auto">section_classes</code>, any, <code dir="auto">"Bank-checks"</code> (the package contains a bank
+check); <code dir="auto">field_value</code> <code dir="auto">LineItems[0].Amount</code>, all, <code dir="auto">&#x3C;= 500</code>; <code dir="auto">section_classes</code>,
+count, <code dir="auto">> 10</code> (more than ten sections of any class). For <code dir="auto">field_value</code>, sections
+in which the field has no value contribute no value.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="outcomes">Outcomes</h2><a class="sl-anchor-link" href="#outcomes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Outcomes”</span></a></div>
+<p>A routing rule’s outcome is a list of <strong>actions</strong>: what happens to a document the
+routing rule matches. There is one action type, <code dir="auto">review_queue</code>, which sends the
+document to a review queue, and an outcome holds at most one action. An empty list
+means the document is not reviewed. The Routing Rules tab shows the list as one
+choice:</p>
+<ul>
+<li><strong>Send to a review queue</strong> (<code dir="auto">actions: [{type: review_queue, queue: &#x3C;id>}]</code>). The
+document is placed in the queue the routing rule names and stops with status
+<code dir="auto">HITL_IN_PROGRESS</code>. The queue is named by its id; create it first in <strong>Review
+Studio › Review Management</strong> (see
+<a href="../review-queues/#creating-a-queue">Review Queues</a>). A save is refused when a
+routing rule names a queue that does not exist.</li>
+<li><strong>No review</strong> (<code dir="auto">actions: []</code>). Processing continues with summarization.</li>
+</ul>
+<p>The <strong>default outcome</strong> is what a document that matches no routing rule gets. It
+has the same two parts as a routing rule’s, actions and a reason, and it is “No
+review” unless you change it.</p>
+<p>The document’s review record keeps the routing rule that placed it, the queue, the
+values the routing rule read, the <a href="#the-reason">reason</a> and the
+<a href="#failed-policy-rules">failed policy rules</a>. Reviewers see “Routed by rule:
+<em>label</em>” with the reason in the item’s <strong>Review Reason</strong> panel, the document page
+shows <strong>Review queue</strong> (with the routing rule under the queue’s name) and <strong>Routing
+reason</strong>, and <code dir="auto">review/status.json</code> carries <code dir="auto">routed_by</code> (see
+<a href="../review-queues/#review-status-for-downstream-consumers">Review status for downstream consumers</a>).</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="the-reason">The reason</h2><a class="sl-anchor-link" href="#the-reason"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “The reason”</span></a></div>
+<p>A routing rule that sends documents to a review queue can carry a <strong>reason</strong>: a
+sentence or two, written for the reviewer, that say why the document is held and
+what to check. The default outcome can carry one too, when it names a queue. A
+reason is optional, and an outcome with no review has none.</p>
+<p>A reason is text with <strong>placeholders</strong> in braces. When a document is placed in a
+queue, each placeholder is replaced with that document’s value:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Placeholder</th><th>Replaced with</th></tr></thead><tbody><tr><td><code dir="auto">{input}</code></td><td>The value of an <a href="#inputs">input</a> that takes no path: <code dir="auto">{page_count}</code>, <code dir="auto">{confidence_alert_count}</code>, <code dir="auto">{document_class}</code></td></tr><tr><td><code dir="auto">{input:path}</code></td><td>The value of an input for a path, written as a condition writes it: <code dir="auto">{field_value:Invoice:GrossTotal}</code>, <code dir="auto">{policy_rule_verdict:invoice_controls.total_matches_lines}</code>, <code dir="auto">{class_present:Bank-checks}</code>. Everything after the first colon is the path</td></tr><tr><td><code dir="auto">{condition_N.value}</code></td><td>What the routing rule’s N-th condition compares with: <code dir="auto">1000</code> for the test <code dir="auto">> 1000</code>, <code dir="auto">1..10</code> for <code dir="auto">[1..10]</code>. Not available in the default outcome’s reason</td></tr><tr><td><code dir="auto">{confidence_threshold}</code></td><td>The profile’s confidence threshold (<code dir="auto">hitl.confidence_threshold</code>)</td></tr><tr><td><code dir="auto">{{</code> and <code dir="auto">}}</code></td><td>A literal <code dir="auto">{</code> and <code dir="auto">}</code></td></tr></tbody></table>
+<p>For example, on a routing rule whose second condition is <code dir="auto">field_value</code> path
+<code dir="auto">Invoice:GrossTotal</code> test <code dir="auto">> 1000</code>:</p>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">reason</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Invoice total {field_value:Invoice:GrossTotal} is over {condition_2.value}. Check the total against the line items.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="reason: &#x22;Invoice total {field_value:Invoice:GrossTotal} is over {condition_2.value}. Check the total against the line items.&#x22;"><div></div></button></div></figure></div>
+<p>A document with a gross total of 1250.00 is placed with the reason <em>Invoice total
+1250.00 is over 1000. Check the total against the line items.</em></p>
+<p>How a value is written:</p>
+<ul>
+<li>A value the document does not have is written <code dir="auto">(no value)</code>.</li>
+<li>A boolean is written <code dir="auto">yes</code> or <code dir="auto">no</code>, and a whole number without a fraction.</li>
+<li>A list (<code dir="auto">section_classes</code>, <code dir="auto">field_value</code>) is written as its values separated by
+commas. A long list shows its first five values, then <code dir="auto">and N more</code>.</li>
+<li>A single value is cut to 200 bytes and the whole reason to 1000 bytes; a text that
+was cut ends with <code dir="auto">…</code>.</li>
+<li>Values are filled in once. Braces inside an extracted value are text, and are
+never read as a placeholder.</li>
+</ul>
+<p>A reason is checked when the profile is saved: its length, that its outcome names a
+review queue, and that every placeholder names an input, with the path that input
+needs (a field of the class schema, a policy rule or policy type of the Policy
+Schema, a class of the profile) or a condition the routing rule has. See
+<a href="#limits">Limits</a>.</p>
+<p><strong>A routing rule with no reason gets a generated one.</strong> It is built, in English,
+from the routing rule’s label and its conditions, with the value the document had:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>What placed the document</th><th>Generated reason</th></tr></thead><tbody><tr><td>A routing rule with conditions</td><td><code dir="auto">Invoices over 1000: Reviewed false (found no); Field value Invoice:GrossTotal > 1000 (found 1250.00)</code></td></tr><tr><td>A routing rule with no conditions</td><td><code dir="auto">&#x3C;label>: this routing rule applies to every document</code></td></tr><tr><td>The default outcome</td><td><code dir="auto">No routing rule matched.</code></td></tr><tr><td>The table could not be evaluated</td><td><code dir="auto">The routing rules could not be evaluated, so the document is in the Default queue.</code></td></tr></tbody></table>
+<p>The generated reason is also used when a reason cannot be filled in for a document.
+The record says which one a document got: <code dir="auto">reason_source</code> is <code dir="auto">admin</code> for the
+reason as written, and <code dir="auto">fallback</code> for the generated one.</p>
+<p><strong>Where the reason is shown and recorded.</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Where</th><th>What it holds</th></tr></thead><tbody><tr><td>The <strong>Review Reason</strong> panel of the queue item</td><td>The routing rule (<strong>Routed by rule: …</strong>) with the reason under it. A long reason shows its beginning, with <strong>Show more</strong> (see the <a href="../review-queues/#annotator-guide">Annotator guide</a>)</td></tr><tr><td><strong>Home › Tasks</strong> and a queue’s <strong>Documents</strong> table</td><td>The <strong>Reason</strong> column, shortened, with the whole text on request</td></tr><tr><td>The document page</td><td><strong>Review queue</strong>, with the routing rule under the queue’s name, and <strong>Routing reason</strong></td></tr><tr><td>The review history (<strong>Reports › History › Review Activity</strong>)</td><td><strong>Routing rule: …</strong> and <strong>Routing reason: …</strong>, on the entry written when the document is placed</td></tr><tr><td><code dir="auto">review/status.json</code></td><td><code dir="auto">routed_by.reason</code> and <code dir="auto">routed_by.reason_source</code> (see <a href="../review-queues/#review-status-for-downstream-consumers">Review status for downstream consumers</a>)</td></tr><tr><td>The document’s status</td><td><code dir="auto">idp-cli status</code> prints <code dir="auto">Reason:</code>, and its JSON form has <code dir="auto">routing_reason</code>; the SDK has <code dir="auto">status.review.reason</code> (see <a href="../idp-cli/">IDP CLI</a> and <a href="../idp-sdk/">IDP SDK</a>)</td></tr><tr><td>The <a href="../reporting-database/#document-reviews-table">reporting database</a></td><td><code dir="auto">document_reviews.routing_reason</code>: the reason <strong>as written</strong>, with its placeholders unfilled</td></tr></tbody></table>
+<p>A reason filled in for a document can hold extracted values, so it is stored with
+the review and never written to the logs. The reporting database gets the reason as
+written for the same cause: it is read across profiles.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="failed-policy-rules">Failed policy rules</h2><a class="sl-anchor-link" href="#failed-policy-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Failed policy rules”</span></a></div>
+<p>When a document is placed in a review queue and policy rule validation gave it
+failed policy rules, the placement records them, whichever routing rule placed the
+document and whether or not that routing rule reads a policy rule result. Nothing
+has to be written for it in the reason.</p>
+<p>Each failed policy rule is recorded with its id (<code dir="auto">policy_type.rule_key</code>), its
+policy, its name, the explanation policy rule validation gave (as one line) and the
+page numbers that explanation cites. The record holds the first ten in the order of
+the Policy Rule Validation Summary, and the number of failed policy rules in all.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Where</th><th>What it holds</th></tr></thead><tbody><tr><td>The <strong>Review Reason</strong> panel of the queue item</td><td><strong>Failed policy rules (n)</strong>: the first three, each with its name, its policy and the explanation, and <strong>Show all n failed policy rules</strong> for the rest of those recorded. <strong>Reports › Policy Rule Validation Summary</strong> on the edit page has the whole report</td></tr><tr><td><strong>Home › Tasks</strong> and a queue’s <strong>Documents</strong> table</td><td>The number of failed policy rules, after the reason</td></tr><tr><td><code dir="auto">review/status.json</code></td><td><code dir="auto">routed_by.policy_failures</code> and <code dir="auto">routed_by.policy_failure_count</code></td></tr><tr><td>The document’s status</td><td><code dir="auto">idp-cli status</code> prints <code dir="auto">Failed policy rules:</code> with the number, and its JSON form has <code dir="auto">policy_failures</code> and <code dir="auto">policy_failure_count</code>; the SDK has <code dir="auto">status.review.policy_failures</code> and <code dir="auto">status.review.policy_failure_count</code></td></tr></tbody></table>
+<p>A document has failed policy rules to record only when policy rule validation runs
+for its profile (see
+<a href="#policy-rule-verdicts-in-routing-rules">Policy rule verdicts in routing rules</a>).</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="when-the-queue-cannot-take-the-document">When the queue cannot take the document</h2><a class="sl-anchor-link" href="#when-the-queue-cannot-take-the-document"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “When the queue cannot take the document”</span></a></div>
+<p>The Review Routing step never drops a document that a routing rule sent to review:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Situation</th><th>What happens</th><th>Recorded as</th></tr></thead><tbody><tr><td>The routing rule’s queue has been deleted</td><td>The document goes to the Default queue</td><td><code dir="auto">queue_missing</code></td></tr><tr><td>The routing rule’s queue is disabled</td><td>The document goes to the Default queue</td><td><code dir="auto">queue_disabled</code></td></tr><tr><td>The table or the document’s results could not be evaluated</td><td>A document that has not been reviewed goes to the Default queue</td><td><code dir="auto">evaluation_error</code></td></tr></tbody></table>
+<p>The reviewer sees why the document is in the Default queue. <strong>Routing rules that
+use this queue</strong> on a queue’s page, and the confirmation dialog when you delete a
+queue, show which profiles’ routing rules send documents to it.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="reviewed-documents-and-the-placement-limit">Reviewed documents and the placement limit</h2><a class="sl-anchor-link" href="#reviewed-documents-and-the-placement-limit"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Reviewed documents and the placement limit”</span></a></div>
+<p>When a review is completed, the document runs again from the point where the
+review’s changes are applied: policy rule validation runs on the corrected
+values, and the routing table is evaluated again. This lets a routing rule send a
+corrected document to a second queue, for example a “Compliance” routing rule that
+reads a policy rule verdict which only fails after the correction.</p>
+<p>Two things keep this from looping:</p>
+<ul>
+<li>The input <code dir="auto">reviewed</code> is true for a document whose review was completed. The
+built-in routing rules test <code dir="auto">reviewed = false</code>, so they do not hold a reviewed
+document again. Add the same condition to your own routing rules unless you
+intend a second review.</li>
+<li><strong>Maximum placements in a row</strong> (<code dir="auto">routing.max_consecutive_placements</code>, from 1
+to 10, default 3) limits how many times in a row a document can be placed: the
+first time, and each time a routing rule sends the reviewed document to a queue
+again. Above the limit the document continues without another review, and the
+event is recorded in its review history.</li>
+</ul>
+<p><strong>A review completed after the page grouping was changed.</strong> When the reviewer added
+a section or changed a section’s pages, the run after the review extracts those
+sections again before it applies the review (see
+<a href="../review-queues/#regrouping-pages-in-a-review">Regrouping pages in a review</a>).
+Their new values are not confirmed by a reviewer, so <code dir="auto">reviewed</code> is false for that
+document, and the alerts, missing required fields and failed extractions of those
+sections count again.
+The built-in routing rules can therefore hold the document a second time, and that
+placement counts toward the limit.</p>
+<p>A review that ends in <strong>Reject</strong> ends the document as <code dir="auto">REJECTED</code> and evaluates
+nothing. A review that an Admin removes, or that is skipped, lets the document
+continue without being held again. A document that is <strong>sent back</strong> is processed
+again from classification (from the beginning in BDA mode) and is routed as an
+unreviewed document when its new run reaches the Review Routing step: <code dir="auto">reviewed</code> is
+false, and its placements are counted from one again.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="editing-the-table">Editing the table</h2><a class="sl-anchor-link" href="#editing-the-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Editing the table”</span></a></div>
+<p>Open <strong>Configuration</strong>, choose the profile, and open the <strong>Routing Rules</strong> tab,
+after <strong>Policy Schema</strong>. It lists the routing rules in the order they are tried,
+with each one’s id, label, conditions, outcome and <strong>Enabled</strong> switch. A routing
+rule’s label opens it: to edit it for an Admin, to read it for anyone else.
+<strong>Default outcome</strong>, its reason and <strong>Maximum placements in a row</strong> are under the
+table.</p>
+<p><strong>Add routing rule</strong> opens the routing rule dialog, which has these groups:</p>
+<ul>
+<li>
+<p><strong>Routing rule</strong>: the <strong>Routing rule id</strong>, the <strong>Label</strong> and <strong>Enabled</strong>.</p>
+</li>
+<li>
+<p><strong>Conditions</strong>: the conditions, up to the <a href="#limits">limit</a>, each in a box of its
+own titled with its number (<strong>Condition 1</strong>, <strong>Condition 2</strong>, …), which is the
+number a <a href="#the-reason">placeholder</a> such as <code dir="auto">{condition_1.value}</code> names. The first
+line of a condition chooses the <strong>Input</strong>; for an input that takes a path, the
+<strong>Field</strong>, <strong>Policy rule</strong>, <strong>Policy type</strong> or <strong>Class</strong> it reads, from the
+profile’s own; and for an input that is a list, the <strong>Match</strong>. The second line
+is the test, entered with guided controls:</p>
+<ul>
+<li>a yes or no input: <strong>Yes</strong> or <strong>No</strong> (<strong>Present</strong> or <strong>Missing</strong> for <em>Class is
+present</em>);</li>
+<li>a text input: <strong>Is one of</strong> or <strong>Is none of</strong>, and the values. Classes, policy
+rule verdicts and processing modes are chosen from a list; other values are
+typed;</li>
+<li>a number: a comparison (<strong>Equals</strong>, <strong>Does not equal</strong>, <strong>Greater than</strong>, <strong>At
+least</strong>, <strong>Less than</strong>, <strong>At most</strong>, <strong>Between</strong>) and the number.</li>
+</ul>
+<p><strong>Edit as expression</strong> shows the value as a <a href="#tests">test</a> to type, for a test the
+controls do not offer, and <strong>Use guided controls</strong> goes back when the controls can
+show what was typed. A date field, and a field whose type the schema does not
+state, are entered as an expression. The menu at the top right of a condition has
+<strong>Duplicate</strong>, <strong>Move up</strong>, <strong>Move down</strong> and <strong>Remove</strong>.</p>
+</li>
+<li>
+<p><strong>Outcome and reason</strong>: <strong>Send to a review queue</strong>, with the <strong>Review queue</strong>, or
+<strong>No review</strong>. With a queue, <strong>Reason for the reviewer (optional)</strong> takes the
+<a href="#the-reason">reason</a>. <strong>Insert value</strong> puts a placeholder where the cursor is:
+what each of this routing rule’s conditions reads and compares with, then every
+input that takes no path and the confidence threshold. The field shows how many
+of its bytes are used.</p>
+</li>
+</ul>
+<p>On the table:</p>
+<ul>
+<li>A routing rule’s <strong>Actions</strong> menu has <strong>Edit</strong>, <strong>Duplicate</strong> (a copy under a new
+id, right after it), <strong>Move up</strong>, <strong>Move down</strong> and <strong>Delete</strong>, which asks before
+it removes the routing rule. Dragging a routing rule by its handle reorders too.</li>
+<li><strong>More actions</strong> has <strong>Import DMN</strong>, <strong>Export DMN 1.5</strong>, <strong>Export DMN 1.3</strong> (see
+<a href="#dmn-xml-export-and-import">DMN XML export and import</a>) and <strong>Restore built-in
+routing rules</strong>.</li>
+<li>The tab warns when the routing rules are not evaluated, or cannot do what they
+say (see <a href="#warnings">Warnings</a>).</li>
+<li>Nothing takes effect until you <strong>save the configuration</strong>. New documents use
+the table once the saved revision is the one the profile processes with (see
+<a href="../configuration-profiles/">Configuration Profiles</a>).</li>
+</ul>
+<p><strong>Only Admins can change routing rules.</strong> Authors and Viewers see the table
+read-only, and can open a routing rule to read it. An Author’s save that would
+change the <code dir="auto">routing</code> section is refused, and the same Author can still save every
+other section. A configuration uploaded with the CLI or the SDK is not
+role-checked; it is authorised by the caller’s AWS credentials, as every upload is.</p>
+<p>The checks that run on save are the same on every path: the table’s
+<a href="#limits">limits</a>, that every input exists and has the path it needs, that every
+test can be read and fits the input’s type, that a field path exists in the class
+schema, a policy rule in the Policy Schema and a <code dir="auto">class_present</code> class among the
+profile’s classes, that every outcome’s actions and reason are valid, and, on a
+stack that has review queues, that every queue a routing rule names exists.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="warnings">Warnings</h2><a class="sl-anchor-link" href="#warnings"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Warnings”</span></a></div>
+<p><strong>On the Routing Rules tab.</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Warning</th><th>Shown when</th><th>Shown to</th></tr></thead><tbody><tr><td><em>Review Routing is off for this profile, so no document is held for review and these routing rules are not evaluated.</em>, with <strong>Open Processing Settings</strong></td><td>The profile’s <a href="#the-review-routing-switch">Review Routing switch</a> is off</td><td>Everyone</td></tr><tr><td><em>The Default review queue is off, so routing rules are not evaluated and documents use the document-page review flow.</em>, with a link to <strong>Review Management</strong></td><td>The Default queue is disabled (see <a href="../human-review/#when-the-default-queue-is-off">When the Default queue is off</a>)</td><td>Admins</td></tr><tr><td><em>Tests a policy rule result; policy rule validation is off</em>, on a routing rule</td><td>A condition or the reason of that routing rule reads a policy rule result, and policy rule validation is off for the profile or the profile has no policies</td><td>Everyone</td></tr><tr><td><strong>Routing rules that can never match</strong></td><td>A routing rule comes after one that matches every document it would match</td><td>Everyone</td></tr><tr><td><strong>Queues that do not exist</strong></td><td>A routing rule or the default outcome names a queue that is not a review queue</td><td>Admins</td></tr></tbody></table>
+<p><strong>When a profile is saved.</strong> A save is accepted, with a warning, when it leaves a
+routing rule that reads a policy rule result in a profile where policy rule
+validation does not run (it is off, or the profile has no policies). There is one
+warning for each enabled routing rule whose conditions test a policy rule result,
+one for each whose reason only shows one, and one for a default outcome’s reason
+that does:</p>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Routing table 'review-routing', rule 'compliance-check': this routing rule tests a policy rule result (failed_policy_rule_count), and policy rule validation is off for this profile or it has no policies, so the routing rule never matches.</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="Routing table &#x27;review-routing&#x27;, rule &#x27;compliance-check&#x27;: this routing rule tests a policy rule result (failed_policy_rule_count), and policy rule validation is off for this profile or it has no policies, so the routing rule never matches."><div></div></button></div></figure></div>
+<p>Every save is checked, not only a save that changes the routing table, because
+turning policy rule validation off is what makes such a routing rule stop
+matching. The web UI shows the warnings with the confirmation that the
+configuration was saved, <code dir="auto">idp-cli config-upload</code> prints them in its <code dir="auto">Warnings:</code>
+block on standard output, after any validation warnings (see
+<a href="../idp-cli/#config-upload">config-upload</a>), and the SDK returns them in
+<code dir="auto">ConfigUploadResult.warnings</code>.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="testing-a-table">Testing a table</h2><a class="sl-anchor-link" href="#testing-a-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Testing a table”</span></a></div>
+<p><strong>Test on a document</strong> on the Routing Rules tab runs the table, as it is shown on
+the tab including unsaved changes, on a document that has already been processed.
+Enter the document’s key and choose <strong>Test</strong>. The result shows:</p>
+<ul>
+<li>the decision (<strong>Held for review</strong> or <strong>No review: processing continues</strong>);</li>
+<li>the matched routing rule, or that the default outcome applied;</li>
+<li>the review queue, and why the Default queue would be used instead when the
+routing rule’s queue is missing or disabled;</li>
+<li>the values of the inputs the table read;</li>
+<li>anything the table refers to that the document does not have (a class, a
+policy rule result).</li>
+</ul>
+<p>A test reads the document’s stored results and changes nothing: no review is
+created and the document’s status does not change. The answer is about the table
+only. Whether a run reaches the table (Review Routing on, the Default queue
+enabled, not a Test Studio document) is not part of the test. Testing is available
+to Admins.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="dmn-xml-export-and-import">DMN XML export and import</h2><a class="sl-anchor-link" href="#dmn-xml-export-and-import"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “DMN XML export and import”</span></a></div>
+<p>A routing table can be exported as a DMN decision table and imported from one, so
+it can be reviewed or edited in a DMN modeler and kept in version control.</p>
+<ul>
+<li><strong>Web UI (Admins):</strong> <strong>More actions</strong> on the Routing Rules tab has <strong>Export DMN
+1.5</strong>, <strong>Export DMN 1.3</strong> (the version Camunda Modeler opens) and <strong>Import DMN</strong>.
+An import asks before it replaces every routing rule in the table, and is saved
+only when you save the configuration.</li>
+<li><strong>CLI:</strong> <code dir="auto">idp-cli config-routing-export --config-file config.yaml --output routing.dmn [--dmn-version 1.3]</code> and <code dir="auto">idp-cli config-routing-import --dmn-file routing.dmn --output routing.yaml</code>. Both convert local files and call no AWS
+service; upload the result with <code dir="auto">idp-cli config-upload</code>.</li>
+<li><strong>SDK:</strong> <code dir="auto">client.config.routing_to_dmn(config)</code> and
+<code dir="auto">client.config.routing_from_dmn(xml)</code>.</li>
+</ul>
+<p>The file holds one decision with one decision table, hit policy <code dir="auto">FIRST</code>. Each
+input column is one input of this page written as a call (<code dir="auto">reviewed</code>,
+<code dir="auto">field_value("Invoice:GrossTotal","any")</code>, <code dir="auto">class_present("Bank-checks")</code>), and
+each row is a routing rule. The outputs are <code dir="auto">outcome</code> (<code dir="auto">queue</code> or <code dir="auto">no_review</code>),
+<code dir="auto">queue</code> (the queue id) and <code dir="auto">reason</code> (the reason as written, with its
+placeholders), and an export always writes all of them. A disabled routing rule is kept
+in the file and marked. Exporting a table and importing the file gives the same
+routing rules, in the same order. <code dir="auto">max_consecutive_placements</code> is not part of the
+table and is not in the file.</p>
+<p>An import accepts DMN 1.3, 1.4 and 1.5 files. A file whose outputs are <code dir="auto">outcome</code>
+and <code dir="auto">queue</code> alone is accepted too, and its routing rules get no reason. An import
+refuses, naming the construct:</p>
+<ul>
+<li>more than one decision, or a decision that depends on another decision or on a
+business knowledge model;</li>
+<li>decision logic that is not a decision table (a literal expression, a context,
+an invocation, a relation, a list, a function);</li>
+<li>a hit policy other than <code dir="auto">FIRST</code>, or an aggregation;</li>
+<li>an input expression that is not one of the <a href="#inputs">inputs</a>;</li>
+<li>outputs other than <code dir="auto">outcome</code>, <code dir="auto">queue</code> and <code dir="auto">reason</code> in that order, or <code dir="auto">outcome</code>
+and <code dir="auto">queue</code> alone, and an <code dir="auto">outcome</code> that is neither <code dir="auto">"queue"</code> nor <code dir="auto">"no_review"</code>;</li>
+<li>a cell that is not one of the <a href="#tests">tests</a> of this page;</li>
+<li>a file with a DTD or an entity declaration, a file larger than 512 KB, or more
+routing rules than a table can hold.</li>
+</ul>
+<p>Item definitions, input data, allowed-value lists, diagram information and other
+vendors’ attributes are ignored. The DMN reader is checked against the decision
+tables of the DMN Technology Compatibility Kit that use the supported features.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="limits">Limits</h2><a class="sl-anchor-link" href="#limits"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Limits”</span></a></div>
+<p>Checked when a profile is saved:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Limit</th></tr></thead><tbody><tr><td>Routing tables per profile</td><td>1</td></tr><tr><td>Routing rules per table</td><td>100</td></tr><tr><td>Conditions per routing rule</td><td>8</td></tr><tr><td>Routing rule id</td><td>1 to 64 characters: lower-case letters, digits, <code dir="auto">-</code>, <code dir="auto">.</code>, <code dir="auto">_</code>, starting with a letter or a digit</td></tr><tr><td>Label</td><td>200 bytes</td></tr><tr><td>Path</td><td>128 bytes</td></tr><tr><td>Test</td><td>256 bytes</td></tr><tr><td>Actions per outcome</td><td>1, of type <code dir="auto">review_queue</code></td></tr><tr><td>Reason, as written</td><td>500 bytes</td></tr><tr><td>Placeholders in a reason</td><td>10</td></tr><tr><td>The <code dir="auto">routing</code> section</td><td>64 KB</td></tr></tbody></table>
+<p>The table’s <code dir="auto">stage</code> is <code dir="auto">after_policy_rule_validation</code>, its hit policy <code dir="auto">FIRST</code>
+and its engine <code dir="auto">builtin</code>; other values are refused. A reason on an outcome that
+names no review queue is refused, since nobody would read it.</p>
+<p>Applied when a document is placed, so that the review record stays small:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Limit</th></tr></thead><tbody><tr><td>A reason, with its values filled in</td><td>1000 bytes</td></tr><tr><td>One value in a reason</td><td>200 bytes</td></tr><tr><td>A list value in a reason</td><td>Its first 5 values, then how many more there are</td></tr><tr><td>Failed policy rules recorded</td><td>The first 10, and the number of them in all</td></tr><tr><td>The explanation of a failed policy rule</td><td>500 bytes</td></tr><tr><td>Page numbers of a failed policy rule</td><td>10</td></tr><tr><td>Input values recorded</td><td>20, each cut to 200 bytes</td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h2"><h2 id="policy-rule-verdicts-in-routing-rules">Policy rule verdicts in routing rules</h2><a class="sl-anchor-link" href="#policy-rule-verdicts-in-routing-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Policy rule verdicts in routing rules”</span></a></div>
+<p>Policy rule validation gives each policy rule a verdict that routing can test:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Verdict</th><th>The policy rule’s recommendation</th></tr></thead><tbody><tr><td><code dir="auto">pass</code></td><td>Pass</td></tr><tr><td><code dir="auto">fail</code></td><td>Fail</td></tr><tr><td><code dir="auto">not_found</code></td><td>Information Not Found</td></tr><tr><td><code dir="auto">unknown</code></td><td>anything else</td></tr></tbody></table>
+<p>Two things to know before routing on them:</p>
+<ul>
+<li><strong>Verdicts come from a model’s reading of the document and can differ between
+runs</strong> of the same document. A routing rule such as
+“any failed policy rule → Compliance” can therefore hold a document in one run
+and not in the next. Test the table on several processed documents before
+relying on a single policy rule.</li>
+<li><strong>Custom recommendation labels read as <code dir="auto">unknown</code>.</strong> A configuration whose
+policy rule prompt asks for labels other than Pass, Fail and Information Not
+Found still works for the Policy Rule Validation Summary, and a routing rule
+sees <code dir="auto">unknown</code> for those. <code dir="auto">failed_policy_rule_count</code> counts <code dir="auto">fail</code> only.</li>
+</ul>
+<p>Policy rule validation must run for the profile for these inputs to have values:
+it is on (<code dir="auto">rule_validation.enabled: true</code>, in <strong>Configuration → Processing Settings
+→ Policy Rule Validation (Optional)</strong>) and the profile has at least one policy.
+When it does not run, <code dir="auto">policy_rule_verdict</code> is empty and
+<code dir="auto">failed_policy_rule_count</code> is 0, and saving the profile gives a
+<a href="#warnings">warning</a> for each routing rule that reads one of them.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="the-showcase-preset">The showcase preset</h2><a class="sl-anchor-link" href="#the-showcase-preset"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “The showcase preset”</span></a></div>
+<p><code dir="auto">config_library/unified/review-routing-showcase</code> is a ready-made configuration
+that routes four sample documents of this repository to four queues: a lending
+package with a bank check to <strong>Specialist</strong>, a bank statement that is meant to
+show failed policy rules to <strong>Compliance</strong>, an invoice over 1000 to <strong>Approvals</strong>,
+and a W-2 to <strong>Default</strong>. Each sample reaches its queue through a routing rule that
+does not read a confidence score, which comes from a model and differs between
+runs. Every routing rule of the preset carries a reason with placeholders, and one
+tests for a class the document lacks (<code dir="auto">class_present</code>). Its
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/review-routing-showcase/README.md">README</a>
+lists the queues to create first and the commands to upload it.</p>
+<p><strong>The scenario documents.</strong> <code dir="auto">samples/review-routing/</code> holds synthetic invoices with
+one, two and three known problems: a vendor that is not on the approved list, a net
+amount that does not add up, missing payment terms, and an invoice that names a
+purchase order the document does not contain. Uploaded under the showcase profile,
+each returns to review once for each problem that remains: the first routing rule
+that matches places it and gives its reason, the reviewer corrects that problem and
+completes the review, and Review Routing runs again on the corrected data. The
+routing rules for problems a reviewer cannot correct (a missing class, a policy rule
+that reads the page text) apply only before the first review. The preset’s README
+lists the routing rule, the queue and the correction of every round.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="configuration-reference">Configuration reference</h2><a class="sl-anchor-link" href="#configuration-reference"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Configuration reference”</span></a></div>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">hitl</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span><span style="--0:#D6DEEB;--1:#403F53">                      </span><span style="--0:#919F9F;--1:#5F636F"># Review Routing is on for this profile</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">confidence_threshold</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#F78C6C;--1:#AA0982">0.8</span><span style="--0:#D6DEEB;--1:#403F53">          </span><span style="--0:#919F9F;--1:#5F636F"># For a field with no threshold of its own</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">route_missing_required_fields</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">routing</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">max_consecutive_placements</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#F78C6C;--1:#AA0982">3</span><span style="--0:#D6DEEB;--1:#403F53">      </span><span style="--0:#919F9F;--1:#5F636F"># 1 to 10</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">tables</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">review-routing</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#111111">stage</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">after_policy_rule_validation</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#111111">hit_policy</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">FIRST</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#111111">engine</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">builtin</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#111111">rules</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">        </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">approvals-high-value</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">label</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">Invoices over 1000</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">conditions</span><span style="--0:#D6DEEB;--1:#403F53">:                </span><span style="--0:#919F9F;--1:#5F636F"># All must hold</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">reviewed</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">false</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">field_value</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">path</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Invoice:GrossTotal</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">aggregate</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">any</span><span style="--0:#D6DEEB;--1:#403F53">         </span><span style="--0:#919F9F;--1:#5F636F"># any | all | count, for inputs that are lists</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">> 1000</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">actions</span><span style="--0:#D6DEEB;--1:#403F53">:                   </span><span style="--0:#919F9F;--1:#5F636F"># What happens to a matching document; [] = not reviewed</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">type</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">review_queue</span><span style="--0:#D6DEEB;--1:#403F53">     </span><span style="--0:#919F9F;--1:#5F636F"># The only action type</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">queue</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">approvals</span><span style="--0:#D6DEEB;--1:#403F53">       </span><span style="--0:#919F9F;--1:#5F636F"># A review queue id</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">reason</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Invoice total {field_value:Invoice:GrossTotal} is over {condition_2.value}. Check the total against the line items.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">        </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">packages-without-a-check</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">label</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">Lending package with no bank check</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">conditions</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">reviewed</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">false</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">class_present</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">path</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Bank-checks</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">    </span><span style="--0:#919F9F;--1:#5F636F"># A document class of the profile</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">false</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">actions</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">type</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">review_queue</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">queue</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">specialist</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">reason</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">The package has no bank check. Ask the applicant for one.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">        </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">builtin-extraction-failed</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">label</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">Failed extractions</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">conditions</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">reviewed</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">false</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_failed_count</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">> 0</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">actions</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">type</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">review_queue</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">queue</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">default</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">reason</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Sections whose extraction failed: {extraction_failed_count}. They have no extracted values: enter them from the document.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">        </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">builtin-confidence-alerts</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">label</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">Confidence alerts</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">enabled</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">conditions</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">reviewed</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">false</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">input</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">confidence_alert_count</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">test</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">> 0</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">actions</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">            </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#7FDBCA;--1:#111111">type</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">review_queue</span></div></div><div class="ec-line"><div class="code"><span class="indent">              </span><span style="--0:#7FDBCA;--1:#111111">queue</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#ECC48D;--1:#3B61B0">default</span></div></div><div class="ec-line"><div class="code"><span class="indent">          </span><span style="--0:#7FDBCA;--1:#111111">reason</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#111111">default_outcome</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">        </span><span style="--0:#7FDBCA;--1:#111111">actions</span><span style="--0:#D6DEEB;--1:#403F53">: []                  </span><span style="--0:#919F9F;--1:#5F636F"># No review</span></div></div><div class="ec-line"><div class="code"><span class="indent">        </span><span style="--0:#7FDBCA;--1:#111111">reason</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">""</span><span style="--0:#D6DEEB;--1:#403F53">                   </span><span style="--0:#919F9F;--1:#5F636F"># Used only when the default outcome names a review queue</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="hitl:  enabled: true                      # Review Routing is on for this profile  confidence_threshold: 0.8          # For a field with no threshold of its own  route_missing_required_fields: truerouting:  max_consecutive_placements: 3      # 1 to 10  tables:    - id: review-routing      stage: after_policy_rule_validation      hit_policy: FIRST      engine: builtin      rules:        - id: approvals-high-value          label: Invoices over 1000          enabled: true          conditions:                # All must hold            - input: reviewed              test: &#x22;false&#x22;            - input: field_value              path: &#x22;Invoice:GrossTotal&#x22;              aggregate: any         # any | all | count, for inputs that are lists              test: &#x22;> 1000&#x22;          actions:                   # What happens to a matching document; [] = not reviewed            - type: review_queue     # The only action type              queue: approvals       # A review queue id          reason: &#x22;Invoice total {field_value:Invoice:GrossTotal} is over {condition_2.value}. Check the total against the line items.&#x22;        - id: packages-without-a-check          label: Lending package with no bank check          enabled: true          conditions:            - input: reviewed              test: &#x22;false&#x22;            - input: class_present              path: &#x22;Bank-checks&#x22;    # A document class of the profile              test: &#x22;false&#x22;          actions:            - type: review_queue              queue: specialist          reason: &#x22;The package has no bank check. Ask the applicant for one.&#x22;        - id: builtin-extraction-failed          label: Failed extractions          enabled: true          conditions:            - input: reviewed              test: &#x22;false&#x22;            - input: extraction_failed_count              test: &#x22;> 0&#x22;          actions:            - type: review_queue              queue: default          reason: &#x22;Sections whose extraction failed: {extraction_failed_count}. They have no extracted values: enter them from the document.&#x22;        - id: builtin-confidence-alerts          label: Confidence alerts          enabled: true          conditions:            - input: reviewed              test: &#x22;false&#x22;            - input: confidence_alert_count              test: &#x22;> 0&#x22;          actions:            - type: review_queue              queue: default          reason: &#x22;Fields below the confidence threshold: {confidence_alert_count}. Check the highlighted fields and correct them.&#x22;      default_outcome:        actions: []                  # No review        reason: &#x22;&#x22;                   # Used only when the default outcome names a review queue"><div></div></button></div></figure></div>
+<p>A test is YAML text, so quote it: <code dir="auto">"false"</code>, <code dir="auto">"> 0"</code>, <code dir="auto">'"Bank-checks"'</code> (a text
+value keeps its own double quotes inside the YAML quotes). Quote a reason too: a
+brace or a colon in it can be read as YAML syntax otherwise.</p>
+<p>An outcome is always written as <code dir="auto">actions</code>. A routing rule that holds an <code dir="auto">outcome</code>
+key, and a <code dir="auto">default_outcome</code> that holds <code dir="auto">kind</code> or <code dir="auto">queue</code>, are refused when the
+profile is saved, with the form to write instead.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="logs-and-metrics">Logs and metrics</h2><a class="sl-anchor-link" href="#logs-and-metrics"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Logs and metrics”</span></a></div>
+<p>The Review Routing step is the <code dir="auto">RoutingFunction</code> Lambda. Its log group is
+<code dir="auto">/&#x3C;StackName>-PATTERNSTACK-&#x3C;id>/lambda/RoutingFunction</code>: the name comes from the
+nested pattern stack, so list on the <code dir="auto">/&#x3C;StackName>-PATTERNSTACK</code> prefix to find
+it. It writes one line per decision:</p>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">event=routing_decision decision=hold reason=rule rule=approvals-high-value queue=approvals reason_source=admin</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="event=routing_decision decision=hold reason=rule rule=approvals-high-value queue=approvals reason_source=admin"><div></div></button></div></figure></div>
+<p><code dir="auto">reason</code> says why the step decided as it did:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">reason</code></th><th>Decision</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">rule</code></td><td><code dir="auto">hold</code> or <code dir="auto">continue</code></td><td>A routing rule matched; <code dir="auto">rule</code> names it</td></tr><tr><td><code dir="auto">default_outcome</code></td><td><code dir="auto">hold</code> or <code dir="auto">continue</code></td><td>No routing rule matched</td></tr><tr><td><code dir="auto">test_studio</code></td><td><code dir="auto">continue</code></td><td>The document belongs to a Test Studio run</td></tr><tr><td><code dir="auto">no_review_store</code></td><td><code dir="auto">continue</code></td><td>The stack has no review queues (a headless deployment)</td></tr><tr><td><code dir="auto">hitl_off</code></td><td><code dir="auto">continue</code></td><td>Review Routing is off for the profile</td></tr><tr><td><code dir="auto">default_queue_off</code></td><td><code dir="auto">continue</code></td><td>The Default queue is missing or disabled</td></tr><tr><td><code dir="auto">review_skipped</code></td><td><code dir="auto">continue</code></td><td>The run follows a review that was skipped or removed</td></tr><tr><td><code dir="auto">review_rejected</code></td><td><code dir="auto">rejected</code></td><td>The run follows a rejected review</td></tr><tr><td><code dir="auto">unplanned_finalize</code></td><td><code dir="auto">continue</code></td><td>The run follows a completed review and carries no run plan</td></tr><tr><td><code dir="auto">placement_limit</code></td><td><code dir="auto">continue</code></td><td>The document reached <strong>Maximum placements in a row</strong></td></tr><tr><td><code dir="auto">evaluation_error</code></td><td><code dir="auto">hold</code> or <code dir="auto">continue</code></td><td>The table or the document’s results could not be evaluated</td></tr></tbody></table>
+<p><code dir="auto">reason_source</code> says where a held document’s reason for the reviewer came from:
+<code dir="auto">admin</code> or <code dir="auto">fallback</code>. The reason itself is never logged. A reason that could not
+be filled in is logged as <code dir="auto">event=routing_reason_render_failed</code> with the routing
+rule’s id and the kind of error.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Metric</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">RoutingDecisions</code> (dimension <code dir="auto">Decision</code>)</td><td>Decisions made, by decision: <code dir="auto">hold</code>, <code dir="auto">continue</code> or <code dir="auto">rejected</code></td></tr><tr><td><code dir="auto">RoutingStaleReference</code></td><td>A routing rule referred to something that could not be read for the document (a class the profile no longer has, a policy rule result when policy rule validation left no summary, a section result that could not be read)</td></tr><tr><td><code dir="auto">RoutingPlacementLimit</code></td><td>A document reached the placement limit and continued without another review</td></tr><tr><td><code dir="auto">RoutingReasonFallback</code> (dimension <code dir="auto">Cause</code>)</td><td>A generated reason was used: <code dir="auto">no_reason</code> when the routing rule has none, <code dir="auto">render_error</code> when its reason could not be filled in</td></tr></tbody></table>
+<p>The metrics are in the stack’s own namespace; see <a href="../monitoring/#review-routing">Monitoring</a>.</p></div><footer class="sl-flex astro-xhxjzfa7"><div class="meta sl-flex astro-xhxjzfa7"></div><div class="pagination-links print:hidden astro-jgq3vlii" dir="ltr"><a href="/accelerated-intelligent-document-processing-on-aws/review-queues/" rel="prev" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg><span class="astro-jgq3vlii">Previous<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Review Queues</span></span></a><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" rel="next" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg><span class="astro-jgq3vlii">Next<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Rule Validation</span></span></a></div></footer></div></div></main></div></div></div></div></body></html>
