@@ -4,8 +4,8 @@
 
 The skill is a procedure an agent follows against a live stack, so nothing else
 exercises it. These pin the parts a run would otherwise discover the hard way:
-that the recorder commands it gives are ones the recorder accepts, that the paths
-it cites exist, that the storyboard file parses into what the skill reads, and
+that the user is asked before anything is recorded, that the recorder commands it
+gives are ones the recorder accepts, that the paths it cites exist, that the storyboard file parses into what the skill reads, and
 that the skill is findable.
 """
 
@@ -140,6 +140,13 @@ class TestTheSkill:
             for argv in starts
             if "--kind" in argv
         ), starts
+
+    def test_asks_the_user_with_the_question_tool_before_recording(self):
+        """The user picks a storyboard through ``AskUserQuestion`` before the
+        recorder is started: the tool is named ahead of the first recorder command."""
+        text = _skill()
+        assert "AskUserQuestion" in text
+        assert text.index("AskUserQuestion") < text.index("ux_recorder.py start")
 
     def test_every_recorder_command_is_one_the_recorder_accepts(self):
         """Each ``ux_recorder.py`` subcommand and option the skill cites exists, and

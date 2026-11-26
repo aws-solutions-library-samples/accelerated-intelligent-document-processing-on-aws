@@ -13,10 +13,11 @@ the gap it exposed (``sync-pii-anonymizer`` had no row), which is the intended
 order: close the class, do not narrow the assertion to dodge it. The format of the
 skill files themselves is guarded in ``test_skill_format.py``.
 
-The content assertion is derived from the skill itself: every measurement it refers
-to by letter must have a section defining it, which is checked outside code fences
-because the skill embeds a report template whose headings repeat the real ones.
-Nothing here pins a heading's or a section's wording.
+The content assertions are structural and checked outside code fences, because the
+skill embeds a report template whose headings repeat the real ones: every
+measurement and defect class the skill refers to has a section defining it, a
+``## `` heading states the read-only constraint, and the dimension table keeps its
+rows. None of them pins a heading's or a section's wording.
 """
 
 from __future__ import annotations
@@ -95,4 +96,45 @@ def test_every_measurement_the_skill_refers_to_is_defined() -> None:
     assert not missing, (
         "the skill refers to these measurements by letter but no longer defines "
         f"them (expected a '### <label>.' or '**<label> ' heading): {missing}"
+    )
+
+
+@pytest.mark.unit
+def test_the_skill_keeps_a_read_only_constraint_section() -> None:
+    """The review is read-only by construction, and says so in a section of its own.
+
+    Matched on structure: some ``## `` heading outside code fences mentions
+    read-only, whatever else it says.
+    """
+    body = _fence_stripped(SKILL.read_text(encoding="utf-8"))
+    headings = re.findall(r"^## (.+)$", body, flags=re.MULTILINE)
+    assert any("read-only" in heading.lower() for heading in headings), headings
+
+
+@pytest.mark.unit
+def test_every_defect_class_the_skill_refers_to_has_a_section() -> None:
+    """The ``## Class <n>`` sections are exactly the classes the skill refers to."""
+    body = _fence_stripped(SKILL.read_text(encoding="utf-8"))
+    referred = set(re.findall(r"\bClass (\d+)\b", body))
+    headed = re.findall(r"^## Class (\d+)\b", body, flags=re.MULTILINE)
+    assert referred, "the skill refers to no defect class"
+    assert len(headed) == len(set(headed)), headed
+    assert set(headed) == referred, (sorted(headed), sorted(referred))
+
+
+#: The dimension table's rows, one subagent each. A structural count: a dimension
+#: may be renamed or rewritten freely, but dropping one is a decision to record here.
+DIMENSION_COUNT = 10
+
+
+@pytest.mark.unit
+def test_the_dimension_table_keeps_every_dimension() -> None:
+    body = _fence_stripped(SKILL.read_text(encoding="utf-8"))
+    numbers = [
+        int(n) for n in re.findall(r"^\| (\d+) \| \*\*", body, flags=re.MULTILINE)
+    ]
+    assert numbers == list(range(1, len(numbers) + 1)), numbers
+    assert len(numbers) == DIMENSION_COUNT, (
+        f"the dimension table has {len(numbers)} rows; if a dimension was genuinely "
+        "retired, update DIMENSION_COUNT and say why in the skill"
     )

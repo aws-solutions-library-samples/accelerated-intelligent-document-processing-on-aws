@@ -1511,10 +1511,24 @@ def test_only_the_digest_declares_the_environment_its_webhook_is_scoped_to(
         and job["environment"].get("name") == DIGEST_ENVIRONMENT["name"]
     )
     assert declaring == [DIGEST_JOB]
-    coverage = (REPO_ROOT / "scripts/sdlc/docs/CI_TEST_COVERAGE.md").read_text(
+    rows = _table_rows(_coverage_doc(), DIGEST_SCOPED_VARIABLE)
+    assert rows, f"the CI coverage doc has no row for {DIGEST_SCOPED_VARIABLE}"
+    assert all(f"`{DIGEST_ENVIRONMENT['name']}`" in " ".join(row) for row in rows), rows
+
+
+def _coverage_doc() -> str:
+    return (REPO_ROOT / "scripts/sdlc/docs/CI_TEST_COVERAGE.md").read_text(
         encoding="utf-8"
     )
-    assert f"`{DIGEST_ENVIRONMENT['name']}`" in coverage
+
+
+def _table_rows(doc: str, variable: str) -> list[list[str]]:
+    """The cells of every table row of ``doc`` whose first cell is ``variable``."""
+    return [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in doc.splitlines()
+        if line.startswith(f"| `{variable}` |")
+    ]
 
 
 #: The variables the browser jobs' environment scopes, which the run jobs read.
@@ -1603,11 +1617,13 @@ def test_the_story_jobs_comments_name_the_environment_the_run_jobs_declare(
         note.append(line)
     assert note, f"no comment sits above {MR_JOB}"
     assert f"`{name}`" in "\n".join(note), note
-    coverage = (REPO_ROOT / "scripts/sdlc/docs/CI_TEST_COVERAGE.md").read_text(
-        encoding="utf-8"
-    )
-    assert f"`{name}`" in coverage
-    assert f"`{DIGEST_ENVIRONMENT['name']}`" in coverage
+    coverage = _coverage_doc()
+    for variable in BROWSER_SCOPED_VARIABLES:
+        scopes = [row[1] for row in _table_rows(coverage, variable) if len(row) > 1]
+        assert any(f"`{name}`" in cell for cell in scopes), (variable, scopes)
+    for variable in BROWSER_SCOPED_VARIABLES:
+        cells = " ".join(" ".join(row) for row in _table_rows(coverage, variable))
+        assert f"`{DIGEST_ENVIRONMENT['name']}`" not in cells, variable
 
 
 @pytest.mark.unit

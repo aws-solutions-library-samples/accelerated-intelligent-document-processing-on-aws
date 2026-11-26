@@ -162,14 +162,21 @@ def test_neither_skill_says_the_review_stack_runs_develops_backend(skill: Path) 
 
 @pytest.mark.unit
 def test_the_ci_contract_states_only_how_a_story_run_differs() -> None:
-    """It defers to both skills it differs from, and restates none of their
-    sections."""
+    """It defers to both skills it differs from, restates none of their sections,
+    is shorter than the operator skill, and names the tools a run ends with and
+    the one it reports a page's instructions through."""
     contract = _text(CI_CONTRACT)
     assert "ux-test-ci.md" in contract
     assert "ux-test-stories.md" in contract
     assert _headings(contract)
     assert not _headings(contract) & _headings(_text(OPERATOR_SKILL))
     assert not _headings(contract) & _headings(_text(MR_UX_CONTRACT))
+    assert len(contract) < len(_text(OPERATOR_SKILL))
+    injection = [n for n in ux_story_mcp.OWN_TOOL_NAMES if "injection" in n]
+    reports = [n for n in ux_story_mcp.OWN_TOOL_NAMES if n.startswith("report_")]
+    assert injection and reports, ux_story_mcp.OWN_TOOL_NAMES
+    for name in (*reports, *injection):
+        assert name in _plain_words(contract), name
 
 
 @pytest.mark.unit

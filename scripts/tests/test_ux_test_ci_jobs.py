@@ -1095,6 +1095,67 @@ def _table_rows(doc: str, variable: str) -> list[list[str]]:
     ]
 
 
+#: The variable shared with a job that declares no environment, so its table row
+#: spells the default scope.
+UNSCOPED_REFERENCE = ("GITLAB_REVIEW_TOKEN", "ai_mr_review")
+
+
+def _scope_table(doc: str) -> tuple[dict[str, list[str]], list[str]]:
+    """The UX variables table, ``{variable: cells}``, and the paragraphs that follow
+    it up to the next heading.
+
+    Found by structure: the table is the one holding a row for every scoped UX
+    variable, and the block after it is where the doc says what the scopes do and
+    do not withhold.
+    """
+    lines = doc.splitlines()
+    marker = f"| `{next(iter(SCOPED_VARIABLES))}` |"
+    for index, line in enumerate(lines):
+        if not line.startswith(marker):
+            continue
+        start = index
+        while start > 0 and lines[start - 1].startswith("|"):
+            start -= 1
+        end = index
+        while end < len(lines) and lines[end].startswith("|"):
+            end += 1
+        rows = {
+            cells[0].strip("`"): cells
+            for cells in (
+                [cell.strip() for cell in row.strip().strip("|").split("|")]
+                for row in lines[start:end]
+            )
+        }
+        if not set(SCOPED_VARIABLES) <= set(rows):
+            continue
+        after = lines[end:]
+        stop = next(
+            (i for i, row in enumerate(after) if re.match(r"#{1,6} ", row)),
+            len(after),
+        )
+        paragraphs = [
+            _flat_text(block)
+            for block in re.split(r"\n\s*\n", "\n".join(after[:stop]))
+            if block.strip()
+        ]
+        return rows, paragraphs
+    raise AssertionError(f"{CI_COVERAGE_DOC.name} has no table of every UX variable")
+
+
+def _flat_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _default_scope(ci_config: dict[str, Any], rows: dict[str, list[str]]) -> str:
+    """The table's spelling of the default scope, read off the row of a variable
+    whose other reader declares no environment."""
+    variable, reader = UNSCOPED_REFERENCE
+    assert "environment" not in ci_config[reader], f"{reader} now declares one"
+    cell = rows[variable][1]
+    assert "`*`" in cell and not _scopes_named(cell), cell
+    return cell
+
+
 #: A backquoted name in a doc's prose.
 _QUOTED_RE = re.compile(r"`([^`]+)`")
 
@@ -1183,13 +1244,25 @@ def test_the_docs_name_the_one_step_that_keeps_the_jobs_environment(
 
 
 @pytest.mark.unit
-def test_neither_ux_job_asks_gitlab_for_a_credential_of_its_own(ci_config) -> None:
-    """The environment scopes withhold nothing from what reaches every job, and the
-    doc's account of that residual rests on neither UX job asking GitLab for a
-    credential (an ID token or a secret) of its own."""
+def test_the_residual_names_what_no_environment_scope_withholds(ci_config) -> None:
+    """The scopes keep the persona's password out of ``ux_test_build`` and do
+    nothing for what reaches every job. After the variables table, the doc names
+    each variable the table leaves at the default scope beside ``ux_test_build``
+    and the wrapper that is the only thing keeping it from that job's package
+    scripts. The premise is read too: neither UX job asks GitLab for a credential
+    (an ID token or a secret) of its own."""
     for job in UX_JOBS:
         asked = sorted({"id_tokens", "secrets"} & set(ci_config[job]))
         assert not asked, f"{job} declares {asked}; reword the residual for it"
+    rows, paragraphs = _scope_table(CI_COVERAGE_DOC.read_text(encoding="utf-8"))
+    default = _default_scope(ci_config, rows)
+    unscoped = sorted(name for name, cells in rows.items() if cells[1] == default)
+    assert unscoped, "the table leaves no variable at the default scope"
+    wrapper = WRAPPER_KEY.lstrip(".")
+    assert any(
+        all(f"`{name}`" in paragraph for name in (*unscoped, BUILD_JOB, wrapper))
+        for paragraph in paragraphs
+    ), (unscoped, paragraphs)
 
 
 def _jobs_running_npm_ci_in_the_ui(ci_config: dict[str, Any]) -> set[str]:
@@ -1216,10 +1289,16 @@ def test_the_docs_name_every_other_job_an_unscoped_variable_reaches_through_npm_
     assert BUILD_JOB in running, f"the derivation no longer sees {BUILD_JOB}'s npm ci"
     others = sorted(running - set(UX_JOBS))
     assert others, "no other job runs npm ci in src/ui, so this test reads nothing"
-    doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
+    rows, paragraphs = _scope_table(CI_COVERAGE_DOC.read_text(encoding="utf-8"))
+    default = _default_scope(ci_config, rows)
+    exposure = [paragraph for paragraph in paragraphs if default in paragraph]
+    assert exposure, f"nothing after the table says what {default} exposes"
+    assert any(all(f"`{job}`" in p for job in others) for p in exposure), (
+        others,
+        exposure,
+    )
     comment = _ux_section_comment(ci_text)
     for job in others:
-        assert f"`{job}`" in doc, f"{CI_COVERAGE_DOC.name} does not name {job}"
         assert job in comment, f"the comment above the UX jobs does not name {job}"
 
 
