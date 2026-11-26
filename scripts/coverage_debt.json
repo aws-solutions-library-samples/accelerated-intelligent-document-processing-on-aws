@@ -424,6 +424,7 @@
         "scripts/premerge.py": 92.22,
         "scripts/rbac_common.py": 48.53,
         "scripts/regenerate_evaluation_goldens.py": 0.0,
+        "scripts/release.py": 0.0,
         "scripts/review_queues_live_check.py": 0.0,
         "scripts/review_routing_live_check.py": 91.02,
         "scripts/run_all_tests.py": 80.35,

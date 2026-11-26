@@ -118,7 +118,6 @@ tier = "p0"
 since = "0.6.12"
 origin = "changelog"
 rbac = "View config profiles"
-claims = [{ lead = "Claude Sonnet 5.5 is selectable for every model-taking service." }]
 
 [stories.match]
 docs = ["configuration.md#pattern-configuration-via-web-ui"]
@@ -137,7 +136,6 @@ mr_as = ["platform-admin"]
 tier = "p0"
 since = "0.6.12"
 origin = "changelog"
-claims = [{ lead = "Configuration Profiles can be assigned by S3 prefix, so the destination decides the configuration." }]
 
 [stories.match]
 docs = ["configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands"]
@@ -154,7 +152,6 @@ needs = ["test-run-documents"]
 tier = "p0"
 since = "0.6.5"
 origin = "changelog"
-claims = [{ lead = "The Document List now shows only documents a user submitted; Test Studio runs have their own view." }]
 
 [stories.match]
 docs = ["web-ui.md#production-vs-test-studio-documents"]
@@ -171,7 +168,6 @@ needs = ["complete-document"]
 tier = "p0"
 since = "0.6.12"
 origin = "changelog"
-claims = [{ lead = "Every extracted field now says whether it has a bounding box, and why not when it has none." }]
 
 [stories.match]
 docs = ["extraction-and-confidence.md#what-the-viewers-show"]
@@ -246,7 +242,6 @@ first_visit = true
 tier = "p0"
 since = "0.6.16"
 origin = "changelog"
-claims = [{ lead = "The guided tour no longer stops partway for an Author or Viewer." }]
 
 [stories.match]
 docs = ["web-ui.md#welcome-page-and-guided-tour", "quick-start.md#web-ui"]
@@ -270,7 +265,6 @@ needs = ["reprocessed-document"]
 tier = "p1"
 since = "0.6.3"
 origin = "changelog"
-claims = [{ lead = "Historical document versions no longer report \"Low Confidence Fields: 0\" for every section." }]
 
 [stories.match]
 docs = ["document-versions.md#viewing-and-managing-versions"]
@@ -288,7 +282,6 @@ needs = ["complete-document"]
 tier = "p1"
 since = "0.6.1"
 origin = "changelog"
-claims = [{ lead = "Page viewer unified into one Visual Editor layout with an OCR-lines / Markdown toggle." }]
 
 [stories.match]
 docs = ["web-ui.md#edit-pages"]
@@ -305,7 +298,6 @@ needs = ["evaluated-document"]
 tier = "p1"
 since = "0.6.5"
 origin = "changelog"
-claims = [{ lead = "Per-field accuracy now reports its sample size and margin of error." }]
 
 [stories.match]
 docs = ["web-ui.md#evaluation-report", "test-studio.md#field-level-metrics"]
@@ -322,7 +314,6 @@ needs = ["complete-document"]
 tier = "p1"
 since = "0.6.12"
 origin = "changelog"
-claims = [{ lead = "Documents now record *where* their Configuration Profile came from." }]
 
 [stories.match]
 docs = ["configuration-profiles.md#profile-tracking-in-document-processing"]
@@ -340,7 +331,6 @@ tier = "p1"
 since = "0.6.12"
 origin = "changelog"
 rbac = "Delete documents"
-claims = [{ lead = "Deleting documents from the Document List now works, and a delete that does not finish says so instead of answering success." }]
 
 [stories.match]
 docs = ["web-ui.md#deleting-documents"]
@@ -359,7 +349,6 @@ tier = "p1"
 since = "0.6.5"
 origin = "changelog"
 rbac = "Create/delete test sets"
-claims = [{ lead = "Test sets are now versioned, provenance-tracked benchmark objects, and can be built from unlabeled documents." }]
 
 [stories.match]
 docs = ["test-studio.md#versioning-test-sets"]
@@ -376,7 +365,6 @@ needs = ["feature-platform"]
 tier = "p1"
 since = "0.6.5"
 origin = "changelog"
-claims = [{ lead = "Extensions UI: one honest subscription banner, and a route to where a subscription is actually managed." }]
 
 [stories.match]
 docs = ["feature-platform.md#subscription-checks-for-paid-extensions"]
@@ -393,7 +381,6 @@ needs = ["feature-platform"]
 tier = "p1"
 since = "0.6.4"
 origin = "changelog"
-claims = [{ lead = "`allowDocumentUpdate` is now editable in the Configuration UI." }]
 
 [stories.match]
 docs = ["feature-platform.md#pipeline-hooks"]
@@ -530,7 +517,6 @@ as = { platform-admin = "allowed" }
 tier = "p1"
 since = "0.6.15"
 origin = "changelog"
-claims = [{ lead = "HITL review queues, worked by Reviewers and Annotators." }, { lead = "New stacks hold documents for review by default." }]
 
 [stories.match]
 docs = ["review-queues.md#turning-review-queues-on"]
@@ -579,7 +565,6 @@ needs = ["complete-document"]
 tier = "p1"
 since = "0.6.13"
 origin = "changelog"
-claims = [{ lead = "The document page has one action bar." }]
 
 [stories.match]
 docs = ["web-ui.md#document-details", "review-queues.md#annotator-guide"]
@@ -595,7 +580,6 @@ as = { new-analyst = "allowed", team-lead = "allowed", platform-admin = "allowed
 tier = "p1"
 since = "0.6.13"
 origin = "changelog"
-claims = [{ lead = "An Inbox for every user." }]
 
 [stories.match]
 docs = ["web-ui.md#inbox"]
@@ -659,7 +643,6 @@ as = { platform-admin = "allowed" }
 tier = "p1"
 since = "0.6.15"
 origin = "changelog"
-claims = [{ lead = "Routing rules for review queues." }]
 
 [stories.match]
 docs = ["review-routing.md#editing-the-table", "review-routing.md#routing-rules"]
@@ -677,7 +660,6 @@ tier = "p1"
 since = "0.6.15"
 origin = "changelog"
 rbac = "Work Production queues"
-claims = [{ lead = "More review outcomes." }]
 
 [stories.match]
 docs = ["review-queues.md#how-a-review-ends"]
@@ -694,7 +676,6 @@ needs = ["complete-document"]
 tier = "p1"
 since = "0.6.15"
 origin = "changelog"
-claims = [{ lead = "Reprocess from a chosen step, on every surface." }]
 
 [stories.match]
 docs = ["web-ui.md#reprocessing-a-document", "document-versions.md#reprocessing"]

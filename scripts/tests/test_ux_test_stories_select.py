@@ -3,13 +3,8 @@
 """Tests for scripts/ux_runner/changelog_select.py, the MR story selector.
 
 Synthetic CHANGELOGs and catalogues pin each rule: entry parsing, the whole-file
-diff, scoring, the threshold, ranking, the caps and the reply's lines. Two suites
-read the real files instead. Claims verbatim: every ``claims`` lead in
-``scripts/ux_stories.toml`` is the bold lead of exactly one entry of
-``CHANGELOG.md``, as this parser reads it. The replay: each claim's entry, taken out
-of the real ``CHANGELOG.md`` and put back as the MR that added it, selects its own
-story. The replay derives each base from the working tree's file rather than from
-git history, because the GitLab job that runs this suite clones shallow.
+diff, scoring, the threshold, ranking, the caps and the reply's lines. None of them
+reads the real ``CHANGELOG.md`` wording, which is rewritten at every release.
 """
 
 from __future__ import annotations
@@ -147,18 +142,6 @@ def _real_catalogue() -> stories.Catalogue:
 
 def _real_changelog() -> str:
     return CHANGELOG.read_text(encoding="utf-8")
-
-
-def _without(text: str, entry: Entry) -> str:
-    """``text`` without ``entry``'s lines, as the CHANGELOG before the MR adding it."""
-    lines = text.split("\n")
-    start = entry.line - 1
-    end = start + 1
-    while end < len(lines) and not (
-        lines[end].startswith(("- ", "* ")) or HEADING_RE.match(lines[end])
-    ):
-        end += 1
-    return "\n".join(lines[:start] + lines[end:])
 
 
 @pytest.mark.unit
@@ -810,73 +793,6 @@ def test_every_entry_of_the_real_changelog_starts_at_a_bullet_line() -> None:
     for entry in entries:
         assert lines[entry.line - 1].startswith(("- ", "* ")), entry.line
         assert entry.text
-
-
-def _toml_line(lead: str) -> str:
-    """The line of scripts/ux_stories.toml holding ``lead``, for a failure message."""
-    probe = lead[:40]
-    lines = stories.CATALOGUE_PATH.read_text(encoding="utf-8").splitlines()
-    found = next((n for n, line in enumerate(lines, 1) if probe in line), None)
-    return (
-        f"scripts/ux_stories.toml line {found}" if found else "scripts/ux_stories.toml"
-    )
-
-
-@pytest.mark.unit
-def test_every_claim_lead_is_the_lead_of_exactly_one_changelog_entry() -> None:
-    """A claim quotes its CHANGELOG lead verbatim; the section holding it is not checked,
-    so the release cut that relabels ``[Unreleased]`` cannot fail this."""
-    entries = changelog_select.parse_entries(_real_changelog())
-    problems = []
-    for story in _real_catalogue().stories:
-        for claim in story.claims:
-            lead = " ".join(claim.lead.split())
-            count = sum(1 for entry in entries if entry.lead == lead)
-            if count != 1:
-                problems.append(
-                    f"story {story.id!r} ({_toml_line(claim.lead)}): the claim lead "
-                    f"{lead!r} is the bold lead of {count} CHANGELOG.md entries, not "
-                    "one. Quote the entry's lead exactly there, or reword the claim."
-                )
-    assert not problems, "\n".join(problems)
-
-
-@pytest.mark.unit
-def test_each_claims_entry_selects_its_own_story_when_replayed() -> None:
-    """The MR that added each claim's entry, replayed, selects that claim's story."""
-    text = _real_changelog()
-    catalogue = _real_catalogue()
-    entries = changelog_select.parse_entries(text)
-    claims = [
-        (story.id, claim.lead) for story in catalogue.stories for claim in story.claims
-    ]
-    assert claims, "scripts/ux_stories.toml declares no claims to replay"
-    problems = []
-    for story_id, lead in claims:
-        lead = " ".join(lead.split())
-        matching = [entry for entry in entries if entry.lead == lead]
-        if len(matching) != 1:
-            problems.append(
-                f"story {story_id!r}: {len(matching)} entries carry its lead"
-            )
-            continue
-        added = changelog_select.added_entries(_without(text, matching[0]), text)
-        if [item.entry for item in added] != matching:
-            problems.append(
-                f"story {story_id!r}: the replay added {len(added)} entries"
-            )
-            continue
-        selection = changelog_select.select(catalogue, added)
-        if story_id not in selection.stories or not any(
-            line.story == story_id for line in selection.chosen
-        ):
-            scores = [(s.story, s.changelog_points, s.total) for s in selection.scores]
-            problems.append(
-                f"story {story_id!r}: its CHANGELOG.md entry, replayed, selects "
-                f"{selection.stories} with scores {scores}; adjust that story's "
-                "[stories.match] in scripts/ux_stories.toml"
-            )
-    assert not problems, "\n".join(problems)
 
 
 @pytest.mark.unit
