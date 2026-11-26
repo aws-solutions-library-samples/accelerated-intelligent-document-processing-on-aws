@@ -29,8 +29,9 @@ afterwards, with a marker on the row that the daily sweep also acts on:
   the deadline passes before the gateway has admitted the client, mark the row
   ``gatewayPending`` and return the secret as usual; :func:`finish_gateway_add`
   completes the addition. Until then the gateway refuses the client's tokens, so
-  the credential starts working within about a minute rather than at once. Any
-  other failure still withdraws the credential.
+  the credential starts working when the gateway's update finishes rather than
+  at once. A no-overlap rotation keeps the old credential working until then (a
+  day at most). Any other failure still withdraws the credential.
 
 ``CredentialServices.defer`` is how a caller asks for that finishing work to run
 now (the credential manager Lambda invokes itself asynchronously); without it, or
@@ -96,6 +97,14 @@ CLEANUP_RESERVE_SECONDS = 30
 #: is in :data:`PUBLIC_FIELDS`, so neither reaches an API response.
 CLEANUP_PENDING = "cleanupPending"
 GATEWAY_PENDING = "gatewayPending"
+#: On a replacement made by a rotation with no overlap: the old credential's id,
+#: revoked only once the gateway admits the replacement.
+REVOKE_ON_ACTIVATION = "revokeOnActivation"
+
+#: How long the old credential of a no-overlap rotation stays usable at most when
+#: the replacement is not yet admitted at the gateway: the sweep's period, so the
+#: sweep's expiry pass ends it even if the finishing task never runs.
+PENDING_ROTATION_GRACE = timedelta(days=1)
 
 #: The finishing tasks ``CredentialServices.defer`` is asked to run.
 TASK_FINISH_REVOCATION = "finish-revocation"
@@ -456,13 +465,15 @@ def _issue(
     now: datetime,
     extra: Optional[Mapping[str, Any]] = None,
     gateway_deadline: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Make the app client, the secret and the row, then admit the client at the
-    gateway. A failure anywhere withdraws all of it, except one: the gateway not
+    schedule_finish: bool = True,
+) -> tuple:
+    """``(result, gateway_pending)``. Make the app client, the secret and the row,
+    then admit the client at the gateway. A failure anywhere withdraws all of it, except one: the gateway not
     finishing before ``gateway_deadline``. That is not a refusal (the update may
     still land), and withdrawing then would lose a secret the caller is about to
     be shown, so the credential is kept, marked ``gatewayPending`` and the
-    addition is deferred."""
+    addition is deferred (scheduled here unless ``schedule_finish`` is false, for
+    a caller that has more to record on the row first)."""
     client = _new_client(services, name)
     client_id = client["ClientId"]
     gateway_pending: Optional[str] = None
@@ -519,8 +530,9 @@ def _issue(
             set_values={GATEWAY_PENDING: True, "gatewayError": gateway_pending},
             only_if_not_revoked=True,
         )
-        _defer(services, TASK_FINISH_GATEWAY_ADD, client_id)
-    return {
+        if schedule_finish:
+            _defer(services, TASK_FINISH_GATEWAY_ADD, client_id)
+    result = {
         "credential": public(row),
         "clientId": client_id,
         "clientSecret": client["ClientSecret"],
@@ -529,6 +541,7 @@ def _issue(
         "secretArn": secret_arn,
         "oauthScopes": list(services.oauth_scopes),
     }
+    return result, gateway_pending is not None
 
 
 def create_credential(
@@ -564,7 +577,7 @@ def create_credential(
         environ=services.environ,
         require_scope=not api,
     )
-    result = _issue(
+    result, _pending = _issue(
         services,
         name=name,
         role=role,
@@ -789,7 +802,7 @@ def rotate_credential(
         if old_expiry and old_created
         else DEFAULT_EXPIRY_DAYS
     )
-    result = _issue(
+    result, pending = _issue(
         services,
         name=str(old.get("name")),
         role=str(old.get("role")),
@@ -801,8 +814,17 @@ def rotate_credential(
         now=now,
         extra={"rotatedFrom": client_id},
         gateway_deadline=gateway_deadline,
+        schedule_finish=False,
     )
-    cutover = now + timedelta(days=overlap_days)
+    new_id = result["clientId"]
+    # With no overlap and a replacement the gateway does not admit yet, ending the
+    # old credential now would leave its callers with nothing that works. It is
+    # revoked when the replacement is admitted instead, and expires within
+    # PENDING_ROTATION_GRACE if that never happens.
+    hold_old = overlap_days == 0 and pending
+    cutover = now + (
+        PENDING_ROTATION_GRACE if hold_old else timedelta(days=overlap_days)
+    )
     if old_expiry and old_expiry < cutover:
         cutover = old_expiry
     try:
@@ -839,7 +861,16 @@ def rotate_credential(
         )
         raise
     _audit("rotate", actor, result["credential"], replaces=client_id)
-    if overlap_days == 0:
+    if hold_old:
+        _mark(
+            services,
+            new_id,
+            set_values={REVOKE_ON_ACTIVATION: client_id},
+            only_if_not_revoked=True,
+        )
+    if pending:
+        _defer(services, TASK_FINISH_GATEWAY_ADD, new_id)
+    if overlap_days == 0 and not hold_old:
         revoke_credential(
             services, client_id, actor=actor, now=now, defer_cleanup=defer_cleanup
         )
@@ -869,7 +900,28 @@ def revoke_credential(
     update could finish; the sweep finishes whatever that does not."""
     now = now or _now()
     _require(services, client_id)
-    updated = services.table.update_item(
+    updated = _write_revoked(services, client_id, actor=actor, now=now)
+    if defer_cleanup:
+        scheduled = _defer(services, TASK_FINISH_REVOCATION, client_id)
+        _audit(
+            "revoke",
+            actor,
+            updated,
+            reason=reason,
+            cleanup="deferred" if scheduled else "left-for-sweep",
+        )
+        return public(updated)
+    errors = finish_revocation(services, client_id, audit=False).get("errors", [])
+    _audit("revoke", actor, updated, reason=reason, cleanup_errors=errors)
+    return public(updated)
+
+
+def _write_revoked(
+    services: CredentialServices, client_id: str, *, actor: str, now: datetime
+) -> Dict[str, Any]:
+    """The authoritative write of a revocation: refused from here on, and marked
+    for :func:`finish_revocation`."""
+    return services.table.update_item(
         Key={"clientId": client_id},
         UpdateExpression="SET enabled = :f, #st = :r, revokedAt = :u, revokedBy = :b,"
         " updatedAt = :u, updatedBy = :b, #cp = :t REMOVE #gp",
@@ -887,19 +939,6 @@ def revoke_credential(
         },
         ReturnValues="ALL_NEW",
     )["Attributes"]
-    if defer_cleanup:
-        scheduled = _defer(services, TASK_FINISH_REVOCATION, client_id)
-        _audit(
-            "revoke",
-            actor,
-            updated,
-            reason=reason,
-            cleanup="deferred" if scheduled else "left-for-sweep",
-        )
-        return public(updated)
-    errors = finish_revocation(services, client_id, audit=False).get("errors", [])
-    _audit("revoke", actor, updated, reason=reason, cleanup_errors=errors)
-    return public(updated)
 
 
 def _already_gone(exc: Exception) -> bool:
@@ -1003,7 +1042,11 @@ def finish_gateway_add(
     row write came after it runs its removal after this addition landed, so its
     removal wins. Either way the interceptor refuses the revoked client from its
     row write on. Safe to run for any client id: it only ever admits a registry
-    credential that is not revoked, which the sweep's reconciliation does too."""
+    credential that is not revoked, which the sweep's reconciliation does too.
+
+    Once admitted, a replacement from a no-overlap rotation revokes the
+    credential it replaced (``revokeOnActivation``), and only that one: the old
+    row must name this one as ``replacedBy``."""
     row = get_row(services.table, client_id)
     if not row:
         return {"clientId": client_id, "complete": False, "skipped": "not found"}
@@ -1039,10 +1082,33 @@ def finish_gateway_add(
             "skipped": "revoked while being admitted",
             "errors": errors,
         }
+    old_id = after.get(REVOKE_ON_ACTIVATION)
+    if old_id:
+        old = get_row(services.table, str(old_id))
+        # Only the credential this one replaced, and only while it is still live.
+        if (
+            old
+            and old.get("replacedBy") == client_id
+            and old.get("status") != STATUS_REVOKED
+        ):
+            try:
+                revoke_credential(
+                    services,
+                    str(old_id),
+                    actor="mcp-credential-manager",
+                    reason="rotated",
+                    defer_cleanup=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - retried by the sweep
+                return {
+                    "clientId": client_id,
+                    "complete": False,
+                    "errors": [f"revoke replaced {old_id}: {exc}"],
+                }
     _mark(
         services,
         client_id,
-        remove=(GATEWAY_PENDING, "gatewayError"),
+        remove=(GATEWAY_PENDING, "gatewayError", REVOKE_ON_ACTIVATION),
         only_if_not_revoked=True,
     )
     return {"clientId": client_id, "complete": True, "errors": []}
@@ -1063,15 +1129,15 @@ def run_task(
     raise ValueError(f"Unknown MCP credential task: {task}")
 
 
-def _pending_tasks(rows: Sequence[Mapping[str, Any]], skip: Sequence[str]):
+def _pending_tasks(rows: Sequence[Mapping[str, Any]]):
     for row in rows:
         cid = str(row["clientId"])
-        if cid in skip:
-            continue
         revoked = row.get("status") == STATUS_REVOKED
         if revoked and row.get(CLEANUP_PENDING):
             yield TASK_FINISH_REVOCATION, cid
-        elif not revoked and row.get(GATEWAY_PENDING):
+        elif not revoked and (
+            row.get(GATEWAY_PENDING) or row.get(REVOKE_ON_ACTIVATION)
+        ):
             yield TASK_FINISH_GATEWAY_ADD, cid
 
 
@@ -1083,13 +1149,26 @@ def sweep(
 ) -> Dict:
     """The daily pass: revoke credentials past their expiry, warn the creator of
     any expiring within ``EXPIRY_WARNING_DAYS`` once, put the gateway's client
-    list in line with the registry, and finish work a request left marked
-    (``cleanupPending`` on a revoked row, ``gatewayPending`` on a live one).
+    list in line with the registry, and finish work left marked
+    (``cleanupPending`` on a revoked row, ``gatewayPending`` or
+    ``revokeOnActivation`` on a live one), including the cleanup of the
+    credentials this pass expired.
 
-    The last step stops starting new work while ``seconds_left()`` is under
-    :data:`CLEANUP_RESERVE_SECONDS`, and bounds each gateway wait by what is left
-    above it; what it finished and what it left are in the result."""
+    Bounded end to end by ``seconds_left()``, keeping
+    :data:`CLEANUP_RESERVE_SECONDS` in hand. Expiry writes only the authoritative
+    row, which takes no gateway wait. The reconciliation then gets at most half of
+    what is left, so the finishing work always gets the rest, and each finishing
+    task's gateway wait is bounded by what is left when it starts. Work there was
+    no time to start is handed to ``services.defer`` when it is set, and otherwise
+    stays marked for the next pass; what was finished and what was left are in
+    the result."""
     now = now or _now()
+
+    def budget() -> Optional[float]:
+        if seconds_left is None:
+            return None
+        return seconds_left() - CLEANUP_RESERVE_SECONDS
+
     expired, warned = [], []
     rows = _all_rows(services.table)
     for row in rows:
@@ -1099,12 +1178,15 @@ def sweep(
         if not expires:
             continue
         if expires <= now:
-            revoke_credential(
-                services,
-                row["clientId"],
-                actor="expiry-sweep",
-                now=now,
+            updated = _write_revoked(
+                services, row["clientId"], actor="expiry-sweep", now=now
+            )
+            _audit(
+                "revoke",
+                "expiry-sweep",
+                updated,
                 reason=STATUS_EXPIRED,
+                cleanup="sweep",
             )
             expired.append(row["clientId"])
         elif (
@@ -1131,17 +1213,32 @@ def sweep(
                 ExpressionAttributeValues={":u": _iso(now)},
             )
             warned.append(row["clientId"])
-    reconciled = _reconcile_gateway(services, rows, expired)
+    left = budget()
+    reconciled = _reconcile_gateway(
+        services,
+        rows,
+        expired,
+        deadline=None if left is None else time.monotonic() + max(0.0, left) / 2,
+    )
+    tasks = list(_pending_tasks(rows))
+    tasks += [(TASK_FINISH_REVOCATION, str(cid)) for cid in expired]
     finished: List[str] = []
     unfinished: List[Dict[str, Any]] = []
-    for task, cid in _pending_tasks(rows, expired):
-        deadline = None
-        if seconds_left is not None:
-            budget = seconds_left() - CLEANUP_RESERVE_SECONDS
-            if budget <= 0:
-                unfinished.append({"clientId": cid, "task": task, "error": "no time"})
-                continue
-            deadline = time.monotonic() + budget
+    for task, cid in tasks:
+        left = budget()
+        if left is not None and left <= 0:
+            handed_on = _defer(services, task, cid)
+            unfinished.append(
+                {
+                    "clientId": cid,
+                    "task": task,
+                    "error": "no time; handed to a new invocation"
+                    if handed_on
+                    else "no time",
+                }
+            )
+            continue
+        deadline = None if left is None else time.monotonic() + left
         try:
             outcome = run_task(services, task, cid, deadline=deadline)
         except Exception as exc:  # noqa: BLE001 - reported, retried tomorrow
@@ -1166,7 +1263,11 @@ def sweep(
 
 
 def _reconcile_gateway(
-    services: CredentialServices, rows: Sequence[Mapping[str, Any]], expired: List[str]
+    services: CredentialServices,
+    rows: Sequence[Mapping[str, Any]],
+    expired: List[str],
+    *,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Put the gateway's client list back in line with the registry: a write by a
     concurrent stale reader can drop a live credential's client or restore a
@@ -1186,7 +1287,11 @@ def _reconcile_gateway(
     live = [str(r["clientId"]) for r in rows if str(r["clientId"]) not in revoked]
     try:
         mcp_gateway.update_allowed_clients(
-            services.control, services.gateway_id, add=live, remove=revoked
+            services.control,
+            services.gateway_id,
+            add=live,
+            remove=revoked,
+            deadline=deadline,
         )
     except Exception as exc:  # noqa: BLE001 - reported, retried tomorrow
         logger.warning("MCP credential sweep could not reconcile the gateway: %s", exc)
@@ -1280,8 +1385,11 @@ def revoke_all(
             try:
                 call()
             except Exception as exc:  # noqa: BLE001
-                if "ResourceNotFound" not in type(exc).__name__ + str(exc):
-                    errors.append(f"{what} {cid}: {exc}")
+                if _already_gone(exc):
+                    continue
+                if what == "secret" and _secret_scheduled_for_deletion(services, cid):
+                    continue
+                errors.append(f"{what} {cid}: {exc}")
         _audit("revoke", actor, {**row, "enabled": False}, reason="registry-removed")
     return {
         "revoked": [str(r["clientId"]) for r in rows],

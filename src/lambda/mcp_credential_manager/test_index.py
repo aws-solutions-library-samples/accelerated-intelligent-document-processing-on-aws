@@ -361,7 +361,10 @@ def test_the_gateway_budget_leaves_room_under_the_dispatchers_wait():
     spec = importlib.util.spec_from_file_location("mcp_manager_budget", MANAGER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.API_GATEWAY_STEP_SECONDS <= wait - 5
+    # The deadline, plus one call already in flight when it passes, plus a
+    # margin for the cold start and the two short writes after it.
+    worst = module.API_GATEWAY_STEP_SECONDS + module.API_CALL_WORST_SECONDS
+    assert worst <= wait - 4
 
 
 def test_an_internal_task_runs_with_the_time_the_invocation_has_left(manager):
@@ -405,7 +408,7 @@ def test_an_api_event_carrying_the_task_key_is_not_a_task(manager):
 def test_the_self_invoke_is_asynchronous_and_its_event_is_a_task(manager, monkeypatch):
     invoked = []
     fake = SimpleNamespace(invoke=lambda **kw: invoked.append(kw))
-    monkeypatch.setitem(manager.module._clients, "lambda", fake)
+    monkeypatch.setitem(manager.module._clients, ("lambda", False), fake)
     context = SimpleNamespace(function_name="stk-mcp-credential-manager")
     manager.module._self_invoker(context)("finish-gateway-add", "c1")
     ((call,),) = [invoked]
@@ -431,7 +434,7 @@ def test_a_failed_self_invoke_still_lets_the_revoke_succeed(
         )
 
     monkeypatch.setitem(
-        manager.module._clients, "lambda", SimpleNamespace(invoke=refuse)
+        manager.module._clients, ("lambda", False), SimpleNamespace(invoke=refuse)
     )
     defer = manager.module._self_invoker(SimpleNamespace(function_name="f"))
     with pytest.raises(ClientError):
@@ -452,3 +455,32 @@ def test_the_schedule_gives_the_sweep_the_time_left(manager):
     manager.module.handler({"source": "aws.events"}, context)
     ((_name, _args, kwargs),) = manager.calls
     assert kwargs["seconds_left"]() == 42.0
+
+
+def test_the_api_path_uses_clients_with_short_timeouts(manager, monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    manager.module.handler(event("listMcpCredentials"), None)
+    assert manager.built[-1]["api"] is True
+    for name in ("cognito-idp", "secretsmanager", "bedrock-agentcore-control"):
+        config = manager.module._client(name, True).meta.config
+        assert (config.connect_timeout, config.read_timeout) == (1, 3)
+        assert config.retries["total_max_attempts"] == 2
+    lam = manager.module._client("lambda", True).meta.config
+    assert (lam.read_timeout, lam.retries["total_max_attempts"]) == (3, 2)
+    ddb = manager.module._client("dynamodb", True).meta.client.meta.config
+    assert ddb.read_timeout == 3
+    # The asynchronous paths keep the defaults, waiting out a slow read.
+    assert (
+        manager.module._client("bedrock-agentcore-control").meta.config.read_timeout
+        == 60
+    )
+
+
+def test_the_asynchronous_paths_do_not_use_the_api_clients(manager):
+    context = SimpleNamespace(
+        get_remaining_time_in_millis=lambda: 300_000, function_name="f"
+    )
+    manager.module.handler(task(), context)
+    manager.module.handler({"source": "aws.events"}, context)
+    assert [b.get("api", False) for b in manager.built] == [False, False]
+    assert all(callable(b["defer"]) for b in manager.built)

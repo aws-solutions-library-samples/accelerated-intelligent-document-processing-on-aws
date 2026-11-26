@@ -542,16 +542,21 @@ Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or wi
   Connector settings entry. The secret is also stored in Secrets Manager as
   `<stack>/mcp/credentials/<clientId>`, encrypted with the stack's key, where an
   operator with access to that secret can read it.
-  When the gateway is slow to apply a change, a credential created on the page can
-  take up to about a minute to be accepted at the gateway. It is never shown and
-  then withdrawn: once you see its secret, it is kept. If it is still not accepted
-  after that, the daily sweep finishes adding it.
+  The page waits up to 8 seconds for the gateway to accept a new credential.
+  If the gateway's update takes longer, the page still shows the secret and
+  keeps the credential: once you see the secret, it is never withdrawn. The
+  credential then starts working when that gateway update finishes, which takes
+  as long as AgentCore takes to apply it. If the update fails, the daily sweep
+  adds the credential.
 - **Use.** Exchange the client ID and secret at the token URL (`MCPTokenURL`) for an
   access token that lasts one hour, and call the MCP server with it. The gateway's
   interceptor reads the credential on every call, so its role and profiles apply as
   they would to a user's.
 - **Rotate.** Issues a replacement with the same access and shows its secret once;
-  the old one keeps working for up to seven days so callers can move across. The
+  the old one keeps working for up to seven days so callers can move across.
+  With no overlap, the old one is revoked at once, unless the gateway has not
+  accepted the replacement yet. In that case the old one keeps working until the
+  replacement is accepted, and for one day at most. The
   access is checked again first, so a credential the stack's tenant settings no
   longer allow (an Admin credential after tenant isolation was turned on, say)
   cannot be rotated and has to be replaced with one that fits.

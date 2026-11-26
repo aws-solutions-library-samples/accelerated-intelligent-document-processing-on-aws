@@ -492,13 +492,19 @@ def run_credential_cells(
         while status in (401, 403) and time.monotonic() < waited_until:
             time.sleep(ADMISSION_POLL_SECONDS)
             status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
+        admitted = (
+            status == 200 and not role_refused(text) and "not permitted" not in text
+        )
         record(
             results,
             "mcp:credential-read",
             "viewer-credential",
             status,
-            not role_refused(text) and "not permitted" not in text,
-            "admitted to read",
+            admitted,
+            "admitted to read"
+            if admitted
+            else f"credential never accepted after {ADMISSION_WAIT_SECONDS}s "
+            f"(HTTP {status})",
             message=text[:300],
         )
         status, text = call_text(mcp, token, "process", {})
@@ -547,6 +553,20 @@ def run_credential_cells(
             # Not the body: the revoked row names the secret's ARN.
             message=f"status field: {revoked_row.get('status')!r}",
         )
+        if not admitted:
+            # A credential that was never accepted proves nothing by being refused
+            # after its revoke, so the cell is reported as not run, and blocking.
+            record(
+                results,
+                "mcp:credential-revoked",
+                "viewer-credential",
+                None,
+                False,
+                "could not run: the credential was never accepted before its "
+                "revoke, so a refusal afterwards proves nothing",
+                outcome="ERROR",
+            )
+            return
         status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
         refused = "revoked" in text or status in (401, 403)
         record(

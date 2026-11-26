@@ -1113,7 +1113,11 @@ def test_the_sweep_finishes_work_requests_left_marked(world):
     mc.revoke_credential(svc, gone, actor="a", now=NOW, defer_cleanup=True)
     new = create(world, name="new", gateway_deadline=_past())["clientId"]
     assert len(asked) == 2
+    # The reconciliation's own gateway update fails, so whatever reaches the
+    # gateway below was done by the finishing tasks.
+    world["gw"].fail_next_update = True
     result = mc.sweep(svc, now=NOW, seconds_left=lambda: 250.0)
+    assert result["reconciled"]["ok"] is False
     assert sorted(result["finished"]) == sorted([gone, new])
     assert result["unfinished"] == []
     assert gone not in world["gw"].allowed() and new in world["gw"].allowed()
@@ -1129,13 +1133,23 @@ def test_the_sweep_leaves_marked_work_when_time_runs_out(world):
     svc = world["svc"]
     gone = create(world, name="gone")["clientId"]
     mc.revoke_credential(svc, gone, actor="a", now=NOW, defer_cleanup=True)
+    asked = _deferring(world)
     result = mc.sweep(svc, now=NOW, seconds_left=lambda: 5.0)
     assert result["finished"] == []
     assert result["unfinished"] == [
-        {"clientId": gone, "task": mc.TASK_FINISH_REVOCATION, "error": "no time"}
+        {
+            "clientId": gone,
+            "task": mc.TASK_FINISH_REVOCATION,
+            "error": "no time; handed to a new invocation",
+        }
     ]
+    # Handed to a fresh invocation, and still marked in case that never runs.
+    assert asked == [(mc.TASK_FINISH_REVOCATION, gone)]
     assert _client_exists(world, gone)
-    assert mc.get_row(svc.table, gone)[mc.CLEANUP_PENDING] is True
+    assert _row(world, gone)[mc.CLEANUP_PENDING] is True
+    world["svc"].defer = None
+    left = mc.sweep(svc, now=NOW, seconds_left=lambda: 5.0)["unfinished"]
+    assert left[0]["error"] == "no time"
 
 
 def test_removing_the_registry_finishes_a_deferred_revocation(world):
@@ -1175,3 +1189,112 @@ def test_a_gateway_wait_past_its_deadline_reads_nothing(world):
     with pytest.raises(mcp_gateway.GatewayDeadlineExceeded):
         mcp_gateway.wait_until_ready(gw, "gw-1", deadline=_past())
     assert called == []
+
+
+def _slow_gateway(world, monkeypatch):
+    """A gateway that stays UPDATING after every update until ``state['slow']`` is
+    cleared. Sleeps really pass at a fiftieth of their length, so an unbounded
+    wait (60 polls of 5 seconds) still takes seconds while a deadline is reached
+    in a fraction of one."""
+    gw = world["gw"]
+    state = {"slow": True, "updating": False}
+    real_update, real_get = gw.update_gateway, gw.get_gateway
+
+    def update(**request):
+        if state["slow"]:
+            state["updating"] = True
+        return real_update(**request)
+
+    def get(gatewayIdentifier):
+        out = real_get(gatewayIdentifier)
+        if state["updating"] and state["slow"]:
+            out["status"] = "UPDATING"
+        return out
+
+    monkeypatch.setattr(gw, "update_gateway", update)
+    monkeypatch.setattr(gw, "get_gateway", get)
+    pause = threading.Event()
+    monkeypatch.setattr(mcp_gateway.time, "sleep", lambda s: pause.wait(s / 50))
+    return state
+
+
+def test_a_no_overlap_rotation_keeps_the_old_credential_until_the_new_one_works(
+    world,
+):
+    asked = _deferring(world)
+    svc = world["svc"]
+    old = create(world, expires_in_days=30)["clientId"]
+    new = mc.rotate_credential(
+        svc,
+        old,
+        overlap_days=0,
+        actor="a",
+        now=NOW,
+        gateway_deadline=_past(),
+        defer_cleanup=True,
+    )["clientId"]
+    # The replacement is not admitted yet, so the old one still works, for at
+    # most a day.
+    old_row = _row(world, old)
+    assert mc.status_of(old_row, NOW) == "active"
+    assert old_row["expiresAt"] == "2026-11-12T12:00:00Z"
+    assert old_row["replacedBy"] == new
+    assert _row(world, new)[mc.REVOKE_ON_ACTIVATION] == old
+    assert asked == [(mc.TASK_FINISH_GATEWAY_ADD, new)]
+    assert mc.finish_gateway_add(svc, new)["complete"] is True
+    assert new in world["gw"].allowed()
+    assert _row(world, old)["status"] == "revoked"
+    assert mc.REVOKE_ON_ACTIVATION not in _row(world, new)
+    assert asked[-1] == (mc.TASK_FINISH_REVOCATION, old)
+
+
+def test_the_sweep_finishes_a_held_rotation(world):
+    _deferring(world)
+    svc = world["svc"]
+    old = create(world)["clientId"]
+    new = mc.rotate_credential(
+        svc, old, overlap_days=0, actor="a", now=NOW, gateway_deadline=_past()
+    )["clientId"]
+    result = mc.sweep(svc, now=NOW, seconds_left=lambda: 250.0)
+    assert new in result["finished"]
+    assert _row(world, old)["status"] == "revoked"
+
+
+def test_activation_revokes_only_the_credential_it_replaced(world):
+    _deferring(world)
+    svc = world["svc"]
+    bystander = create(world, name="bystander")["clientId"]
+    new = create(world, name="new", gateway_deadline=_past())["clientId"]
+    svc.table.update_item(
+        Key={"clientId": new},
+        UpdateExpression="SET revokeOnActivation = :o",
+        ExpressionAttributeValues={":o": bystander},
+    )
+    assert mc.finish_gateway_add(svc, new)["complete"] is True
+    assert _row(world, bystander)["status"] == "active"
+
+
+def test_the_sweep_is_bounded_when_the_gateway_never_settles(world, monkeypatch):
+    import time
+
+    asked = _deferring(world)
+    svc = world["svc"]
+    live = create(world, name="live")["clientId"]
+    gone = create(world, name="gone", expires_in_days=1)["clientId"]
+    _slow_gateway(world, monkeypatch)
+    started = time.monotonic()
+    result = mc.sweep(
+        svc,
+        now=NOW + timedelta(days=2),
+        seconds_left=lambda: mc.CLEANUP_RESERVE_SECONDS + 0.3,
+    )
+    # Without deadlines each gateway wait runs 60 polls of 5 seconds.
+    assert time.monotonic() - started < 5
+    assert result["expired"] == [gone]
+    assert result["reconciled"]["ok"] is False
+    # The expired credential is refused at once and its cleanup is left marked.
+    row = _row(world, gone)
+    assert row["status"] == "revoked" and row[mc.CLEANUP_PENDING] is True
+    assert [u["clientId"] for u in result["unfinished"]] == [gone]
+    assert _row(world, live)["status"] == "active"
+    assert asked == []

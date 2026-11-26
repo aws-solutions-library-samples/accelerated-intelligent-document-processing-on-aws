@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 import cfnresponse
+from botocore.config import Config
 
 from idp_common import mcp_credentials as mc
 from idp_common.config_scope import (
@@ -63,15 +64,32 @@ ADMIN_OPERATIONS = (
     "setMcpCredentialTenant",
 )
 
+#: Timeouts for every AWS call an API request makes. The botocore defaults (a
+#: 60-second read, several attempts) would let one hung call outlast the whole
+#: request, since the deadline below is only checked between calls. With these,
+#: one call costs at most API_CALL_WORST_SECONDS.
+API_CONNECT_TIMEOUT_SECONDS = 1
+API_READ_TIMEOUT_SECONDS = 3
+API_MAX_ATTEMPTS = 2
+API_CALL_WORST_SECONDS = (
+    API_CONNECT_TIMEOUT_SECONDS + API_READ_TIMEOUT_SECONDS
+) * API_MAX_ATTEMPTS
+API_CLIENT_CONFIG = Config(
+    connect_timeout=API_CONNECT_TIMEOUT_SECONDS,
+    read_timeout=API_READ_TIMEOUT_SECONDS,
+    retries={"total_max_attempts": API_MAX_ATTEMPTS, "mode": "standard"},
+)
+
 #: Seconds after the handler starts by which the gateway step of a create or
 #: rotate reached through the API gives up waiting and is finished out of band.
 #: The dispatcher stops waiting for this function 20 seconds after invoking it
 #: (``_RESOLVER_READ_TIMEOUT_SECONDS`` in the dispatcher, itself inside API
 #: Gateway's 29-second integration limit), and that clock includes this
-#: function's cold start, which happens before the handler starts. Twelve leaves
-#: about eight for the cold start, a gateway call already in flight at the
-#: deadline, the marker write and the asynchronous self-invoke.
-API_GATEWAY_STEP_SECONDS = 12
+#: function's cold start, which happens before the handler starts. Eight, plus
+#: one call already in flight at the deadline (API_CALL_WORST_SECONDS, 8), leaves
+#: about four for the cold start, the marker write and the self-invoke, each of
+#: which is itself bounded by API_CLIENT_CONFIG.
+API_GATEWAY_STEP_SECONDS = 8
 
 #: Seconds a finishing task keeps in hand before the function's own timeout.
 TASK_RESERVE_SECONDS = 15
@@ -79,15 +97,23 @@ TASK_RESERVE_SECONDS = 15
 #: The key of the internal event that runs a finishing task.
 TASK_EVENT_KEY = "mcpCredentialTask"
 
-_clients: Dict[str, Any] = {}
+_clients: Dict[Any, Any] = {}
 
 
-def _client(name: str):
-    if name not in _clients:
-        _clients[name] = (
-            boto3.resource("dynamodb") if name == "dynamodb" else boto3.client(name)
+def _client(name: str, api: bool = False):
+    """A cached client. ``api=True`` is the API path's, with
+    :data:`API_CLIENT_CONFIG`; the sweep, the finishing tasks and the custom
+    resource run asynchronously with minutes to spare and keep the defaults, so
+    a slow gateway read there is waited for rather than abandoned."""
+    key = (name, api)
+    if key not in _clients:
+        kwargs = {"config": API_CLIENT_CONFIG} if api else {}
+        _clients[key] = (
+            boto3.resource("dynamodb", **kwargs)
+            if name == "dynamodb"
+            else boto3.client(name, **kwargs)
         )
-    return _clients[name]
+    return _clients[key]
 
 
 def _tenants() -> List[Dict[str, Any]]:
@@ -99,7 +125,7 @@ def _tenants() -> List[Dict[str, Any]]:
             "CONFIGURATION_TABLE_NAME is not set, so tenant boundaries cannot be "
             "checked"
         )
-    return TenantStore(_client("dynamodb").Table(table_name)).list()
+    return TenantStore(_client("dynamodb", api=True).Table(table_name)).list()
 
 
 def _notify(**kwargs):
@@ -108,12 +134,12 @@ def _notify(**kwargs):
     return notify(**kwargs)
 
 
-def services(defer=None) -> mc.CredentialServices:
+def services(defer=None, api: bool = False) -> mc.CredentialServices:
     return mc.CredentialServices(
-        cognito=_client("cognito-idp"),
-        secrets=_client("secretsmanager"),
-        table=_client("dynamodb").Table(os.environ["MCP_CREDENTIALS_TABLE"]),
-        control=_client("bedrock-agentcore-control"),
+        cognito=_client("cognito-idp", api),
+        secrets=_client("secretsmanager", api),
+        table=_client("dynamodb", api).Table(os.environ["MCP_CREDENTIALS_TABLE"]),
+        control=_client("bedrock-agentcore-control", api),
         gateway_id=os.environ["GATEWAY_ID"],
         user_pool_id=os.environ["USER_POOL_ID"],
         stack_name=os.environ["STACK_NAME"],
@@ -133,7 +159,7 @@ def _function_name(context: Any) -> str:
     )
 
 
-def _self_invoker(context: Any):
+def _self_invoker(context: Any, api: bool = False):
     """``CredentialServices.defer`` for this function: an asynchronous invoke of
     itself with the internal task event. It raises on failure, and
     ``idp_common.mcp_credentials`` logs that and leaves the row's marker for the
@@ -144,7 +170,7 @@ def _self_invoker(context: Any):
     def defer(task: str, client_id: str) -> None:
         if not name:
             raise RuntimeError("this function's own name is not known")
-        _client("lambda").invoke(
+        _client("lambda", api).invoke(
             FunctionName=name,
             InvocationType="Event",
             Payload=json.dumps(
@@ -189,7 +215,9 @@ def _run_task(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if context is not None:
         remaining = context.get_remaining_time_in_millis() / 1000
         deadline = time.monotonic() + max(0.0, remaining - TASK_RESERVE_SECONDS)
-    result = mc.run_task(services(), task, client_id, deadline=deadline)
+    result = mc.run_task(
+        services(defer=_self_invoker(context)), task, client_id, deadline=deadline
+    )
     if result.get("complete") or result.get("skipped"):
         logger.info(f"MCP credential task {task}: {json.dumps(result)}")
     else:
@@ -232,7 +260,7 @@ def admin_scope(claims: Dict[str, Any]) -> Optional[List[str]]:
             caller_email_from_claims(claims),
             caller_sub=caller_sub_from_claims(claims),
             users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
-            dynamodb=_client("dynamodb"),
+            dynamodb=_client("dynamodb", api=True),
         )
     except ScopeLookupError as exc:
         raise PermissionError(
@@ -334,7 +362,7 @@ def _dispatch(
     context: Any = None,
     started: Optional[float] = None,
 ):
-    svc = services(defer=_self_invoker(context))
+    svc = services(defer=_self_invoker(context, api=True), api=True)
     actor = _actor(claims)
     gateway_deadline = (
         time.monotonic() if started is None else started
@@ -438,7 +466,7 @@ def handler(event: Dict[str, Any], context: Any):
         return _run_task(event, context)
     if isinstance(event, dict) and event.get("source") == "aws.events":
         result = mc.sweep(
-            services(),
+            services(defer=_self_invoker(context)),
             seconds_left=(
                 (lambda: context.get_remaining_time_in_millis() / 1000)
                 if context is not None
