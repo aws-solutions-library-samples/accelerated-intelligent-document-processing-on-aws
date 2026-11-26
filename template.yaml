@@ -3316,7 +3316,9 @@ Resources:
 
   # The MCP Configuration page's operations (list, create, update, rotate, revoke,
   # setMcpCredentialTenant), reached through the UI REST API, and the daily sweep
-  # that revokes expired credentials and warns their creators beforehand.
+  # that revokes expired credentials and warns their creators beforehand. An API
+  # request leaves slow gateway work to an asynchronous invoke of this function,
+  # which the sweep backs up.
   McpCredentialManagerFunction:
     Type: AWS::Serverless::Function
     Condition: CreateAgentCoreLambda
@@ -3327,7 +3329,7 @@ Resources:
             reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
           - id: W92
             reason: "Function does not require reserved concurrency as it scales based on demand"
-    # checkov:skip=CKV_AWS_116: "Invoked synchronously by the API dispatcher and by a daily schedule; a DLQ does not apply"
+    # checkov:skip=CKV_AWS_116: "Its asynchronous invokes are idempotent finishing tasks it schedules for itself, and the daily sweep re-runs any that fail; a DLQ would add nothing"
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     # checkov:skip=CKV_AWS_173: "Environment variables hold resource names and ids only"
@@ -3417,6 +3419,12 @@ Resources:
             - Effect: Allow
               Action: iam:PassRole
               Resource: !GetAtt AgentCoreGatewayExecutionRole.Arn
+            # An API request finishes a slow gateway update by invoking this
+            # function asynchronously. Built from the fixed FunctionName, since
+            # a reference to the function's own ARN would be circular.
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-mcp-credential-manager"
             # The function is also a custom resource's service token, so its last
             # log lines on a stack delete could otherwise recreate its log group
             # with no retention and no key.

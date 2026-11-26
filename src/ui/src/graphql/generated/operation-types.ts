@@ -946,6 +946,7 @@ export type LatestPublishedVersion = {
 };
 
 export type McpCredential = {
+  activating?: Maybe<Scalars['Boolean']['output']>;
   allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   clientId: Scalars['ID']['output'];
   createdAt?: Maybe<Scalars['String']['output']>;
@@ -3670,7 +3671,7 @@ export type CreateMcpCredentialMutationVariables = Exact<{
 }>;
 
 
-export type CreateMcpCredentialMutation = { createMcpCredential?: { clientId: string, clientSecret: string, tokenUrl?: string | null, gatewayUrl?: string | null, secretArn?: string | null, oauthScopes?: Array<string | null> | null, credential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null } | null };
+export type CreateMcpCredentialMutation = { createMcpCredential?: { clientId: string, clientSecret: string, tokenUrl?: string | null, gatewayUrl?: string | null, secretArn?: string | null, oauthScopes?: Array<string | null> | null, credential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null, activating?: boolean | null } | null } | null };
 
 export type CreateReviewQueueMutationVariables = Exact<{
   input: ReviewQueueDefinitionInput;
@@ -4034,7 +4035,7 @@ export type RotateMcpCredentialMutationVariables = Exact<{
 }>;
 
 
-export type RotateMcpCredentialMutation = { rotateMcpCredential?: { clientId: string, clientSecret: string, tokenUrl?: string | null, gatewayUrl?: string | null, secretArn?: string | null, oauthScopes?: Array<string | null> | null, credential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null } | null };
+export type RotateMcpCredentialMutation = { rotateMcpCredential?: { clientId: string, clientSecret: string, tokenUrl?: string | null, gatewayUrl?: string | null, secretArn?: string | null, oauthScopes?: Array<string | null> | null, credential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null, activating?: boolean | null } | null } | null };
 
 export type SaveReviewDraftMutationVariables = Exact<{
   objectKey: Scalars['String']['input'];
@@ -4814,7 +4815,7 @@ export type ListInboxMessagesQuery = { listInboxMessages?: { nextToken?: string 
 export type ListMcpCredentialsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListMcpCredentialsQuery = { listMcpCredentials?: Array<{ clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null> | null };
+export type ListMcpCredentialsQuery = { listMcpCredentials?: Array<{ clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null, activating?: boolean | null } | null> | null };
 
 export type ListMyReviewWorkQueryVariables = Exact<{
   limit?: InputMaybe<Scalars['Int']['input']>;

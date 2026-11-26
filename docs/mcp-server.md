@@ -542,18 +542,31 @@ Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or wi
   Connector settings entry. The secret is also stored in Secrets Manager as
   `<stack>/mcp/credentials/<clientId>`, encrypted with the stack's key, where an
   operator with access to that secret can read it.
+  The page waits up to 8 seconds for the gateway to accept a new credential.
+  If the gateway's update takes longer, the page still shows the secret and
+  keeps the credential: once you see the secret, it is never withdrawn. The
+  credential then starts working when that gateway update finishes, which takes
+  as long as AgentCore takes to apply it. Until then the dialog says so and the
+  credentials table shows it as *activating*. If the update fails, the daily
+  sweep adds the credential.
 - **Use.** Exchange the client ID and secret at the token URL (`MCPTokenURL`) for an
   access token that lasts one hour, and call the MCP server with it. The gateway's
   interceptor reads the credential on every call, so its role and profiles apply as
   they would to a user's.
 - **Rotate.** Issues a replacement with the same access and shows its secret once;
-  the old one keeps working for up to seven days so callers can move across. The
+  the old one keeps working for up to seven days so callers can move across.
+  With no overlap, the old one is revoked at once, unless the gateway has not
+  accepted the replacement yet. In that case the old one keeps working until the
+  replacement is accepted, and for one day at most. The
   access is checked again first, so a credential the stack's tenant settings no
   longer allow (an Admin credential after tenant isolation was turned on, say)
   cannot be rotated and has to be replaced with one that fits.
 - **Revoke.** Refused from the next request, even while one of its tokens is still
   valid; its app client is deleted and its secret scheduled for deletion ("Default
-  (stack-created)" keeps both; see below).
+  (stack-created)" keeps both; see below). A revoke on the page returns once the
+  credential is refused. It is taken off the gateway and its client and secret are
+  deleted straight afterwards, and if that does not finish, the daily sweep
+  finishes it. `idp-cli` and the SDK do every step before they return.
 - **Expiry.** A daily sweep revokes expired credentials and sends the Admin who
   created one an Inbox message two weeks before it expires.
 - **Audit.** Every change is logged with the acting Admin, the credential's id,

@@ -35,6 +35,7 @@ import hashlib
 import hmac
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,6 +64,13 @@ INERT_TOOL_ARGS = {
     "search": {"query": "how many documents"},
 }
 TARGET = "IDPTools___"
+
+#: How long a new credential is given to be admitted at the gateway. A create
+#: through the API waits for the gateway only briefly and finishes the addition
+#: out of band, so the first call can be refused by the gateway (HTTP 401/403)
+#: before the client is on its allowed list.
+ADMISSION_WAIT_SECONDS = 120
+ADMISSION_POLL_SECONDS = 10
 
 
 def _outputs(ctx):
@@ -480,13 +488,23 @@ def run_credential_cells(
     try:
         token = service_token(mcp, client_id, issued["clientSecret"])
         status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
+        waited_until = time.monotonic() + ADMISSION_WAIT_SECONDS
+        while status in (401, 403) and time.monotonic() < waited_until:
+            time.sleep(ADMISSION_POLL_SECONDS)
+            status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
+        admitted = (
+            status == 200 and not role_refused(text) and "not permitted" not in text
+        )
         record(
             results,
             "mcp:credential-read",
             "viewer-credential",
             status,
-            not role_refused(text) and "not permitted" not in text,
-            "admitted to read",
+            admitted,
+            "admitted to read"
+            if admitted
+            else f"credential never accepted after {ADMISSION_WAIT_SECONDS}s "
+            f"(HTTP {status})",
             message=text[:300],
         )
         status, text = call_text(mcp, token, "process", {})
@@ -514,13 +532,41 @@ def run_credential_cells(
                 else "out-of-scope document served",
                 message=text[:300],
             )
-        status, _ = call_body(
+        # The revoke call and its effect are separate cells, so a revoke that
+        # answered with an error is reported as that, not as a token still served.
+        revoke_status, revoke_body = call_body(
             ctx["api_base"],
             "revokeMcpCredential",
             {"clientId": client_id},
             admin_id_token,
         )
-        revoked = status == 200
+        revoked_row = operation_result(revoke_body, "revokeMcpCredential")
+        record(
+            results,
+            "mcp:credential-revoke-call",
+            "Admin",
+            revoke_status,
+            revoke_status == 200 and revoked_row.get("status") == "revoked",
+            "revoke answered 200 with the revoked credential"
+            if revoke_status == 200
+            else f"revoke answered HTTP {revoke_status}",
+            # Not the body: the revoked row names the secret's ARN.
+            message=f"status field: {revoked_row.get('status')!r}",
+        )
+        if not admitted:
+            # A credential that was never accepted proves nothing by being refused
+            # after its revoke, so the cell is reported as not run, and blocking.
+            record(
+                results,
+                "mcp:credential-revoked",
+                "viewer-credential",
+                None,
+                False,
+                "could not run: the credential was never accepted before its "
+                "revoke, so a refusal afterwards proves nothing",
+                outcome="ERROR",
+            )
+            return
         status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
         refused = "revoked" in text or status in (401, 403)
         record(
@@ -528,7 +574,7 @@ def run_credential_cells(
             "mcp:credential-revoked",
             "viewer-credential",
             status,
-            revoked and refused,
+            refused,
             "refused on the next request"
             if refused
             else "a revoked credential's token was still served",

@@ -8503,6 +8503,14 @@
     "message": "Outil de requête de la base de connaissances sur les documents",
     "sourceHash": "093c14271db77cea"
   },
+  "mcp.configuration.activatingNote": {
+    "message": "Cet identifiant peut mettre un court moment à fonctionner. Le serveur MCP est encore en cours de mise à jour pour l’accepter, et ses requêtes sont refusées d’ici là. Si la mise à jour n’aboutit pas, l’exécution de maintenance quotidienne l’ajoute.",
+    "sourceHash": "53f41bdaaa1252c4"
+  },
+  "mcp.configuration.activatingStatus": {
+    "message": "en activation",
+    "sourceHash": "5bbd546f39b5d7c0"
+  },
   "mcp.configuration.adminOnly": {
     "message": "La configuration MCP est réservée aux administrateurs.",
     "sourceHash": "5feb4f94d0349456"

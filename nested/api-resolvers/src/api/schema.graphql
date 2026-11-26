@@ -320,6 +320,10 @@ type McpCredential @aws_cognito_user_pools {
   rotatedFrom: String
   replacedBy: String
   secretArn: String
+  # True while the gateway has not yet admitted this credential's client: a create
+  # or rotation answered before the gateway's update finished, which completes
+  # out of band. Its tokens are refused at the gateway until then.
+  activating: Boolean
 }
 
 # Returned once, by createMcpCredential and rotateMcpCredential: the only

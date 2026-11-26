@@ -93,3 +93,25 @@ def test_the_default_credential_is_told_the_isolation_mode():
 def test_mcp_is_off_unless_a_stack_turns_it_on():
     params = load_template("template.yaml")["Parameters"]
     assert params["EnableMCP"]["Default"] == "false"
+
+
+def test_the_manager_may_invoke_itself_and_nothing_else():
+    """An API request finishes slow gateway work by invoking the manager
+    asynchronously, so it needs InvokeFunction on its own ARN: built from the
+    fixed FunctionName (its own GetAtt would be circular), and never a wildcard."""
+    manager = RESOURCES["McpCredentialManagerFunction"]["Properties"]
+    assert manager["FunctionName"] == {
+        "Fn::Sub": "${AWS::StackName}-mcp-credential-manager"
+    }
+    grants = [
+        st
+        for st in _statements("McpCredentialManagerFunction")
+        if "lambda:InvokeFunction" in str(st.get("Action"))
+    ]
+    assert [g["Resource"] for g in grants] == [
+        {
+            "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:"
+            "${AWS::AccountId}:function:${AWS::StackName}-mcp-credential-manager"
+        }
+    ]
+    assert all(g["Effect"] == "Allow" for g in grants)

@@ -18,15 +18,26 @@ The function is also the service token of ``McpCredentialsCleanup``, whose Delet
 revokes every credential: on a stack delete, a downgrade to a release without the
 registry, or MCP being switched off. Those credentials were made at run time, so
 nothing else removes them.
+
+A gateway update can take minutes and an API request must answer in well under
+thirty seconds, so the API path does not wait for one. ``revokeMcpCredential``
+writes the revoked row (refused from then on) and leaves the gateway entry, app
+client and secret to a finishing task; ``createMcpCredential`` and
+``rotateMcpCredential`` wait for the gateway only until
+:data:`API_GATEWAY_STEP_SECONDS` and otherwise leave the addition to one. A
+finishing task is this function invoking itself asynchronously with an internal
+event (:func:`_is_internal_task`); the daily sweep finishes any it does not.
 """
 
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import boto3
 import cfnresponse
+from botocore.config import Config
 
 from idp_common import mcp_credentials as mc
 from idp_common.config_scope import (
@@ -53,15 +64,62 @@ ADMIN_OPERATIONS = (
     "setMcpCredentialTenant",
 )
 
-_clients: Dict[str, Any] = {}
+#: Timeouts for every AWS call an API request makes. The botocore defaults (a
+#: 60-second read, several attempts with backoff between them) would let one hung
+#: call outlast the whole request. One attempt and no retries means no backoff
+#: either, so one call costs at most API_CALL_WORST_SECONDS. The cost is that a
+#: throttled call fails the request; the operations are safe to repeat.
+API_CONNECT_TIMEOUT_SECONDS = 1
+API_READ_TIMEOUT_SECONDS = 3
+API_MAX_ATTEMPTS = 1
+API_CALL_WORST_SECONDS = (
+    API_CONNECT_TIMEOUT_SECONDS + API_READ_TIMEOUT_SECONDS
+) * API_MAX_ATTEMPTS
+API_CLIENT_CONFIG = Config(
+    connect_timeout=API_CONNECT_TIMEOUT_SECONDS,
+    read_timeout=API_READ_TIMEOUT_SECONDS,
+    retries={"total_max_attempts": API_MAX_ATTEMPTS, "mode": "standard"},
+)
+
+#: How long the dispatcher waits for this function (``_RESOLVER_READ_TIMEOUT_SECONDS``
+#: in the dispatcher, inside API Gateway's 29-second integration limit). Its
+#: clock starts before this function's cold start, which the handler cannot see.
+DISPATCHER_WAIT_SECONDS = 20
+COLD_START_ALLOWANCE_SECONDS = 4
+#: Seconds after the handler starts by which an API request must have answered.
+API_RESPONSE_LIMIT_SECONDS = DISPATCHER_WAIT_SECONDS - COLD_START_ALLOWANCE_SECONDS
+
+#: Seconds after the handler starts by which the gateway step of a create or
+#: rotate gives up waiting and is finished out of band. After it, at most one
+#: gateway call already in flight and ``mc.MANDATORY_CALLS_AFTER_GATEWAY`` calls
+#: still run, each at most API_CALL_WORST_SECONDS: 8 + (1 + 1) * 4 = 16, the
+#: response limit. Everything else after the gateway step runs only while
+#: ``mc.RequestBudget`` says it still fits.
+API_GATEWAY_STEP_SECONDS = 8
+
+#: Seconds a finishing task keeps in hand before the function's own timeout.
+TASK_RESERVE_SECONDS = 15
+
+#: The key of the internal event that runs a finishing task.
+TASK_EVENT_KEY = "mcpCredentialTask"
+
+_clients: Dict[Any, Any] = {}
 
 
-def _client(name: str):
-    if name not in _clients:
-        _clients[name] = (
-            boto3.resource("dynamodb") if name == "dynamodb" else boto3.client(name)
+def _client(name: str, api: bool = False):
+    """A cached client. ``api=True`` is the API path's, with
+    :data:`API_CLIENT_CONFIG`; the sweep, the finishing tasks and the custom
+    resource run asynchronously with minutes to spare and keep the defaults, so
+    a slow gateway read there is waited for rather than abandoned."""
+    key = (name, api)
+    if key not in _clients:
+        kwargs = {"config": API_CLIENT_CONFIG} if api else {}
+        _clients[key] = (
+            boto3.resource("dynamodb", **kwargs)
+            if name == "dynamodb"
+            else boto3.client(name, **kwargs)
         )
-    return _clients[name]
+    return _clients[key]
 
 
 def _tenants() -> List[Dict[str, Any]]:
@@ -73,7 +131,7 @@ def _tenants() -> List[Dict[str, Any]]:
             "CONFIGURATION_TABLE_NAME is not set, so tenant boundaries cannot be "
             "checked"
         )
-    return TenantStore(_client("dynamodb").Table(table_name)).list()
+    return TenantStore(_client("dynamodb", api=True).Table(table_name)).list()
 
 
 def _notify(**kwargs):
@@ -82,12 +140,12 @@ def _notify(**kwargs):
     return notify(**kwargs)
 
 
-def services() -> mc.CredentialServices:
+def services(defer=None, api: bool = False) -> mc.CredentialServices:
     return mc.CredentialServices(
-        cognito=_client("cognito-idp"),
-        secrets=_client("secretsmanager"),
-        table=_client("dynamodb").Table(os.environ["MCP_CREDENTIALS_TABLE"]),
-        control=_client("bedrock-agentcore-control"),
+        cognito=_client("cognito-idp", api),
+        secrets=_client("secretsmanager", api),
+        table=_client("dynamodb", api).Table(os.environ["MCP_CREDENTIALS_TABLE"]),
+        control=_client("bedrock-agentcore-control", api),
         gateway_id=os.environ["GATEWAY_ID"],
         user_pool_id=os.environ["USER_POOL_ID"],
         stack_name=os.environ["STACK_NAME"],
@@ -97,7 +155,83 @@ def services() -> mc.CredentialServices:
         gateway_url=os.environ.get("GATEWAY_URL", ""),
         tenants=_tenants,
         notify=_notify,
+        defer=defer,
     )
+
+
+def _function_name(context: Any) -> str:
+    return getattr(context, "function_name", None) or os.environ.get(
+        "AWS_LAMBDA_FUNCTION_NAME", ""
+    )
+
+
+def _self_invoker(context: Any, api: bool = False):
+    """``CredentialServices.defer`` for this function: an asynchronous invoke of
+    itself with the internal task event. It raises on failure, and
+    ``idp_common.mcp_credentials`` logs that and leaves the row's marker for the
+    sweep, so a request whose finishing task could not be scheduled still
+    succeeds."""
+    name = _function_name(context)
+
+    def defer(task: str, client_id: str) -> None:
+        if not name:
+            raise RuntimeError("this function's own name is not known")
+        _client("lambda", api).invoke(
+            FunctionName=name,
+            InvocationType="Event",
+            Payload=json.dumps(
+                {TASK_EVENT_KEY: {"task": task, "clientId": client_id}}
+            ).encode("utf-8"),
+        )
+
+    return defer
+
+
+def _is_internal_task(event: Any) -> bool:
+    """A finishing task this function scheduled for itself.
+
+    The REST dispatcher cannot produce one. Every event it sends is built by
+    ``idp_common.api_adapter.normalize_event`` from fixed keys (``arguments``,
+    ``identity``, ``info`` and ``_httpApiEvent``), with the request body only ever
+    nested under ``arguments``; the one event it passes through unchanged is
+    recognised by carrying ``arguments`` and ``identity``. An event with either of
+    those keys is therefore never a task. Anything else would have to be a direct
+    ``lambda:InvokeFunction`` on this function, and a principal holding that can
+    already send any operation here with claims of its choosing. And a task
+    carries no authority of its own: it
+    names a client id, and both tasks only move a credential towards what its row
+    already records (cleanup only of a revoked row, admission only of a live one),
+    which the daily sweep does too."""
+    return (
+        isinstance(event, dict)
+        and isinstance(event.get(TASK_EVENT_KEY), dict)
+        and "arguments" not in event
+        and "identity" not in event
+        and "info" not in event
+    )
+
+
+def _run_task(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    task = event[TASK_EVENT_KEY].get("task")
+    client_id = event[TASK_EVENT_KEY].get("clientId")
+    if task not in mc.TASKS or not isinstance(client_id, str) or not client_id:
+        logger.warning(f"Rejecting a malformed MCP credential task: {task!r}")
+        return {"complete": False, "skipped": "malformed task"}
+    deadline = None
+    if context is not None:
+        remaining = context.get_remaining_time_in_millis() / 1000
+        deadline = time.monotonic() + max(0.0, remaining - TASK_RESERVE_SECONDS)
+    result = mc.run_task(
+        services(defer=_self_invoker(context)), task, client_id, deadline=deadline
+    )
+    if result.get("complete") or result.get("skipped"):
+        logger.info(f"MCP credential task {task}: {json.dumps(result)}")
+    else:
+        logger.warning(
+            f"MCP credential task {task} unfinished; the daily sweep retries it: "
+            f"{json.dumps(result)}"
+        )
+    return result
 
 
 def _claims(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,7 +266,7 @@ def admin_scope(claims: Dict[str, Any]) -> Optional[List[str]]:
             caller_email_from_claims(claims),
             caller_sub=caller_sub_from_claims(claims),
             users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
-            dynamodb=_client("dynamodb"),
+            dynamodb=_client("dynamodb", api=True),
         )
     except ScopeLookupError as exc:
         raise PermissionError(
@@ -227,9 +361,22 @@ def _scope_arg(arguments: Dict[str, Any]) -> Any:
     return value
 
 
-def _dispatch(field: str, arguments: Dict[str, Any], claims: Dict[str, Any]):
-    svc = services()
+def _dispatch(
+    field: str,
+    arguments: Dict[str, Any],
+    claims: Dict[str, Any],
+    context: Any = None,
+    started: Optional[float] = None,
+):
+    started = time.monotonic() if started is None else started
+    svc = services(defer=_self_invoker(context, api=True), api=True)
+    svc.budget = mc.RequestBudget(
+        started=started,
+        limit_seconds=API_RESPONSE_LIMIT_SECONDS,
+        call_worst_seconds=API_CALL_WORST_SECONDS,
+    )
     actor = _actor(claims)
+    gateway_deadline = started + API_GATEWAY_STEP_SECONDS
     if field == "listMcpCredentials":
         rows = mc.list_credentials(svc)
         own = admin_scope(claims)
@@ -251,6 +398,7 @@ def _dispatch(field: str, arguments: Dict[str, Any], claims: Dict[str, Any]):
             write_tools=bool(arguments.get("writeTools")),
             expires_in_days=_int(arguments.get("expiresInDays"), "expiresInDays"),
             actor=actor,
+            gateway_deadline=gateway_deadline,
         )
     if field == "updateMcpCredential":
         scope = _scope_arg(arguments)
@@ -281,13 +429,17 @@ def _dispatch(field: str, arguments: Dict[str, Any], claims: Dict[str, Any]):
             arguments.get("clientId", ""),
             overlap_days=mc.MAX_ROTATION_OVERLAP_DAYS if overlap is None else overlap,
             actor=actor,
+            gateway_deadline=gateway_deadline,
+            defer_cleanup=True,
         )
     if field == "revokeMcpCredential":
         own = admin_scope(claims)
         if own is not None:
             row = mc.get_row(svc.table, arguments.get("clientId", "")) or {}
             require_within(own, row.get("allowedConfigVersions"))
-        return mc.revoke_credential(svc, arguments.get("clientId", ""), actor=actor)
+        return mc.revoke_credential(
+            svc, arguments.get("clientId", ""), actor=actor, defer_cleanup=True
+        )
     if field == "setMcpCredentialTenant":
         tenant_id = arguments.get("tenantId") or None
         own = admin_scope(claims)
@@ -317,10 +469,20 @@ def _dispatch(field: str, arguments: Dict[str, Any], claims: Dict[str, Any]):
 
 
 def handler(event: Dict[str, Any], context: Any):
+    started = time.monotonic()
     if _is_custom_resource(event):
         return _custom_resource(event, context)
+    if _is_internal_task(event):
+        return _run_task(event, context)
     if isinstance(event, dict) and event.get("source") == "aws.events":
-        result = mc.sweep(services())
+        result = mc.sweep(
+            services(defer=_self_invoker(context)),
+            seconds_left=(
+                (lambda: context.get_remaining_time_in_millis() / 1000)
+                if context is not None
+                else None
+            ),
+        )
         logger.info(f"MCP credential sweep: {json.dumps(result)}")
         return result
     logger.info(f"Received event: {sanitize_event_for_logging(event)}")
@@ -333,7 +495,7 @@ def handler(event: Dict[str, Any], context: Any):
         logger.warning(f"Denied {field}: the caller is not in the Admin group")
         raise PermissionError("Unauthorized: Admin group membership required")
     try:
-        return _dispatch(field, arguments, claims)
+        return _dispatch(field, arguments, claims, context, started)
     except mc.CredentialNotFound as exc:
         raise ValueError(str(exc)) from exc
     except mc.CredentialError as exc:

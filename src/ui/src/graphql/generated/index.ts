@@ -503,6 +503,7 @@ export const createMcpCredential = /* GraphQL */ `
         rotatedFrom
         replacedBy
         secretArn
+        activating
       }
     }
   }
@@ -2375,6 +2376,7 @@ export const listMcpCredentials = /* GraphQL */ `
       rotatedFrom
       replacedBy
       secretArn
+      activating
     }
   }
 ` as GeneratedQuery<ListMcpCredentialsQueryVariables, ListMcpCredentialsQuery>;
@@ -3405,6 +3407,7 @@ export const rotateMcpCredential = /* GraphQL */ `
         rotatedFrom
         replacedBy
         secretArn
+        activating
       }
     }
   }

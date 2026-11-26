@@ -23,9 +23,19 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayDeadlineExceeded(RuntimeError):
+    """The gateway did not become READY before the caller's deadline.
+
+    Distinct from every other failure because it says nothing about whether the
+    change will land: an update already sent may still complete, and one not yet
+    sent can be retried. A caller with a deadline (a request that must answer
+    inside API Gateway's integration limit) treats it as "unfinished", not as
+    "failed"."""
 
 
 def gateway_update_fields(control_client: Any) -> tuple:
@@ -62,16 +72,30 @@ def wait_until_ready(
     attempts: int = 60,
     delay: float = 5,
     accept: Sequence[str] = ("READY",),
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
+    """The gateway once its status is in ``accept``.
+
+    ``deadline`` is a :func:`time.monotonic` value. With one, no read is started
+    after it and no sleep runs past it, and reaching it raises
+    :class:`GatewayDeadlineExceeded` rather than the ordinary ``RuntimeError``."""
     status = None
     for _ in range(attempts):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise GatewayDeadlineExceeded(
+                f"gateway {gateway_id} was not READY before the deadline "
+                f"(status {status})"
+            )
         gateway = control_client.get_gateway(gatewayIdentifier=gateway_id)
         status = gateway.get("status")
         if status in accept:
             return gateway
         if status in ("FAILED", "UPDATE_UNSUCCESSFUL"):
             break
-        time.sleep(delay)
+        if deadline is None:
+            time.sleep(delay)
+        else:
+            time.sleep(max(0.0, min(delay, deadline - time.monotonic())))
     raise RuntimeError(f"gateway {gateway_id} did not become READY (status {status})")
 
 
@@ -150,9 +174,15 @@ def update_allowed_clients(
     add: Iterable[str] = (),
     remove: Iterable[str] = (),
     attempts: int = 3,
+    deadline: Optional[float] = None,
 ) -> List[str]:
     """Add and remove client ids on the gateway's JWT authorizer, keeping every
     other field. Returns the resulting list. A no-op when nothing changes.
+
+    ``deadline`` (a :func:`time.monotonic` value) bounds every wait, and reaching
+    it raises :class:`GatewayDeadlineExceeded`; an update may already have been
+    sent by then, so the change is unfinished rather than refused, and calling
+    again with the same arguments completes it or finds it already done.
 
     Read-modify-write on a whole configuration can lose a concurrent writer's
     change, so after each update the gateway is read again and the update retried
@@ -163,7 +193,7 @@ def update_allowed_clients(
     to_add = [c for c in add if c]
     to_remove = {c for c in remove if c}
     for _ in range(attempts):
-        gateway = wait_until_ready(control_client, gateway_id)
+        gateway = wait_until_ready(control_client, gateway_id, deadline=deadline)
         authorizer = dict(gateway.get("authorizerConfiguration") or {})
         jwt = dict(authorizer.get("customJWTAuthorizer") or {})
         if not jwt:
@@ -184,7 +214,7 @@ def update_allowed_clients(
                 authorizerConfiguration=authorizer,
             )
         )
-        after = wait_until_ready(control_client, gateway_id)
+        after = wait_until_ready(control_client, gateway_id, deadline=deadline)
         landed = list(
             (
                 (after.get("authorizerConfiguration") or {}).get("customJWTAuthorizer")

@@ -63,6 +63,7 @@ export interface McpCredential {
   lastUsedAt?: string | null;
   replacedBy?: string | null;
   secretArn?: string | null;
+  activating?: boolean | null;
 }
 
 export interface McpCredentialIssued {
@@ -83,6 +84,8 @@ const messages = defineMessages<{
   storedSecret: NoMessageValues;
   secretShownOnce: NoMessageValues;
   copyItNow: NoMessageValues;
+  activatingNote: NoMessageValues;
+  activatingStatus: NoMessageValues;
   clientId: NoMessageValues;
   clientIdCopied: NoMessageValues;
   couldNotCopy: NoMessageValues;
@@ -198,6 +201,19 @@ const messages = defineMessages<{
     id: 'mcp.configuration.secretShownOnce',
     defaultMessage: 'This secret will not be shown again',
     description: 'Warning header in the new-credential dialog.',
+  },
+  activatingNote: {
+    id: 'mcp.configuration.activatingNote',
+    defaultMessage:
+      'This credential can take a short while to start working. The MCP server is still being updated to accept it, and its requests are refused until then. If the update does not complete, the daily maintenance run adds it.',
+    description:
+      'Information line in the new-credential dialog, shown when the credential was created before the MCP server had been updated to accept it.',
+  },
+  activatingStatus: {
+    id: 'mcp.configuration.activatingStatus',
+    defaultMessage: 'activating',
+    description:
+      'Status shown in the credentials table for an active credential the MCP server does not accept yet; it starts working once the server has been updated.',
   },
   copyItNow: {
     id: 'mcp.configuration.copyItNow',
@@ -772,6 +788,7 @@ export const IssuedSecretModal = ({ issued, onDismiss }: { issued: McpCredential
         <Alert type="warning" header={intl.formatMessage(messages.secretShownOnce)}>
           {intl.formatMessage(messages.copyItNow)}
         </Alert>
+        {issued.credential?.activating && <Alert type="info">{intl.formatMessage(messages.activatingNote)}</Alert>}
         <KeyValuePairs
           columns={1}
           items={[
@@ -1224,7 +1241,12 @@ const McpConfigurationLayout = (): React.JSX.Element => {
           {
             id: 'status',
             header: intl.formatMessage(messages.status),
-            cell: (c) => <StatusIndicator type={STATUS_TYPE[c.status ?? ''] ?? 'info'}>{c.status ?? 'unknown'}</StatusIndicator>,
+            cell: (c) =>
+              c.activating && c.status === 'active' ? (
+                <StatusIndicator type="pending">{intl.formatMessage(messages.activatingStatus)}</StatusIndicator>
+              ) : (
+                <StatusIndicator type={STATUS_TYPE[c.status ?? ''] ?? 'info'}>{c.status ?? 'unknown'}</StatusIndicator>
+              ),
           },
           {
             id: 'expires',
