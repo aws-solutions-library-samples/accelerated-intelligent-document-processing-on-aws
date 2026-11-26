@@ -13,24 +13,28 @@ SPDX-License-Identifier: MIT-0
 
 # GenAIIDP Configuration Guidance — Empirical Guidance for Document Extraction at Scale
 
-**Release:** v0.6.14 · **Region:** us-west-2 · **Stack:** `IDPUpg0613to0614` (created from the
-published `idp-main_0.6.13.yaml` and upgraded in place to the published `idp-main_0.6.14.yaml`;
-the v0.6.14 record in [release-validation](../release-validation/) carries the stack's
-provenance)
+**Release:** v0.6.14 edition, **re-measured on v0.6.16** — every suite below ran again on the
+published v0.6.16 build, and [*Re-measurement on v0.6.16*](#re-measurement-on-v0616) gives what
+changed. The sections after it are the v0.6.14 edition's text and figures, unchanged; each is
+marked in the scope table with what its v0.6.16 re-measurement found. · **Region:** us-west-2 ·
+**Stacks:** v0.6.14 `IDPUpg0613to0614`; v0.6.16 `IDPUpg0615to0616` (created from the published
+`idp-main_0.6.15.yaml` and upgraded in place to the published `idp-main_0.6.16.yaml`; the v0.6.16
+record in [release-validation](../release-validation/) carries its provenance)
 **Models:** extraction Claude Sonnet 4.6 — **the cross-version control, not the shipped
 default** — in §2–§4 and §7; the extraction, classification and confidence models are
 *varied* in §5 · classification Nova 2 Lite (the shipped default) · confidence Nova Lite
 (the shipped default) · summarization disabled (unscored)
-**Pricing:** `config_library/pricing.yaml` (sha256 `44a79aa06c15…`, unchanged since the
-v0.6.12 edition; rates as of 2026-10; intro pricing may apply), except that **every Claude
-Sonnet 5 dollar figure measured on v0.6.14 is re-priced at Sonnet 5's published rates** — see
-the header note below
-**Measured:** 2026-11-07 and 2026-11-09/10 (run launch times), on one stack at one build —
-**3,338 scored rows across 31 result sets** (2,578 synthetic runs and 760 reference-corpus
-documents, $1,970.57 by the rows' own cost as recorded, $1,854.45 with the Sonnet 5 share
-re-priced) plus a classification-variant benchmark on a
-20-packet labelled corpus. A host restart on 2026-11-07 killed six suites mid-run; their
-partial runs were discarded and the suites re-run in full (Appendix A).
+**Pricing:** v0.6.14 figures: `config_library/pricing.yaml` sha256 `44a79aa06c15…`, with every
+Claude Sonnet 5 dollar figure re-priced at Sonnet 5's published rates (see the note below).
+v0.6.16 figures: sha256 `7a617cea2aa5…`, which already carries the published Sonnet 5 rates, so
+they need no re-pricing.
+**Measured:** v0.6.14 edition — 2026-11-07 and 2026-11-09/10, **3,338 scored rows across 31
+result sets** (2,578 synthetic runs and 760 reference-corpus documents, $1,970.57 as recorded,
+$1,854.45 with the Sonnet 5 share re-priced) plus a classification-variant benchmark on a 20-packet
+labelled corpus; a host restart on 2026-11-07 killed six suites mid-run, and their partial runs
+were discarded and the suites re-run in full (Appendix A). v0.6.16 re-measurement — 2026-11-26,
+**3,197 scored rows across 30 result sets** (2,437 synthetic runs and 760 reference-corpus
+documents, $1,550.72), on one stack at one build; the classification-variant benchmark did not run.
 
 ⚠️ **Two models' cost figures are lower bounds, and every Sonnet 5 figure is re-priced.**
 `pricing.yaml` holds one flat rate per model, and that is wrong for two of the swept models:
@@ -61,10 +65,64 @@ bias allows, which is what a bound supports and a ratio is not. Every other arm 
 flat rate and its cost figure is a true measurement. See each model's row in
 [Benchmarking](index.md#which-models-are-actually-measured).
 
+### Re-measurement on v0.6.16
+
+Every suite in the scope table below except the classification-variant benchmark (§5.6) ran again
+on the published v0.6.16 build: 3,197 scored rows, of which 9 did not complete — all simple-mode
+requests on the 3,200-row document, refused as too long, which is the expected outcome at that size
+on both releases. Each result set was compared with its v0.6.14 counterpart with
+`aggregate.py --compare`; the per-set table is in the
+[v0.6.16 release entry](releases/v0.6.16.md#other-tier-f-results). **No v0.6.16 result reverses a
+recommendation in §5.5.** What changed:
+
+- **Advanced (agentic) extraction costs about half as much on table-heavy documents.** On the
+  release A/B's two 100-row documents every advanced-mode cell cost 45–52% less per run, with
+  non-overlapping ranges, and simple-mode cells did not move; on the `astravalue` grid Sonnet 5's
+  advanced cell fell 48% and GPT-6 Astra's 55%. The configurations were identical on both sides, so
+  the change is the code's; the likely cause is that the table tool now parses the section's own OCR
+  text instead of a copy the agent writes out. The cost ratios this page quotes between advanced
+  and simple mode (for example §2c's 2.0–2.3×, and §3's advanced premium) are v0.6.14 figures and
+  overstate the premium on v0.6.16. On RealKIE the matched pair is now $0.1445 (simple) against
+  $0.3233 (advanced) per document, still 2.2×; why the real corpus moved less was not examined.
+- **The extraction-model grid ranks the same way, at lower cost.** v0.6.16, 133 runs per arm:
+
+  | extraction model | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | wall/doc | v0.6.14 grid cost |
+  |---|---:|---|---|---:|---|---:|---|
+  | **Claude Opus 5** | 133 | **1.0000** | **1.0000** | 83,790 | $107.68 | 269 s | $127.08 |
+  | **Claude Opus 5.5** | 133 | 0.9973 | **1.0000** | 83,718 | **$87.51** | 234 s | $105.95 |
+  | GPT-6 Astra | 133 | 0.9999 | 0.9737 | 83,780 | $141.45 ◊ | 211 s | $191.85 ◊ |
+  | Claude Haiku 5.5 | 133 | 0.9665 | 0.9997 | 78,056 | $27.05 † | 181 s | $25.76 † |
+  | Claude Sonnet 5 *(shipped default)* | 133 | 0.9531 | 0.9997 | 73,820 | $53.39 | 216 s | $65.00 (re-priced) |
+  | Claude Sonnet 5 `:1m` | 133 | 0.9520 | 0.9998 | 73,584 | $54.77 | 210 s | $67.62 (re-priced) |
+  | Claude Sonnet 5.5 | 133 | 0.8980 | 1.0000 | 72,930 | $55.51 | 190 s | $62.21 |
+
+  ◊ and † are lower bounds, as in §5.1. Opus 5.5's one short run is a `bedrock_llm` OCR run on
+  `longdesc_100` that returned 64 of 100 rows; every other Opus 5.5 run is complete, so it is still
+  the cheapest arm at ceiling cell accuracy, now **19% cheaper than Opus 5**. GPT-6 Astra still has
+  the lowest cell accuracy on an essentially full denominator. Claude Sonnet 5.5 still loses most of
+  a 400-row list in simple mode ([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)).
+- **On the 800-row, 17-page `large_narrow` document every arm returns every row in advanced mode,
+  and the simple-mode split is the same as on v0.6.14.** Advanced mode: 6 of 6 runs complete for all
+  seven arms. Simple mode, 13 runs per arm: Opus 5.5, Opus 5 and Sonnet 5.5 return 800 of 800 on all
+  13; GPT-6 Astra on 11 of 13 (mean recall 0.9996, cell accuracy 0.9614); Claude Haiku 5.5 on 10
+  (0.7916); Sonnet 5 `:1m` on 6 (0.5093); and **the shipped default, Sonnet 5, on 6 of 13, mean
+  recall 0.5207** — up from 5 of 13 (0.4507) on v0.6.14, inside the variation of this bimodal
+  behaviour. So the §5.5 advice stands: for lists of several hundred rows, use advanced mode.
+- **Real-corpus accuracy is flat** (OmniAI 0.9948 → 0.9945), and RealKIE's small fall (0.7871 →
+  0.7776) is one document whose score is bimodal across cells and landed on its low mode in every
+  cell this time; with one draw per cell that cannot be separated from that document's variation.
+- **Confidence coverage on large simple-mode lists** is 0.88–0.92 at 1,200 rows and 0.23–0.78 at
+  1,600, over three runs each, with every row extracted. The two standing list-loss hazards
+  (`intconf`, `advverify`) are clean, 6 of 6 runs each.
+- **The `--compare` calibration flags on the premium suites are degenerate:** the `astravalue` grid
+  has 4 extraction errors in 67,508 scored cells on v0.6.16, so an AUROC move there rests on a
+  handful of observations.
+
 ### Scope of this edition
 
-Every number below is either re-measured on v0.6.14 or explicitly marked as carried over. Read
-this table before citing a figure.
+Every number in the sections below is either measured on v0.6.14 or explicitly marked as carried
+over from an earlier edition. Every row of this table except §5.6 was re-measured on v0.6.16, and
+the section above says what changed; read both before citing a figure.
 
 | Section | On v0.6.14? | Data |
 |---|---|---|
