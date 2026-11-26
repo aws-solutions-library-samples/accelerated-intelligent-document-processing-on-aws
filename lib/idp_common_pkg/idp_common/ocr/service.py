@@ -55,19 +55,28 @@ DEFAULT_DPI = 300
 DEFAULT_TARGET_WIDTH = 2600
 DEFAULT_TARGET_HEIGHT = 3600
 
-# ocr.mark_handwriting: appended to the last word of each run of words Textract
-# typed as handwriting (WORD-level TextType). The wording matches the suffix
+# ocr.mark_handwriting: appended, on each LINE, to the last word of each run of
+# words Textract typed as handwriting (WORD-level TextType). The wording matches the suffix
 # _generate_text_confidence_data writes into textConfidence.json, but that
 # function reads TextType from LINE blocks, which Textract does not generally
 # populate: its documented response shape carries TextType on WORD blocks
 # (https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html).
 # So a Textract page does not usually get that suffix.
 HANDWRITING_MARKER = "(HANDWRITING)"
+# First line of each note the OCR step appends after a page's text. Every such
+# note starts with one of these on its own line, after a blank line.
+# classification/page_order.py keeps its own copy (so classification does not
+# import ocr) to leave the notes out of the printed-page-number footer zone;
+# tests keep the two lists equal, and fail on any "--- OCR ... ---" literal in
+# this module that is not listed here.
+HANDWRITING_LEGEND_HEADER = "--- OCR handwriting markers ---"
+SIGNATURE_SUMMARY_HEADER = "--- OCR signature detections ---"
+OCR_NOTE_HEADERS = (HANDWRITING_LEGEND_HEADER, SIGNATURE_SUMMARY_HEADER)
 # Added to a page's text when at least one marker was inserted, so the model is
 # told what the marker means and not to copy it into a value. Follows the pattern
 # of the signature-detection note appended to page text.
 HANDWRITING_LEGEND = (
-    "--- OCR handwriting markers ---\n"
+    f"{HANDWRITING_LEGEND_HEADER}\n"
     f"Text followed by {HANDWRITING_MARKER} was read from handwriting by the OCR "
     "engine. Handwriting is more likely than printed text to contain misread "
     "characters. The marker is not part of the text: never copy it into a value."
@@ -1961,7 +1970,7 @@ class OcrService:
         total = len(signatures)
         plural = "" if total == 1 else "s"
         lines = [
-            "--- OCR signature detections ---",
+            SIGNATURE_SUMMARY_HEADER,
             f"The OCR engine flagged {total} region{plural} on this page as "
             f"containing a signature, listed below with its page position. No "
             f"signature was detected anywhere else on the page. Confidence is the engine's signature-DETECTION confidence "
@@ -2235,11 +2244,12 @@ class OcrService:
 
         Textract reports ``TextType`` (``PRINTED`` or ``HANDWRITING``) on WORD
         blocks, not on the LINE that owns them, so handwriting is read from each
-        LINE's WORD children. Within each LINE, the last word of every run of handwritten words
-        gets ``HANDWRITING_MARKER`` appended, so a line mixing a printed label and
-        a handwritten value ("Name: Smlth") marks only the value. textractor
-        builds its markdown from the WORD blocks; the LINE ``Text`` is rebuilt
-        too so the basic block-based fallback shows the same markers.
+        LINE's WORD children. Within each LINE, the last word of every run of
+        handwritten words gets ``HANDWRITING_MARKER`` appended, so a line mixing a
+        printed label and a handwritten value ("Name: Smlth") marks only the
+        value. A word with no text is not part of a run. textractor builds its
+        markdown from the WORD blocks; the LINE ``Text`` is rebuilt too so the
+        basic block-based fallback shows the same markers.
 
         The input is not modified: it is also what ``rawText.json`` and
         ``textConfidence.json`` are built from. A LINE without an ``Id`` is left
@@ -2265,7 +2275,12 @@ class OcrService:
                 for child_id in rel.get("Ids") or []
                 if by_id.get(child_id, {}).get("BlockType") == "WORD"
             ]
-            handwritten = [w.get("TextType") == "HANDWRITING" for w in words]
+            # A word with no text cannot carry the marker, so it does not count
+            # as part of a run.
+            handwritten = [
+                w.get("TextType") == "HANDWRITING" and bool(w.get("Text"))
+                for w in words
+            ]
             if not any(handwritten):
                 continue
             texts = []

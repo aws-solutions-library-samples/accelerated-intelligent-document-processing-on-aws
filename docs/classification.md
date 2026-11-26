@@ -1112,7 +1112,7 @@ is called; the only added cost is one read of each page's text. Only the first t
 and the last three non-empty lines of a page are looked at, which is where running
 headers and footers land, so a number in the body of a page is not read. Notes the
 OCR step appends after the page text (the signature-detection summary and the
-`ocr.mark_handwriting` legend, each starting with a `--- OCR … ---` line) are not
+`ocr.mark_handwriting` legend, each starting with its own `--- OCR … ---` header) are not
 printed on the page and are not counted as its last lines. The `(HANDWRITING)`
 marker that setting puts after handwritten words is ignored too, so a page number
 Textract read as handwriting is still read. Two kinds of marking are recognised:

@@ -1924,9 +1924,10 @@ does not carry that, so a document with a printed form and a handwritten note on
 the same page gives the model no way to prefer the printed value, short of the
 page image.
 
-`ocr.mark_handwriting: true` adds the missing signal. Every run of words Textract
-typed as handwriting is followed by `(HANDWRITING)`, and a short note after the
-page text explains the marker and tells the model not to copy it into a value:
+`ocr.mark_handwriting: true` adds the missing signal. On each line, every run of
+words Textract typed as handwriting is followed by `(HANDWRITING)`, and a short note after the
+page text explains the marker and tells the model not to copy it into a value.
+Abridged, with the blank lines between page-text lines left out:
 
 ```text
 Account holder: Jane Smith
@@ -1939,7 +1940,7 @@ Text followed by (HANDWRITING) was read from handwriting by the OCR engine. ...
 Then say what to do with it in a field description or the extraction prompt:
 
 ```yaml
-disputant_name:
+account_holder_name:
   type: string
   description: >
     Full name of the account holder. Use the name as printed on the document.
@@ -1953,12 +1954,16 @@ never sends page images to a model.
 
 **Scope and limits**
 
-- **Textract only.** Other backends do not report handwriting; the setting is
-  ignored and a warning is logged when the service starts.
-- **Per run of words.** Textract types each word, so the marker follows the last
-  word of each run of handwritten words. On a line that mixes a printed label with
-  a handwritten value (`Name: Smlth`), only the value is marked. Handwriting inside
-  a table cell or form value is marked as well.
+- **Textract only.** Only Textract's per-word `TextType` is read; with any other
+  backend the setting is ignored and a warning is logged when the service starts.
+  Textract recognises handwriting in English only (see
+  [Textract Backend Language Limitations](languages.md#textract-backend-language-limitations)),
+  so handwriting in other languages is not marked reliably.
+- **Per run of words, per line.** Textract types each word, so on each OCR line
+  the marker follows the last word of each run of handwritten words. On a line
+  that mixes a printed label with a handwritten value (`Name: Smlth`), only the
+  value is marked. A handwritten paragraph of three lines carries three markers,
+  one per line. Handwriting inside a table cell or form value is marked as well.
 - **Markers can land mid-sentence.** The page text is reflowed by the layout
   analysis, so a marker follows the run it belongs to, not the end of a sentence.
   When layout analysis splits one handwritten line across two table cells, only
@@ -1969,12 +1974,17 @@ never sends page images to a model.
   copy. Evaluation compares extracted values, not page text, so baselines are
   unaffected unless a model copies the marker into a value; the note on the
   page asks it not to.
+- **[Page content regex](classification.md#page-content-regex-page-granularity)
+  classification** reads the same page text. A class's
+  `x-aws-idp-document-page-content-regex` that must match handwritten words sees
+  them followed by `(HANDWRITING)`, so write it to allow the marker (for example
+  `Jane\s+Smlth(\s*\(HANDWRITING\))?`) or match on printed text.
 - **The OCR Lines pane shows no marker.** The page viewer's OCR Lines pane reads
   `pageData.json`, which is built from the unmarked blocks. Its per-line
   `textType` is read from the LINE block, which Textract does not generally
   populate ([Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html) shows `TextType` on the WORD
   blocks), so it is usually empty for Textract pages as well.
-- **Token cost.** Each marker adds a few tokens, and the note adds about 60
+- **Token cost.** Each marker adds a few tokens, and the note adds a few dozen
   tokens to each page that has handwriting. Pages without handwriting are
   unchanged.
 - **Table parsing.** A handwritten table cell reads `329.00 (HANDWRITING)`

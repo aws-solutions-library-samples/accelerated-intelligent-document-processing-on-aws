@@ -738,7 +738,11 @@ is how the service does it.
   whose `order` is the page IDs in printed order, or `None` with a `reason_code`.
   The text is each page's `parsed_text_uri`, read once per page in parallel; a
   transient read error is raised so the step retries, rather than being taken as a
-  page with no text.
+  page with no text. Before the header and footer lines are taken, the text is cut
+  at the first note the OCR step appended (the signature summary or the
+  `ocr.mark_handwriting` legend, each recognised by its exact header line after a
+  blank line), and the
+  `(HANDWRITING)` marker is removed from each line.
 - **Classifying in that order** happens in `classify_document`, after the zero-call
   short-circuits and before the strategy dispatch (`_dispatch_classification`). The
   dispatch runs unchanged over a **view** of the document whose page `str(i)` is the

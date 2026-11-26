@@ -32,7 +32,12 @@ from idp_common.classification.page_order import (
 from idp_common.classification.service import ClassificationService
 from idp_common.config.models import DocumentShapeConfig
 from idp_common.models import Document, Page, ProcessingIssue, Status
-from idp_common.ocr.service import HANDWRITING_LEGEND, HANDWRITING_MARKER, OcrService
+from idp_common.ocr.service import (
+    HANDWRITING_LEGEND,
+    HANDWRITING_MARKER,
+    OCR_NOTE_HEADERS,
+    OcrService,
+)
 
 
 def _class(name: str) -> Dict[str, Any]:
@@ -754,12 +759,15 @@ class TestReadingAPrintedPageNumber:
         assert (reading.number, reading.total) == (number, total)
 
     def test_the_note_headers_page_order_skips_are_the_ones_ocr_writes(self):
-        """page_order finds a note by its first line. Both notes are taken from
-        the OCR code, so rewording either header fails here."""
+        """page_order keeps its own copy of the OCR note headers so
+        classification does not import ocr. This keeps the copy equal to the
+        OCR module's list, and checks both notes really start with a listed
+        header, so adding or rewording a note fails here."""
+        assert set(page_order._OCR_NOTE_HEADERS) == set(OCR_NOTE_HEADERS)
         for note in (HANDWRITING_LEGEND, self._signature_note()):
             assert note, "the OCR code wrote no note"
-            header = note.splitlines()[0]
-            assert page_order._OCR_NOTE_HEADER_RE.search(f"page text\n\n{header}")
+            assert note.splitlines()[0] in OCR_NOTE_HEADERS
+            assert page_order._OCR_NOTE_HEADER_RE.search(f"page text\n\n{note}")
 
     def test_the_marker_page_order_removes_is_the_one_ocr_writes(self):
         """page_order keeps its own copy of the marker so classification does
@@ -768,6 +776,17 @@ class TestReadingAPrintedPageNumber:
         reading."""
         assert page_order._HANDWRITING_MARKER_RE.fullmatch(f" {HANDWRITING_MARKER}")
         assert page_order._HANDWRITING_MARKER_RE.fullmatch(HANDWRITING_MARKER)
+
+    def test_a_printed_line_shaped_like_a_note_header_is_page_text(self):
+        """Only the OCR step's own headers start a note. Cutting at a line the
+        page prints itself would drop the real footer and let a body line such
+        as "p. 4" be read as the page number."""
+        body = "\n".join(f"Body line {i}" for i in range(1, 9))
+        text = (
+            f"Header\n{body}\np. 4\n\n--- OCR Report ---\nMore body text\n{self.FOOTER}"
+        )
+        reading = read_printed_page_number(text)
+        assert (reading.number, reading.total) == (2, 5)
 
     def test_a_note_header_inside_the_page_text_is_not_a_note(self):
         """Only a header after a blank line starts a note; the same text inside a

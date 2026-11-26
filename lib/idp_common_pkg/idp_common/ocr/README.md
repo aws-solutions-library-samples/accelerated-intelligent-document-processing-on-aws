@@ -236,6 +236,7 @@ ocr:
     - name: "FORMS"
   # Textract only: follow text Textract read as handwriting with "(HANDWRITING)"
   # in the page text, so a prompt can prefer printed values (default: false).
+  # See "Handwriting markers" below.
   mark_handwriting: false
   image:
     dpi: 300  # DPI for PDF page extraction (default: 300)
@@ -388,7 +389,7 @@ The format varies by OCR backend:
 The `text` field contains a markdown table with two columns:
 - **Text**: The extracted text content (with pipe characters escaped as `\|`)
 - **Confidence**: OCR confidence score rounded to 1 decimal point
-- A line gets a "(HANDWRITING)" suffix only when its LINE block carries `TextType: HANDWRITING`. This field is read from LINE blocks, which Textract does not generally populate: the response shape in [Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html) carries `TextType` on the WORD blocks and not on the LINE. So a Textract page does not usually get the suffix, while an OCR backend that types LINE blocks, such as a LambdaHook backend, does. To mark handwriting in the page text from Textract's WORD-level `TextType`, see `ocr.mark_handwriting`.
+- A line gets a "(HANDWRITING)" suffix only when its LINE block carries `TextType: HANDWRITING`. This field is read from LINE blocks, which Textract does not generally populate: the response shape in [Lines and words of text](https://docs.aws.amazon.com/textract/latest/dg/how-it-works-lines-words.html) carries `TextType` on the WORD blocks and not on the LINE. So a Textract page does not usually get the suffix, while an OCR backend that types LINE blocks, such as a LambdaHook backend, does. To mark handwriting in the page text from Textract's WORD-level `TextType`, see [Handwriting markers](#handwriting-markers-ocrmark_handwriting).
 
 **Bedrock Backend (no confidence data):**
 ```json
@@ -554,6 +555,43 @@ With a confidence-threshold rule in the field descriptions, the entry above pass
 
 The block is deliberately **not** formatted as a markdown table, since page text is
 scanned by the agentic extraction table parser.
+
+### Handwriting markers (`ocr.mark_handwriting`)
+
+With `ocr.mark_handwriting: true` (Textract backend only; default `false`), the
+parsed page text (`result.json`) marks which text Textract read as handwriting.
+Textract types each WORD block as `PRINTED` or `HANDWRITING`; the page text
+otherwise drops that, so a model reading it cannot prefer a printed value over a
+handwritten copy without the page image.
+
+Two things are added to `result.json`, and only on a page with handwriting:
+
+- **An inline marker.** `(HANDWRITING)` after the last word of each run of
+  handwritten words on a LINE, read from WORD-level `TextType`, so a handwritten
+  paragraph carries one marker per line. A line mixing a printed label
+  and a handwritten value marks only the value (`Name: Jane Smlth (HANDWRITING)`),
+  and two runs on one line get one marker each. It appears wherever the words land
+  in the markdown, including table cells and form values.
+- **A legend.** An `OCR handwriting markers` block appended after the text (before
+  the signature block, when there is one), explaining the marker and telling the
+  model not to copy it into a value.
+
+How it is built: `_parse_textract_response` parses a *copy* of the Textract
+response in which the handwritten WORD texts and their LINE texts carry the
+marker (`_mark_handwriting_blocks`). The response itself is not changed, so
+`rawText.json`, `textConfidence.json` and `pageData.json` (and the OCR grounding
+that reads `pageData.json`) are the same with the setting on or off. A page with no
+handwriting gets byte-identical text either way.
+
+This is separate from the `(HANDWRITING)` suffix in `textConfidence.json` (see
+[Text Confidence Data Format](#text-confidence-data-format)), which is read from
+LINE-level `TextType` and so does not usually appear on Textract pages. With any
+other backend the setting has no effect, and a warning is logged when the service
+starts.
+
+`classification/page_order.py` removes the marker and skips the legend when it
+reads printed page numbers, so a hand-numbered page is still ordered. For prompt
+guidance and limits, see [Marking handwriting in the page text](../../../../docs/configuration.md#marking-handwriting-in-the-page-text).
 
 ## Lambda Integration Example
 

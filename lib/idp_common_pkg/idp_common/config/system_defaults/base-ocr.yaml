@@ -100,12 +100,13 @@ ocr:
   # which. With the marker, a prompt or field description can say "prefer the
   # printed value" without sending page images to the model. Applies to table
   # cells and form values as well as plain lines. Handwriting is read from
-  # Textract's per-WORD TextType, so a line mixing a printed label and a
-  # handwritten value marks only the value. rawText.json and textConfidence.json
-  # are unchanged.
-  # Has no effect with any other backend. Off by default: when false the page
-  # text is exactly what it was before this setting existed.
+  # Textract's per-WORD TextType, one marker per run of handwritten words on each
+  # line, so a line mixing a printed label and a handwritten value marks only the
+  # value. rawText.json, textConfidence.json and pageData.json are unchanged.
+  # Has no effect with any other backend. Off by default: when false, page text
+  # carries no markers and no legend.
   mark_handwriting: false
+
   # Concurrent API call workers
   max_workers: 20
   
