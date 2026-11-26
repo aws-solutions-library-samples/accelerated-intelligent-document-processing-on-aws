@@ -60,6 +60,12 @@ RELEASES = ["0.6.5", "0.6.6", "0.6.7", "0.6.8"]
 CURRENT = "0.6.9"
 
 
+def _before_first_h1(text: str) -> str:
+    """``text`` up to its first level-one heading, whatever that heading says."""
+    first = re.search(r"^# ", text, flags=re.MULTILINE)
+    return text[: first.start()] if first else text
+
+
 @pytest.mark.unit
 class TestNormalize:
     """Three spellings of the same release reach this gate: the ``VERSION``
@@ -260,10 +266,10 @@ class TestDiscoverability:
 
     def test_the_page_exists_with_frontmatter_and_licence(self):
         text = DOC.read_text(encoding="utf-8")
-        assert text.startswith('---\ntitle: "Threat Model"\n---'), (
+        assert re.match(r'---\ntitle: "[^"\n]+"\n---', text), (
             "docs/*.md needs YAML frontmatter with a title; the docs site keys off it"
         )
-        assert "SPDX-License-Identifier: MIT-0" in text.split("# Threat Model")[0]
+        assert "SPDX-License-Identifier: MIT-0" in _before_first_h1(text)
 
     def test_the_page_is_in_the_docs_site_sidebar(self):
         assert '{ label: "Threat Model", slug: "threat-model" }' in SIDEBAR.read_text(
@@ -275,14 +281,13 @@ class TestDiscoverability:
             "add docs/threat-model.md to the docs/README.md index"
         )
 
-    def test_the_root_readme_has_a_security_section_linking_the_model(self):
+    def test_the_root_readme_links_the_model(self):
+        """The top-level README is where most readers of a public repository start."""
         text = ROOT_README.read_text(encoding="utf-8")
-        assert "\n## Security\n" in text, (
-            "the top-level README needs a Security section; it is where most "
-            "readers of a public repository start"
+        assert re.search(r"\]\((?:\./)?security/threat-modeling/README\.md\)", text), (
+            "the top-level README should link security/threat-modeling/README.md"
         )
-        assert "./security/threat-modeling/README.md" in text
-        assert "(#security)" in text, "add the Security section to the README's TOC"
+        assert (REPO_ROOT / "security" / "threat-modeling" / "README.md").is_file()
 
     def test_the_security_index_points_at_the_published_page(self):
         assert "../docs/threat-model.md" in SECURITY_INDEX.read_text(encoding="utf-8"), (

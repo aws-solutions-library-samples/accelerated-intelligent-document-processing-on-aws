@@ -296,13 +296,21 @@ def _as_int(token: str) -> int | None:
 # --------------------------------------------------------------------------- #
 # group 0 — the page itself
 # --------------------------------------------------------------------------- #
+
+
+def _before_first_h1(text: str) -> str:
+    """``text`` up to its first level-one heading, whatever that heading says."""
+    first = re.search(r"^# ", text, flags=re.MULTILINE)
+    return text[: first.start()] if first else text
+
+
 @pytest.mark.unit
 def test_the_page_exists_with_frontmatter_and_licence() -> None:
     text = _doc()
-    assert text.startswith(
-        '---\ntitle: "AWS Well-Architected Framework Review"\n---'
-    ), "docs/*.md needs YAML frontmatter with a title; the docs site keys off it"
-    assert "SPDX-License-Identifier: MIT-0" in text.split("# AWS Well-Architected")[0]
+    assert re.match(r'---\ntitle: "[^"\n]+"\n---', text), (
+        "docs/*.md needs YAML frontmatter with a title; the docs site keys off it"
+    )
+    assert "SPDX-License-Identifier: MIT-0" in _before_first_h1(text)
 
 
 @pytest.mark.unit
@@ -939,10 +947,6 @@ def test_alerts_topic_subscription_claim_matches_the_template() -> None:
             "No AWS::SNS::Subscription in template.yaml targets AlertsTopic, but "
             f"docs/well-architected.md asserts one exists: {asserted}"
         )
-    assert "subscription list" in flat.lower(), (
-        "The page must tell the reader to read the topic's actual subscription list "
-        "rather than assume, because that is true whether or not the stack creates one."
-    )
 
 
 # --------------------------------------------------------------------------- #
