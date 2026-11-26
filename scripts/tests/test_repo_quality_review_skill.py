@@ -138,3 +138,26 @@ def test_the_dimension_table_keeps_every_dimension() -> None:
         f"the dimension table has {len(numbers)} rows; if a dimension was genuinely "
         "retired, update DIMENSION_COUNT and say why in the skill"
     )
+
+
+def _sections(body: str) -> dict[str, str]:
+    """``{heading: body}`` for every ``## `` section of fence-stripped ``body``."""
+    parts = re.split(r"^## (.+)$", body, flags=re.MULTILINE)
+    return {parts[i].strip(): parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+
+
+@pytest.mark.unit
+def test_the_skill_keeps_its_non_defect_register_and_output_contract() -> None:
+    """The withdrawn-findings register stops a review re-reporting a non-defect, so
+    it must keep a table with at least one row; the output contract is what the
+    consolidated report is held to. Headings matched by substring, not wording."""
+    sections = _sections(_fence_stripped(SKILL.read_text(encoding="utf-8")))
+    register = [body for head, body in sections.items() if "non-defect" in head.lower()]
+    assert register, sorted(sections)
+    assert any("output contract" in head.lower() for head in sections), sorted(sections)
+    rows = [
+        line
+        for line in register[0].splitlines()
+        if line.startswith("|") and not re.fullmatch(r"\|[\s|:-]+\|?", line.strip())
+    ]
+    assert len(rows) >= 2, "the non-defect register holds no table row"

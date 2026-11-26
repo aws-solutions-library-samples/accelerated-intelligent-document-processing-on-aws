@@ -1108,6 +1108,34 @@ def _scope_table(doc: str) -> tuple[dict[str, list[str]], list[str]]:
     variable, and the block after it is where the doc says what the scopes do and
     do not withhold.
     """
+    rows, after = _scope_table_and_after(doc)
+    paragraphs = [
+        _flat_text(block) for block in re.split(r"\n\s*\n", after) if block.strip()
+    ]
+    return rows, paragraphs
+
+
+def _setup_steps(doc: str) -> list[str]:
+    """The numbered operator steps after the UX variables table, each with its
+    nested lines, found as the first ordered list in the block after the table."""
+    _, after = _scope_table_and_after(doc)
+    lines = after.splitlines()
+    first = next((i for i, line in enumerate(lines) if re.match(r"1\. ", line)), None)
+    assert first is not None, "no numbered setup steps follow the UX variables table"
+    steps: list[list[str]] = []
+    for line in lines[first:]:
+        if re.match(r"\d+\. ", line):
+            steps.append([line])
+        elif not line.strip() or line.startswith(" "):
+            steps[-1].append(line)
+        else:
+            break
+    return ["\n".join(step) for step in steps]
+
+
+def _scope_table_and_after(doc: str) -> tuple[dict[str, list[str]], str]:
+    """The UX variables table, ``{variable: cells}``, and the raw text after it up
+    to the next heading."""
     lines = doc.splitlines()
     marker = f"| `{next(iter(SCOPED_VARIABLES))}` |"
     for index, line in enumerate(lines):
@@ -1133,12 +1161,7 @@ def _scope_table(doc: str) -> tuple[dict[str, list[str]], list[str]]:
             (i for i, row in enumerate(after) if re.match(r"#{1,6} ", row)),
             len(after),
         )
-        paragraphs = [
-            _flat_text(block)
-            for block in re.split(r"\n\s*\n", "\n".join(after[:stop]))
-            if block.strip()
-        ]
-        return rows, paragraphs
+        return rows, "\n".join(after[:stop])
     raise AssertionError(f"{CI_COVERAGE_DOC.name} has no table of every UX variable")
 
 
@@ -1195,6 +1218,38 @@ def test_the_docs_scope_each_variable_to_the_environments_of_the_jobs_reading_it
     assert docstring is not None
     for job in UX_JOBS:
         assert f"``{_ux_scope(ci_config, job)}``" in docstring, job
+
+
+#: A list bullet that opens with a backquoted variable name, and its continuation.
+_VARIABLE_BULLET_RE = re.compile(r"^\s+- `([A-Z0-9_]+)`(.*(?:\n {5,}\S.*)*)", re.M)
+
+
+@pytest.mark.unit
+def test_the_setup_steps_store_each_variable_at_exactly_its_jobs_scopes(
+    ci_config,
+) -> None:
+    """The operator stores each variable by following the numbered steps after
+    the table, so the bullet that stores it names exactly the environments the jobs
+    reading it declare, by exact name: never the build job's environment for a
+    variable the build job does not read, and never a wildcard. The steps also say
+    to mask the variables."""
+    steps = _setup_steps(CI_COVERAGE_DOC.read_text(encoding="utf-8"))
+    assert any("mask" in step.lower() for step in steps), steps
+    bullets: dict[str, list[str]] = {}
+    for step in steps:
+        for variable, text in _VARIABLE_BULLET_RE.findall(step):
+            bullets.setdefault(variable, []).append(_flat_text(text))
+    build_scope = _ux_scope(ci_config, BUILD_JOB)
+    for variable, jobs in SCOPED_VARIABLES.items():
+        expected = {_ux_scope(ci_config, job) for job in jobs}
+        stored = bullets.get(variable)
+        assert stored and len(stored) == 1, (variable, stored)
+        (text,) = stored
+        quoted = set(_QUOTED_RE.findall(text))
+        assert _scopes_named(text) == expected, (variable, text)
+        if BUILD_JOB not in jobs:
+            assert build_scope not in quoted, (variable, text)
+        assert not any("*" in name for name in quoted), (variable, text)
 
 
 @pytest.mark.unit
