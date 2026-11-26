@@ -65,12 +65,13 @@ ADMIN_OPERATIONS = (
 )
 
 #: Timeouts for every AWS call an API request makes. The botocore defaults (a
-#: 60-second read, several attempts) would let one hung call outlast the whole
-#: request, since the deadline below is only checked between calls. With these,
-#: one call costs at most API_CALL_WORST_SECONDS.
+#: 60-second read, several attempts with backoff between them) would let one hung
+#: call outlast the whole request. One attempt and no retries means no backoff
+#: either, so one call costs at most API_CALL_WORST_SECONDS. The cost is that a
+#: throttled call fails the request; the operations are safe to repeat.
 API_CONNECT_TIMEOUT_SECONDS = 1
 API_READ_TIMEOUT_SECONDS = 3
-API_MAX_ATTEMPTS = 2
+API_MAX_ATTEMPTS = 1
 API_CALL_WORST_SECONDS = (
     API_CONNECT_TIMEOUT_SECONDS + API_READ_TIMEOUT_SECONDS
 ) * API_MAX_ATTEMPTS
@@ -80,15 +81,20 @@ API_CLIENT_CONFIG = Config(
     retries={"total_max_attempts": API_MAX_ATTEMPTS, "mode": "standard"},
 )
 
+#: How long the dispatcher waits for this function (``_RESOLVER_READ_TIMEOUT_SECONDS``
+#: in the dispatcher, inside API Gateway's 29-second integration limit). Its
+#: clock starts before this function's cold start, which the handler cannot see.
+DISPATCHER_WAIT_SECONDS = 20
+COLD_START_ALLOWANCE_SECONDS = 4
+#: Seconds after the handler starts by which an API request must have answered.
+API_RESPONSE_LIMIT_SECONDS = DISPATCHER_WAIT_SECONDS - COLD_START_ALLOWANCE_SECONDS
+
 #: Seconds after the handler starts by which the gateway step of a create or
-#: rotate reached through the API gives up waiting and is finished out of band.
-#: The dispatcher stops waiting for this function 20 seconds after invoking it
-#: (``_RESOLVER_READ_TIMEOUT_SECONDS`` in the dispatcher, itself inside API
-#: Gateway's 29-second integration limit), and that clock includes this
-#: function's cold start, which happens before the handler starts. Eight, plus
-#: one call already in flight at the deadline (API_CALL_WORST_SECONDS, 8), leaves
-#: about four for the cold start, the marker write and the self-invoke, each of
-#: which is itself bounded by API_CLIENT_CONFIG.
+#: rotate gives up waiting and is finished out of band. After it, at most one
+#: gateway call already in flight and ``mc.MANDATORY_CALLS_AFTER_GATEWAY`` calls
+#: still run, each at most API_CALL_WORST_SECONDS: 8 + (1 + 1) * 4 = 16, the
+#: response limit. Everything else after the gateway step runs only while
+#: ``mc.RequestBudget`` says it still fits.
 API_GATEWAY_STEP_SECONDS = 8
 
 #: Seconds a finishing task keeps in hand before the function's own timeout.
@@ -362,11 +368,15 @@ def _dispatch(
     context: Any = None,
     started: Optional[float] = None,
 ):
+    started = time.monotonic() if started is None else started
     svc = services(defer=_self_invoker(context, api=True), api=True)
+    svc.budget = mc.RequestBudget(
+        started=started,
+        limit_seconds=API_RESPONSE_LIMIT_SECONDS,
+        call_worst_seconds=API_CALL_WORST_SECONDS,
+    )
     actor = _actor(claims)
-    gateway_deadline = (
-        time.monotonic() if started is None else started
-    ) + API_GATEWAY_STEP_SECONDS
+    gateway_deadline = started + API_GATEWAY_STEP_SECONDS
     if field == "listMcpCredentials":
         rows = mc.list_credentials(svc)
         own = admin_scope(claims)

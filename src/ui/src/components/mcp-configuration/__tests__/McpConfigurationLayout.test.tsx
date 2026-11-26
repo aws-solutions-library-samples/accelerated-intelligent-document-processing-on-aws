@@ -100,6 +100,38 @@ describe('McpConfigurationLayout', () => {
     await waitFor(() => expect(screen.queryByText(SECRET)).toBeNull());
   });
 
+  it('says a new credential not yet accepted can take a while to work', async () => {
+    mockGraphql.mockImplementation(({ query }: { query: string }) => {
+      if (query.includes('listMcpCredentials')) return Promise.resolve({ data: { listMcpCredentials: [{ ...LISTED, activating: true }] } });
+      if (query.includes('createMcpCredential'))
+        return Promise.resolve({
+          data: { createMcpCredential: { ...ISSUED, credential: { ...ISSUED.credential, activating: true } } },
+        });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    // The table shows it as activating, not as plainly active.
+    expect(await screen.findByText('activating')).toBeInTheDocument();
+    expect(screen.queryByText('active')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Create credential' }));
+    const dialog = (await screen.findByText('Create MCP credential')).closest('[role="dialog"]') as HTMLElement;
+    fireEvent.change(within(dialog).getByPlaceholderText('nightly-quick-workflow'), { target: { value: 'quick' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText(/can take a short while to start working/)).toBeInTheDocument();
+  });
+
+  it('says nothing about activating for a credential already accepted', async () => {
+    renderPage();
+    await screen.findByText('nightly');
+    fireEvent.click(screen.getByRole('button', { name: 'Create credential' }));
+    const dialog = (await screen.findByText('Create MCP credential')).closest('[role="dialog"]') as HTMLElement;
+    fireEvent.change(within(dialog).getByPlaceholderText('nightly-quick-workflow'), { target: { value: 'quick' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+    await screen.findByText('This secret will not be shown again');
+    expect(screen.queryByText(/can take a short while to start working/)).toBeNull();
+    expect(screen.queryByText('activating')).toBeNull();
+  });
+
   it('counts the credentials a filter matches, one in the singular', async () => {
     renderPage();
     await screen.findByText('nightly');

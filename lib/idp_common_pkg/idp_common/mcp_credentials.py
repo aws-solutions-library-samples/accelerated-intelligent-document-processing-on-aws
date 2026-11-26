@@ -111,6 +111,39 @@ TASK_FINISH_REVOCATION = "finish-revocation"
 TASK_FINISH_GATEWAY_ADD = "finish-gateway-add"
 TASKS = (TASK_FINISH_REVOCATION, TASK_FINISH_GATEWAY_ADD)
 
+#: AWS calls a create or rotate must still make after its gateway step whatever
+#: the time: the rotation's write shortening the old credential, without which
+#: the replacement would be withdrawn. Every other call after the gateway step is
+#: bookkeeping that :class:`RequestBudget` lets skip.
+MANDATORY_CALLS_AFTER_GATEWAY = 1
+
+
+@dataclass
+class RequestBudget:
+    """The time a caller with a hard response deadline has, from ``started`` (a
+    :func:`time.monotonic` value): ``limit_seconds`` in all, and
+    ``call_worst_seconds`` for the longest one AWS call can take.
+
+    Bookkeeping after the gateway step (a marker write, scheduling a finishing
+    task, the no-overlap rotation's revocation of the old credential) runs only
+    while :meth:`room` says that many more worst-case calls still fit, so it can
+    never carry a response past ``limit_seconds``. Each of those is safe to skip,
+    as the call sites say."""
+
+    started: float
+    limit_seconds: float
+    call_worst_seconds: float
+    #: Calls still to come that must run whatever the time, kept in hand by
+    #: every :meth:`room` check made before them.
+    reserved_calls: int = 0
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def room(self, calls: int = 1) -> bool:
+        needed = (calls + self.reserved_calls) * self.call_worst_seconds
+        return self.elapsed() + needed <= self.limit_seconds
+
 
 class CredentialError(ValueError):
     """A request that must be refused, with a message the caller can act on."""
@@ -160,6 +193,20 @@ class CredentialServices:
     #: ``defer(task, client_id)`` schedules one of :data:`TASKS` to run soon, out
     #: of band. Failures are logged, never raised: the sweep is the backstop.
     defer: Optional[Callable[[str, str], Any]] = None
+    #: Set by a caller that must answer by a deadline; see :class:`RequestBudget`.
+    budget: Optional["RequestBudget"] = None
+
+
+def _room(services: CredentialServices, what: str, calls: int = 1) -> bool:
+    if services.budget is None or services.budget.room(calls):
+        return True
+    logger.warning(
+        "Skipping %s: no time left in this request (%.1fs of %.1fs used)",
+        what,
+        services.budget.elapsed(),
+        services.budget.limit_seconds,
+    )
+    return False
 
 
 # --- validation -----------------------------------------------------------------
@@ -265,6 +312,11 @@ def public(row: Mapping[str, Any]) -> Dict[str, Any]:
     out["writeTools"] = bool(row.get("writeTools"))
     out["enabled"] = bool(row.get("enabled"))
     out["status"] = status_of(row)
+    # A live credential the gateway does not admit yet: its tokens are refused at
+    # the gateway until the deferred addition lands.
+    out["activating"] = out["status"] != STATUS_REVOKED and bool(
+        row.get(GATEWAY_PENDING)
+    )
     if "allowedConfigVersions" in out:
         out["allowedConfigVersions"] = list(out["allowedConfigVersions"] or [])
     return out
@@ -391,6 +443,8 @@ def _defer(services: CredentialServices, task: str, client_id: str) -> bool:
     which leaves the row's marker for the sweep."""
     if services.defer is None:
         return False
+    if not _room(services, f"scheduling {task} for {client_id}"):
+        return False
     try:
         services.defer(task, client_id)
     except Exception as exc:  # noqa: BLE001 - the sweep finishes it instead
@@ -414,8 +468,11 @@ def _mark(
     only_if_not_revoked: bool = False,
 ) -> bool:
     """Set or clear bookkeeping attributes on a row that exists. ``False`` when the
-    write was refused or failed; never raises, because the marker is bookkeeping
-    and the authoritative state is already written."""
+    write was refused, failed or did not fit the request's budget; never raises,
+    because the marker is bookkeeping and the authoritative state is already
+    written."""
+    if not _room(services, f"a marker write on {client_id}"):
+        return False
     names: Dict[str, str] = {}
     values: Dict[str, Any] = {}
     sets, removes = [], []
@@ -524,6 +581,11 @@ def _issue(
             client_id,
             gateway_pending,
         )
+        row[GATEWAY_PENDING] = True
+        # Both of these may be skipped for want of time (see RequestBudget). That
+        # is safe: finish_gateway_add needs no marker, and the daily sweep's
+        # _reconcile_gateway adds every credential that is not revoked to the
+        # gateway whether or not its row is marked.
         _mark(
             services,
             client_id,
@@ -802,6 +864,10 @@ def rotate_credential(
         if old_expiry and old_created
         else DEFAULT_EXPIRY_DAYS
     )
+    # The shortening write below must run, so the bookkeeping inside _issue keeps
+    # time in hand for it.
+    if services.budget is not None:
+        services.budget.reserved_calls = MANDATORY_CALLS_AFTER_GATEWAY
     result, pending = _issue(
         services,
         name=str(old.get("name")),
@@ -827,6 +893,8 @@ def rotate_credential(
     )
     if old_expiry and old_expiry < cutover:
         cutover = old_expiry
+    if services.budget is not None:
+        services.budget.reserved_calls = 0
     try:
         _guarded(
             services,
@@ -870,7 +938,18 @@ def rotate_credential(
         )
     if pending:
         _defer(services, TASK_FINISH_GATEWAY_ADD, new_id)
-    if overlap_days == 0 and not hold_old:
+    # The two bookkeeping steps above may be skipped for want of time. Without
+    # REVOKE_ON_ACTIVATION nothing revokes the old credential when the replacement
+    # is admitted, so it stays active, as is safe, until the expiry the shortening
+    # write gave it (PENDING_ROTATION_GRACE). The revocation below may be skipped
+    # too (it is three calls): the shortening write already set the old
+    # credential's expiry to now, so it is refused as expired, and the sweep
+    # revokes it.
+    if (
+        overlap_days == 0
+        and not hold_old
+        and _room(services, f"revoking replaced {client_id}", calls=3)
+    ):
         revoke_credential(
             services, client_id, actor=actor, now=now, defer_cleanup=defer_cleanup
         )

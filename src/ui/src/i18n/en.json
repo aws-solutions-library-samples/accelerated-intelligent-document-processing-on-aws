@@ -8503,6 +8503,14 @@
     "defaultMessage": "Documents Knowledge Base Query Tool",
     "description": "Heading of the Knowledge Base page."
   },
+  "mcp.configuration.activatingNote": {
+    "defaultMessage": "This credential can take a short while to start working. The MCP server is still being updated to accept it, and its requests are refused until then. If the update does not complete, the daily maintenance run adds it.",
+    "description": "Information line in the new-credential dialog, shown when the credential was created before the MCP server had been updated to accept it."
+  },
+  "mcp.configuration.activatingStatus": {
+    "defaultMessage": "activating",
+    "description": "Status shown in the credentials table for an active credential the MCP server does not accept yet; it starts working once the server has been updated."
+  },
   "mcp.configuration.adminOnly": {
     "defaultMessage": "MCP Configuration is available to Admin users only.",
     "description": "Error shown on the MCP Configuration page to a user who is not an Admin."

@@ -946,6 +946,7 @@ export type LatestPublishedVersion = {
 };
 
 export type McpCredential = {
+  activating?: Maybe<Scalars['Boolean']['output']>;
   allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   clientId: Scalars['ID']['output'];
   createdAt?: Maybe<Scalars['String']['output']>;

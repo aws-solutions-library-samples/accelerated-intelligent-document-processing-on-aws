@@ -546,8 +546,9 @@ Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or wi
   If the gateway's update takes longer, the page still shows the secret and
   keeps the credential: once you see the secret, it is never withdrawn. The
   credential then starts working when that gateway update finishes, which takes
-  as long as AgentCore takes to apply it. If the update fails, the daily sweep
-  adds the credential.
+  as long as AgentCore takes to apply it. Until then the dialog says so and the
+  credentials table shows it as *activating*. If the update fails, the daily
+  sweep adds the credential.
 - **Use.** Exchange the client ID and secret at the token URL (`MCPTokenURL`) for an
   access token that lasts one hour, and call the MCP server with it. The gateway's
   interceptor reads the credential on every call, so its role and profiles apply as

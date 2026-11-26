@@ -1298,3 +1298,143 @@ def test_the_sweep_is_bounded_when_the_gateway_never_settles(world, monkeypatch)
     assert [u["clientId"] for u in result["unfinished"]] == [gone]
     assert _row(world, live)["status"] == "active"
     assert asked == []
+
+
+# --- the response budget, measured on a simulated clock -----------------------------
+
+#: The credential manager's figures (src/lambda/mcp_credential_manager/index.py),
+#: whose own test checks they satisfy the bound this one measures.
+LIMIT, WORST, GATEWAY_STEP = 16.0, 4.0, 8.0
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.armed = False
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _simulate(world, monkeypatch, gateway_call_cost, *, budgeted=True):
+    """Every AWS call made once the gateway step has begun costs the worst case;
+    a gateway call costs ``gateway_call_cost``, and the gateway never finishes an
+    update. Calls before the gateway step are outside the bound and cost nothing."""
+    import types
+
+    clock = _Clock()
+    fake_time = types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
+    monkeypatch.setattr(mcp_gateway, "time", fake_time)
+    monkeypatch.setattr(mc, "time", fake_time)
+    svc, gw = world["svc"], world["gw"]
+
+    def costly(target, name, cost, arms=False):
+        real = getattr(target, name)
+
+        def call(*a, **kw):
+            if arms:
+                clock.armed = True
+            if clock.armed:
+                clock.now += cost
+            return real(*a, **kw)
+
+        monkeypatch.setattr(target, name, call)
+
+    state = {"updating": False}
+    real_get, real_update = gw.get_gateway, gw.update_gateway
+
+    def get(gatewayIdentifier):
+        out = real_get(gatewayIdentifier)
+        if state["updating"]:
+            out["status"] = "UPDATING"
+        return out
+
+    def update(**request):
+        state["updating"] = True
+        return real_update(**request)
+
+    monkeypatch.setattr(gw, "get_gateway", get)
+    monkeypatch.setattr(gw, "update_gateway", update)
+    costly(gw, "get_gateway", gateway_call_cost, arms=True)
+    costly(gw, "update_gateway", gateway_call_cost, arms=True)
+    for name in ("get_item", "put_item", "update_item", "delete_item", "scan"):
+        costly(svc.table, name, WORST)
+    for name in ("create_user_pool_client", "delete_user_pool_client"):
+        costly(svc.cognito, name, WORST)
+    for name in ("create_secret", "delete_secret", "describe_secret"):
+        costly(svc.secrets, name, WORST)
+    asked = []
+
+    def defer(task, cid):
+        if clock.armed:
+            clock.now += WORST
+        asked.append((task, cid))
+
+    svc.defer = defer
+    if budgeted:
+        svc.budget = mc.RequestBudget(
+            started=0.0, limit_seconds=LIMIT, call_worst_seconds=WORST
+        )
+    return clock, asked
+
+
+COSTS = [0.5, 2.5, 3.99, WORST]
+
+
+@pytest.mark.parametrize("cost", COSTS)
+def test_a_create_answers_within_its_budget(world, monkeypatch, cost):
+    clock, _asked = _simulate(world, monkeypatch, cost)
+    out = create(world, gateway_deadline=GATEWAY_STEP)
+    assert clock.now <= LIMIT
+    assert out["clientSecret"] and out["credential"]["activating"] is True
+
+
+@pytest.mark.parametrize("cost", COSTS)
+@pytest.mark.parametrize("overlap", [0, 7])
+def test_a_rotation_answers_within_its_budget(world, monkeypatch, cost, overlap):
+    old = create(world)["clientId"]
+    clock, _asked = _simulate(world, monkeypatch, cost)
+    out = mc.rotate_credential(
+        world["svc"],
+        old,
+        overlap_days=overlap,
+        actor="a",
+        now=NOW,
+        gateway_deadline=GATEWAY_STEP,
+        defer_cleanup=True,
+    )
+    assert clock.now <= LIMIT
+    # Whatever was skipped, the old credential is never left revoked while its
+    # replacement is not admitted.
+    assert out["credential"]["activating"] is True
+    assert _row(world, old)["status"] == "active"
+
+
+def test_without_the_budget_the_bookkeeping_runs_past_the_limit(world, monkeypatch):
+    """The bound above is the budget's doing, not the simulation's."""
+    old = create(world)["clientId"]
+    clock, _asked = _simulate(world, monkeypatch, WORST, budgeted=False)
+    mc.rotate_credential(
+        world["svc"],
+        old,
+        overlap_days=0,
+        actor="a",
+        now=NOW,
+        gateway_deadline=GATEWAY_STEP,
+        defer_cleanup=True,
+    )
+    assert clock.now > LIMIT
+
+
+def test_activating_is_listed_until_the_gateway_admits_the_credential(world):
+    _deferring(world)
+    cid = create(world, gateway_deadline=_past())["clientId"]
+    (listed,) = [c for c in mc.list_credentials(world["svc"]) if c["clientId"] == cid]
+    assert listed["activating"] is True
+    mc.finish_gateway_add(world["svc"], cid)
+    (listed,) = [c for c in mc.list_credentials(world["svc"]) if c["clientId"] == cid]
+    assert listed["activating"] is False
+    assert create(world, name="plain")["credential"]["activating"] is False

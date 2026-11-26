@@ -55,9 +55,12 @@ def manager(monkeypatch):
     ]
     built = []
 
+    made = []
+
     def fake_services(**kw):
         built.append(kw)
-        return SimpleNamespace(table=None, tenants=lambda: tenants, **kw)
+        made.append(SimpleNamespace(table=None, tenants=lambda: tenants, **kw))
+        return made[-1]
 
     monkeypatch.setattr(module, "services", fake_services)
     own = {"scope": None}
@@ -69,7 +72,13 @@ def manager(monkeypatch):
         lambda _e, _c, status, _data, physical, **_kw: sent.append((status, physical)),
     )
     yield SimpleNamespace(
-        module=module, calls=calls, rows=rows, own=own, sent=sent, built=built
+        module=module,
+        calls=calls,
+        rows=rows,
+        own=own,
+        sent=sent,
+        built=built,
+        made=made,
     )
     sys.modules.pop("mcp_manager_index", None)
 
@@ -350,7 +359,10 @@ def test_a_create_or_rotate_through_the_api_bounds_its_gateway_wait(
 
 def test_the_gateway_budget_leaves_room_under_the_dispatchers_wait():
     """The dispatcher gives up on a resolver 20 seconds after invoking it, cold
-    start included."""
+    start included. After the gateway deadline, a gateway call already in flight
+    and the calls the library must still make run regardless of time; every other
+    call is admitted by the request budget only while it fits. The library's own
+    simulated-clock tests measure that bound on the real code path."""
     import re
 
     dispatcher = (
@@ -361,10 +373,27 @@ def test_the_gateway_budget_leaves_room_under_the_dispatchers_wait():
     spec = importlib.util.spec_from_file_location("mcp_manager_budget", MANAGER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # The deadline, plus one call already in flight when it passes, plus a
-    # margin for the cold start and the two short writes after it.
-    worst = module.API_GATEWAY_STEP_SECONDS + module.API_CALL_WORST_SECONDS
-    assert worst <= wait - 4
+    assert module.DISPATCHER_WAIT_SECONDS == wait
+    # No retries, so no backoff: one call is one connect plus one read.
+    assert module.API_MAX_ATTEMPTS == 1
+    unconditional = 1 + module.mc.MANDATORY_CALLS_AFTER_GATEWAY
+    worst = (
+        module.API_GATEWAY_STEP_SECONDS + unconditional * module.API_CALL_WORST_SECONDS
+    )
+    assert worst <= module.API_RESPONSE_LIMIT_SECONDS
+    assert module.API_RESPONSE_LIMIT_SECONDS <= (
+        wait - module.COLD_START_ALLOWANCE_SECONDS
+    )
+
+
+def test_an_api_request_carries_its_response_budget(manager, monkeypatch):
+    monkeypatch.setattr(manager.module.time, "monotonic", lambda: 50.0)
+    manager.module.handler(event("revokeMcpCredential", clientId="c"), None)
+    budget = manager.made[-1].budget
+    assert isinstance(budget, manager.module.mc.RequestBudget)
+    assert budget.started == 50.0
+    assert budget.limit_seconds == manager.module.API_RESPONSE_LIMIT_SECONDS
+    assert budget.call_worst_seconds == manager.module.API_CALL_WORST_SECONDS
 
 
 def test_an_internal_task_runs_with_the_time_the_invocation_has_left(manager):
@@ -439,7 +468,7 @@ def test_a_failed_self_invoke_still_lets_the_revoke_succeed(
     defer = manager.module._self_invoker(SimpleNamespace(function_name="f"))
     with pytest.raises(ClientError):
         defer("finish-revocation", "c")
-    svc = SimpleNamespace(defer=defer)
+    svc = SimpleNamespace(defer=defer, budget=None)
     assert manager.module.mc._defer(svc, "finish-revocation", "c") is False
     assert "daily sweep will finish it" in caplog.text
 
@@ -464,9 +493,9 @@ def test_the_api_path_uses_clients_with_short_timeouts(manager, monkeypatch):
     for name in ("cognito-idp", "secretsmanager", "bedrock-agentcore-control"):
         config = manager.module._client(name, True).meta.config
         assert (config.connect_timeout, config.read_timeout) == (1, 3)
-        assert config.retries["total_max_attempts"] == 2
+        assert config.retries["total_max_attempts"] == 1
     lam = manager.module._client("lambda", True).meta.config
-    assert (lam.read_timeout, lam.retries["total_max_attempts"]) == (3, 2)
+    assert (lam.read_timeout, lam.retries["total_max_attempts"]) == (3, 1)
     ddb = manager.module._client("dynamodb", True).meta.client.meta.config
     assert ddb.read_timeout == 3
     # The asynchronous paths keep the defaults, waiting out a slow read.
