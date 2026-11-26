@@ -1037,24 +1037,24 @@ def test_what_only_the_story_jobs_carry_is_redacted_from_the_first_line() -> Non
 def test_the_selector_picks_only_catalogue_flows_in_the_order_and_bounds_it_sets(
     catalogue: stories.Catalogue,
 ) -> None:
-    """Each claim's own CHANGELOG entry, as the selector reads it, selects flows of
-    the catalogue, by its ``mr_as`` order, within its ``[runs]`` caps."""
+    """Every real CHANGELOG entry, replayed as newly added, selects flows of the
+    catalogue, by its ``mr_as`` order, within its ``[runs]`` caps.
+
+    Which story an entry selects is the selector's scoring, pinned on synthetic
+    entries in test_ux_test_stories_select.py; this reads the real files only for
+    the bounds, so rewording an entry cannot fail it."""
     entries = changelog_select.parse_entries(
         (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     )
-    by_lead = {entry.lead: entry for entry in entries}
+    assert entries
     universe = set(stories.flow_keys(catalogue, tiers=stories.TIERS))
-    claims = [(s, claim.lead) for s in catalogue.stories for claim in s.claims]
-    assert claims
-    for claimed, lead in claims:
-        entry = by_lead[" ".join(lead.split())]
+    selected_any = False
+    for entry in entries:
         added = changelog_select.AddedEntry(
-            entry=entry,
-            modified=False,
-            in_released_section=entry.section.casefold() != "unreleased",
+            entry=entry, modified=False, in_released_section=False
         )
         selection = changelog_select.select(catalogue, [added])
-        assert claimed.id in selection.stories
+        selected_any = selected_any or bool(selection.stories)
         assert set(selection.flows) <= universe
         assert len(selection.flows) <= catalogue.runs.mr_flows
         assert len(selection.stories) <= catalogue.runs.mr_stories
@@ -1079,6 +1079,7 @@ def test_the_selector_picks_only_catalogue_flows_in_the_order_and_bounds_it_sets
         assert story_section.STORY_MARKER_RE.fullmatch(
             story_section.marker_line(head_sha=HEAD_SHA, sel=sel, kind="run")
         )
+    assert selected_any, "no CHANGELOG.md entry selects any story; check the scorer"
 
 
 def serve_flow(
