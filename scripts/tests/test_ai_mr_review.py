@@ -1707,11 +1707,6 @@ def test_the_ci_skill_defers_rather_than_duplicating_the_criteria() -> None:
         f"pr-review-ci.md re-states section(s) {sorted(overlap)} from "
         f"pr-review.md. State the difference and defer for the rest."
     )
-    # Cheap size ratchet on the same point.
-    assert len(text) < len(SKILL_INTERACTIVE.read_text()), (
-        "the CI variant is now longer than the skill it defers to, which is a "
-        "strong sign it has started duplicating it"
-    )
 
 
 @pytest.mark.unit

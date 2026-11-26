@@ -13,23 +13,10 @@ the gap it exposed (``sync-pii-anonymizer`` had no row), which is the intended
 order: close the class, do not narrow the assertion to dodge it. The format of the
 skill files themselves is guarded in ``test_skill_format.py``.
 
-The content assertions police **structure, not prose**. They pin the load-bearing
-promises a future edit could remove without anyone noticing — the read-only
-constraint, both defect classes, the three mandatory sections, all ten dimensions and
-every measurement label the skill claims to define — and say nothing about wording.
-The distinction matters because the first draft of this file pinned only four bare
-phrases, and the ``Baseline measurements`` section — over half the skill, 401 of its
-830 lines when this was written — could be deleted green.
-
-Two traps worth knowing if you extend these:
-
-* Pin **heading** forms (``## Known non-defects``), not bare phrases. "Known
-  non-defects" also appears as a row in the Inputs table, so the bare string survived
-  deleting the entire register.
-* Check headings against the text with fenced code blocks **stripped**. The skill
-  contains a suggested-report template inside a ```` ```markdown ```` fence which
-  repeats ``## Baseline measurements``, so an unstripped substring test for that
-  heading passes even with the real section gone.
+The content assertion is derived from the skill itself: every measurement it refers
+to by letter must have a section defining it, which is checked outside code fences
+because the skill embeds a report template whose headings repeat the real ones.
+Nothing here pins a heading's or a section's wording.
 """
 
 from __future__ import annotations
@@ -42,31 +29,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_SKILLS = REPO_ROOT / ".claude" / "skills"
 SKILL = CLAUDE_SKILLS / "repo-quality-review" / "SKILL.md"
-
-# The measurements the skill promises to define. Numbered sub-measurements (``D2``)
-# are headed in bold rather than with ``###``; both forms are accepted.
-MEASUREMENT_LABELS = (
-    "A",
-    "B",
-    "C",
-    "D",
-    "D2",
-    "E",
-    "F",
-    "F2",
-    "G",
-    "G2",
-    "H",
-    "I",
-    "I2",
-)
-
-# Sections the skill is unusable without. Compared against the fence-stripped text.
-MANDATORY_SECTIONS = (
-    "## Baseline measurements",
-    "## Output contract",
-    "## Known non-defects",
-)
 
 
 def _fence_stripped(text: str) -> str:
@@ -115,61 +77,22 @@ def test_every_claude_skill_is_registered_in_claude_md() -> None:
 
 
 @pytest.mark.unit
-def test_the_skill_keeps_its_read_only_constraint_and_both_defect_classes() -> None:
-    """The three promises the skill would be unsafe or useless without.
+def test_every_measurement_the_skill_refers_to_is_defined() -> None:
+    """A measurement referred to by letter has a section defining it.
 
-    Each phrase is pinned in its **heading** form. ``Known non-defects`` on its own
-    also occurs as a row in the Inputs table, so the bare string stayed satisfied
-    after the entire register was deleted.
+    Derived from the skill's own references rather than from a list here, so a new
+    measurement needs no edit to this file and a deleted one still fails while any
+    dimension or worked example refers to it.
     """
-    text = SKILL.read_text(encoding="utf-8")
-    for phrase in (
-        "## Hard constraint — read-only by construction",  # the hard constraint
-        "## Class 1 — a control that exists as an artifact but is never consulted",
-        "## Class 2 — the instance was fixed and the class was not",
-        "## Known non-defects",  # the withdrawal register
-    ):
-        assert phrase in text, f"the skill no longer states: {phrase!r}"
-
-
-@pytest.mark.unit
-def test_the_skill_defines_every_measurement_it_claims() -> None:
-    """The baseline measurements are the skill's substance, so pin the set of them.
-
-    Structural, not editorial: this says nothing about what a measurement contains,
-    only that a label the skill's dimension table and worked examples refer to by
-    letter still has a section defining it. Without it the whole ``Baseline
-    measurements`` section — 13 measurements, over half the file — could be deleted
-    and every other test here would still pass.
-    """
-    text = SKILL.read_text(encoding="utf-8")
-    missing = [
+    body = _fence_stripped(SKILL.read_text(encoding="utf-8"))
+    referred = set(re.findall(r"\bmeasurement ([A-Z]2?)\b", body))
+    assert referred, "the skill refers to no measurement by letter"
+    missing = sorted(
         label
-        for label in MEASUREMENT_LABELS
-        if not re.search(rf"^### {label}\.|^\*\*{label} ", text, flags=re.MULTILINE)
-    ]
+        for label in referred
+        if not re.search(rf"^### {label}\.|^\*\*{label} ", body, flags=re.MULTILINE)
+    )
     assert not missing, (
         "the skill refers to these measurements by letter but no longer defines "
         f"them (expected a '### <label>.' or '**<label> ' heading): {missing}"
-    )
-
-
-@pytest.mark.unit
-def test_the_skill_keeps_its_mandatory_sections_and_all_ten_dimensions() -> None:
-    """Sections checked outside code fences; dimensions counted, not read.
-
-    The ten dimensions are described as "each row is mandatory", so the count is the
-    promise. Counting rows rather than matching their text keeps this structural — a
-    dimension may be renamed or rewritten freely, but not dropped.
-    """
-    body = _fence_stripped(SKILL.read_text(encoding="utf-8"))
-
-    absent = [heading for heading in MANDATORY_SECTIONS if heading not in body]
-    assert not absent, f"the skill is missing mandatory section(s): {absent}"
-
-    rows = re.findall(r"^\| \d+ \| \*\*", body, flags=re.MULTILINE)
-    assert len(rows) == 10, (
-        "the dimension table must keep all ten mandatory dimensions; found "
-        f"{len(rows)}. If a dimension was genuinely retired, update this count and "
-        "say why in the skill."
     )

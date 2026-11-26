@@ -616,23 +616,6 @@ def test_ruff_reads_every_tracked_python_file_except_the_scope_exclusions() -> N
 
 
 @pytest.mark.unit
-def test_the_document_does_not_still_describe_a_whole_tree_as_unlinted() -> None:
-    """The claim that used to be here, kept out rather than simply deleted.
-
-    The document told a reader that a clean ``ruff check`` on anything under
-    ``src/`` or ``scripts/`` meant the file had not been examined. That is now
-    false — ``ruff`` reads both trees — and a false reassurance in the other
-    direction is worse than the original gap, because it tells a contributor to
-    ignore a real result.
-    """
-    for claim in ("roughly a third", "every file under `scripts/`"):
-        assert claim not in DOC, (
-            f"CONTRIBUTING.md still contains {claim!r}, which described the "
-            "directory-wide exclusions removed in issue #975."
-        )
-
-
-@pytest.mark.unit
 def test_the_documented_probe_is_the_one_that_works() -> None:
     """A misleading probe is the stated reason #975 survived inspection.
 

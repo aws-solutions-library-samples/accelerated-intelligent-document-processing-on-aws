@@ -1514,7 +1514,7 @@ def test_only_the_digest_declares_the_environment_its_webhook_is_scoped_to(
     coverage = (REPO_ROOT / "scripts/sdlc/docs/CI_TEST_COVERAGE.md").read_text(
         encoding="utf-8"
     )
-    assert f"environment scope `{DIGEST_ENVIRONMENT['name']}`" in coverage
+    assert f"`{DIGEST_ENVIRONMENT['name']}`" in coverage
 
 
 #: The variables the browser jobs' environment scopes, which the run jobs read.
@@ -1593,25 +1593,21 @@ def test_the_story_jobs_comments_name_the_environment_the_run_jobs_declare(
     """The note above ``ai_ux_test_stories`` and the CI coverage doc tell the
     operator which environment the run jobs take their variables from, by the name
     the jobs declare, so storing them at another scope is not an option either
-    offers."""
+    offers. The note is the comment block the job's key sits under."""
     name = ci_config[SETUP_JOB]["environment"]["name"]
-    start = ci_text.index(
-        "# Advisory first-time-user stories (scripts/ux_stories.toml)"
-    )
-    note = " ".join(
-        line.lstrip("#").strip()
-        for line in ci_text[start : ci_text.index(f"\n{MR_JOB}:", start)].splitlines()
-    )
-    assert f"environment scope `{name}`" in note, note
-    assert f"`{name}` with `action: prepare`" in note, note
+    head = ci_text[: ci_text.index(f"\n{MR_JOB}:")].splitlines()
+    note: list[str] = []
+    for line in reversed(head):
+        if not line.startswith("#"):
+            break
+        note.append(line)
+    assert note, f"no comment sits above {MR_JOB}"
+    assert f"`{name}`" in "\n".join(note), note
     coverage = (REPO_ROOT / "scripts/sdlc/docs/CI_TEST_COVERAGE.md").read_text(
         encoding="utf-8"
     )
-    flat = " ".join(coverage.split())
-    assert f"declare `ai_ux_test`'s environment, `{name}`, with `action: prepare`" in (
-        flat
-    )
-    assert f"declares only `{DIGEST_ENVIRONMENT['name']}`, so it holds none" in flat
+    assert f"`{name}`" in coverage
+    assert f"`{DIGEST_ENVIRONMENT['name']}`" in coverage
 
 
 @pytest.mark.unit

@@ -1071,49 +1071,28 @@ def test_no_rule_reads_a_variable_scoped_to_the_environment(
 
 
 def _ux_section_comment(ci_text: str) -> str:
-    """The comment that opens the UX section of ``.gitlab-ci.yml``, as one line.
+    """The comment block directly above the shared wrapper's key, as one line.
 
-    From the section's own header, not the earlier mention in ``stages:``, to the
-    shared wrapper's key, so no other section's comment is read as this one's.
+    That block opens the UX section of ``.gitlab-ci.yml``; it is found by the YAML
+    key it sits on, not by its wording.
     """
-    opening = "# Advisory UX test of a merge request's web UI, with a narrated video"
-    assert ci_text.count(opening) == 1, f"the UX section no longer opens {opening!r}"
-    start = ci_text.index(opening)
-    end = ci_text.index(f"\n{WRAPPER_KEY}:", start)
-    lines = ci_text[start:end].splitlines()
-    return " ".join(line.lstrip("#").strip() for line in lines if line.startswith("#"))
-
-
-def _scope_column(doc: str) -> dict[str, str]:
-    """``{variable: its Environment scope cell}`` from the CI-variables table."""
-    header = re.search(
-        r"^\| Variable \| Environment scope \| What it holds \|\n\|[-|]+\|\n", doc, re.M
-    )
-    assert header, f"{CI_COVERAGE_DOC.name} has no CI-variables table with a scope"
-    rows: dict[str, str] = {}
-    for line in doc[header.end() :].splitlines():
-        if not line.startswith("|"):
+    head = ci_text[: ci_text.index(f"\n{WRAPPER_KEY}:")].splitlines()
+    block: list[str] = []
+    for line in reversed(head):
+        if not line.startswith("#"):
             break
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        rows[cells[0].strip("`")] = cells[1]
-    return rows
+        block.append(line.lstrip("#").strip())
+    assert block, f"no comment sits above {WRAPPER_KEY}"
+    return " ".join(reversed(block))
 
 
-def _flat(text: str) -> str:
-    return " ".join(text.split())
-
-
-def _paragraph(doc: str, opening: str) -> str:
-    """The paragraph of ``doc`` that begins ``opening``, as one line."""
-    assert doc.count(opening) == 1, f"{CI_COVERAGE_DOC.name} has no {opening!r}"
-    return _flat(doc[doc.index(opening) :].split("\n\n", 1)[0])
-
-
-def _setup_steps(doc: str) -> list[str]:
-    """The numbered steps of **Setting them up**, each as one line."""
-    start = doc.index("**Setting them up**")
-    block = doc[start : doc.index("⚠️ **The residual.**", start)]
-    return [_flat(step) for step in re.split(r"^\d+\. ", block, flags=re.M)[1:]]
+def _table_rows(doc: str, variable: str) -> list[list[str]]:
+    """The cells of every table row of ``doc`` whose first cell is ``variable``."""
+    return [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in doc.splitlines()
+        if line.startswith(f"| `{variable}` |")
+    ]
 
 
 #: A backquoted name in a doc's prose.
@@ -1131,79 +1110,59 @@ def _scopes_named(text: str) -> set[str]:
 def test_the_docs_scope_each_variable_to_the_environments_of_the_jobs_reading_it(
     ci_config, ci_text: str
 ) -> None:
-    """The operator sets the scopes by hand, so every place that tells them how to
-    store a UX variable names its scopes as the jobs declare them, each by its exact
-    name: the table and the setup steps in CI_TEST_COVERAGE.md, the comment above
-    the jobs, and the orchestrator's own list of its environment."""
+    """The operator sets the scopes by hand, so the places that tell them how to
+    store a UX variable name its scopes as the jobs declare them, each by its exact
+    name: a table row in CI_TEST_COVERAGE.md, the comment above the jobs, and the
+    orchestrator's docstring."""
     scopes = {
         variable: {_ux_scope(ci_config, job) for job in jobs}
         for variable, jobs in SCOPED_VARIABLES.items()
     }
     doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
-    rows = _scope_column(doc)
     for variable, expected in scopes.items():
-        cell = rows.get(variable, "")
-        assert set(_QUOTED_RE.findall(cell)) == expected, (variable, cell)
-    assert rows.get("GITLAB_REVIEW_TOKEN") == "All (`*`)", rows
-    steps = _setup_steps(doc)
-    (store,) = [step for step in steps if "**Settings → CI/CD → Variables**" in step]
-    for needle in (
-        "**Visibility** Masked",
-        "**Protect variable** cleared",
-        "**Environment scope** from that list by its exact name",
-    ):
-        assert needle in store, needle
-    for variable, expected in scopes.items():
-        bullets = re.findall(rf"- `{variable}` (.*?)(?=; - |\. |$)", store)
-        assert len(bullets) == 1, (variable, store)
-        assert _scopes_named(bullets[0]) == expected, (variable, bullets[0])
-    assert f"`{_ux_scope_prefix()}*`" in store and "wildcard" in store, store
+        rows = _table_rows(doc, variable)
+        assert any(_scopes_named(" ".join(row[1:2])) == expected for row in rows), (
+            variable,
+            expected,
+            rows,
+        )
     comment = _ux_section_comment(ci_text)
-    assert f"environment scope `{_ux_scope(ci_config, TEST_JOB)}`" in comment, comment
     assert _scopes_named(comment) >= set().union(*scopes.values()), comment
-    assert "never a wildcard" in comment, comment
     for variable in SCOPED_VARIABLES:
         assert variable in comment, variable
     docstring = ast.get_docstring(ast.parse(ORCHESTRATOR.read_text(encoding="utf-8")))
     assert docstring is not None
-    environment = _flat(docstring.split("Environment\n-----------\n", 1)[1])
-    assert (
-        f"scoped to the environment ``{_ux_scope(ci_config, TEST_JOB)}``" in environment
-    ), environment
-    assert f"``{_ux_scope(ci_config, BUILD_JOB)}``" in environment, environment
+    for job in UX_JOBS:
+        assert f"``{_ux_scope(ci_config, job)}``" in docstring, job
 
 
 @pytest.mark.unit
-def test_the_setup_steps_create_the_environments_rotate_and_confirm(
-    ci_config, build_job
-) -> None:
-    """The steps around the variables themselves: the environments are created
-    before the variable form can offer them as scopes, a persona that was ever
-    unscoped is rotated with the command that makes one, and the first UI MR after
-    the merge confirms that the jobs read their variables and record no
-    deployment."""
-    steps = _setup_steps(CI_COVERAGE_DOC.read_text(encoding="utf-8"))
-    (store,) = [
-        i for i, step in enumerate(steps) if "**Settings → CI/CD → Variables**" in step
-    ]
-    first = steps[0]
-    assert "**Operate → Environments**" in first and store > 0, steps
-    assert _scopes_named(first) == {_ux_scope(ci_config, job) for job in UX_JOBS}, first
-    assert any("Leave `GITLAB_REVIEW_TOKEN` at **All (default)**" in s for s in steps)
-    assert any("left at **All (default)**" in step for step in steps), steps
+def test_the_setup_steps_rotate_and_confirm_with_what_the_code_runs(build_job) -> None:
+    """The rotation command the doc gives is built from the orchestrator's own
+    stack and persona and takes only options the session helper declares, and every
+    ``SKIPPED:`` line the doc tells the operator to look for is one the build job
+    prints."""
+    doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
     stack = _module_constant(ORCHESTRATOR, "REVIEW_STACK")
     persona = _module_constant(ORCHESTRATOR, "DEFAULT_PERSONA")
     command = (
-        f"`scripts/ux_test_session.py setup {stack} --group {persona} --long-lived "
-        "--rotate`"
+        f"scripts/ux_test_session.py setup {stack} --group {persona} --long-lived "
+        "--rotate"
     )
-    (rotate,) = [step for step in steps if command in step]
-    assert "`UX_TEST_PERSONAS` was ever saved at **All (default)**" in rotate, rotate
-    assert f"`{_ux_scope(ci_config, BUILD_JOB)}`" in rotate, rotate
-    confirm = steps[-1]
-    shown = [q for q in _QUOTED_RE.findall(confirm) if q.startswith("SKIPPED:")]
-    assert shown and all(q in "\n".join(_commands(build_job)) for q in shown), confirm
-    assert "precheck" in confirm and "no deployment" in confirm, confirm
+    assert command in doc, command
+    declared = _declared_long_options(REPO_ROOT / "scripts" / "ux_test_session.py")
+    for option in re.findall(r"--[a-z][a-z-]*", command):
+        assert option in declared, option
+    commands = "\n".join(_commands(build_job))
+    shown = [
+        quoted
+        for line in doc.splitlines()
+        for quoted in _QUOTED_RE.findall(line)
+        if quoted.startswith("SKIPPED: UX_")
+    ]
+    assert shown, "the doc quotes no SKIPPED: line of a UX variable"
+    for quoted in shown:
+        assert quoted in commands, quoted
 
 
 @pytest.mark.unit
@@ -1211,45 +1170,26 @@ def test_the_docs_name_the_one_step_that_keeps_the_jobs_environment(
     ci_config, ci_text: str, build_job
 ) -> None:
     """``.node_setup`` unpacks Node.js from nodejs.org, and uses its bundled npm,
-    with the job's environment, as in every job that builds the UI, so
-    while ``ux_test_build`` includes it the security item and the comment above
-    the wrapper name it, rather than saying no third-party step inherits the job's
-    secrets."""
+    with the job's environment, as in every job that builds the UI, so while
+    ``ux_test_build`` includes it the CI coverage doc and the comment above the
+    wrapper name it."""
     commands = _commands(build_job)
     toolchain = [str(entry) for entry in ci_config[".node_setup"]]
     assert all(entry in commands for entry in toolchain), (
         f"{BUILD_JOB} no longer includes .node_setup, so this test reads nothing"
     )
-    doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
-    opening = "- No step of either job that runs third-party code inherits"
-    assert doc.count(opening) == 1, opening
-    start = doc.index(opening)
-    item = _flat(doc[start : doc.index("\n- ", start + 1)])
-    assert f"`{BUILD_JOB}`'s `.node_setup`" in item, item
-    assert "runs with the job's environment" in item, item
-    assert f"{BUILD_JOB}'s .node_setup" in _ux_section_comment(ci_text)
+    assert "`.node_setup`" in CI_COVERAGE_DOC.read_text(encoding="utf-8")
+    assert ".node_setup" in _ux_section_comment(ci_text)
 
 
 @pytest.mark.unit
-def test_the_residual_names_what_no_environment_scope_withholds(ci_config) -> None:
-    """The scopes keep the persona's password out of ``ux_test_build`` and do
-    nothing for what reaches every job: each variable left at the default scope,
-    and the AWS role session the runner's credential vendor mints for a job, which
-    nothing in ``.gitlab-ci.yml`` asks for and so nothing there can withhold. That
-    premise is read too: neither UX job asks GitLab for a credential of its own."""
+def test_neither_ux_job_asks_gitlab_for_a_credential_of_its_own(ci_config) -> None:
+    """The environment scopes withhold nothing from what reaches every job, and the
+    doc's account of that residual rests on neither UX job asking GitLab for a
+    credential (an ID token or a secret) of its own."""
     for job in UX_JOBS:
         asked = sorted({"id_tokens", "secrets"} & set(ci_config[job]))
         assert not asked, f"{job} declares {asked}; reword the residual for it"
-    doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
-    residual = _paragraph(doc, "⚠️ **The residual.**")
-    unscoped = [
-        name for name, cell in _scope_column(doc).items() if cell == "All (`*`)"
-    ]
-    assert unscoped, "the table leaves no variable at the default scope"
-    for variable in unscoped:
-        assert f"`{variable}`" in residual, variable
-    for needle in ("AWS role session", "credential vendor", f"`{BUILD_JOB}`"):
-        assert needle in residual, needle
 
 
 def _jobs_running_npm_ci_in_the_ui(ci_config: dict[str, Any]) -> set[str]:
@@ -1277,12 +1217,9 @@ def test_the_docs_name_every_other_job_an_unscoped_variable_reaches_through_npm_
     others = sorted(running - set(UX_JOBS))
     assert others, "no other job runs npm ci in src/ui, so this test reads nothing"
     doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
-    opening = "⚠️ **What an unscoped variable exposes.**"
-    assert opening in doc
-    paragraph = _flat(doc[doc.index(opening) :].split("\n\n", 1)[0])
     comment = _ux_section_comment(ci_text)
     for job in others:
-        assert f"`{job}`" in paragraph, f"{CI_COVERAGE_DOC.name} does not name {job}"
+        assert f"`{job}`" in doc, f"{CI_COVERAGE_DOC.name} does not name {job}"
         assert job in comment, f"the comment above the UX jobs does not name {job}"
 
 

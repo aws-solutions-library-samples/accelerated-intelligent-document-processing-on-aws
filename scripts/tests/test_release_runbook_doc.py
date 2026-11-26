@@ -75,13 +75,19 @@ def _script_body() -> str:
     )
 
 
+def _before_first_h1(text: str) -> str:
+    """``text`` up to its first level-one heading, whatever that heading says."""
+    first = re.search(r"^# ", text, flags=re.MULTILINE)
+    return text[: first.start()] if first else text
+
+
 @pytest.mark.unit
 def test_the_page_exists_with_frontmatter_and_licence() -> None:
     text = _doc_text()
-    assert text.startswith('---\ntitle: "Release Runbook"\n---'), (
+    assert re.match(r'---\ntitle: "[^"\n]+"\n---', text), (
         "docs/*.md needs YAML frontmatter with a title; the docs site keys off it"
     )
-    assert "SPDX-License-Identifier: MIT-0" in text.split("# Release Runbook")[0]
+    assert "SPDX-License-Identifier: MIT-0" in _before_first_h1(text)
 
 
 @pytest.mark.unit

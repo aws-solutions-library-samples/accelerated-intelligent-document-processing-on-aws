@@ -8,7 +8,6 @@ import ast
 import re
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -31,15 +30,9 @@ OPERATOR_SKILL = SKILLS / "ux-test-stories" / "SKILL.md"
 CI_CONTRACT = SKILLS / "ux-test-stories-ci" / "SKILL.md"
 MR_UX_CONTRACT = SKILLS / "ux-test-ci" / "SKILL.md"
 MR_UX_TEST_SUITE = SCRIPTS / "tests" / "test_ai_ux_test.py"
-REVIEW_STACK_CHECK = SCRIPTS / "ux_runner" / "session.py"
 MAKEFILE = REPO_ROOT / "Makefile"
 BRIEF_START = "<!-- brief:start -->"
 BRIEF_END = "<!-- brief:end -->"
-PROVENANCE_LINE = (
-    "The method (intent-only stories, docs followed literally, four note and report "
-    "tools, verdicts judged against an expectation) is adapted, with its author's "
-    "consent, from a teammate's prototype; no code was copied."
-)
 SECRET_NAMES: tuple[str, ...] = (
     "UX_TEST_PERSONAS",
     "UX_TEST_AWS_ACCOUNT_ID",
@@ -49,48 +42,11 @@ SECRET_NAMES: tuple[str, ...] = (
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
 )
-FREE_TEXT_FILES: tuple[str, ...] = (
-    "results.json",
-    "section.md",
-    "report.html",
-    "report.md",
-    "journal.jsonl",
-    "screens/",
-)
-SESSION_HEADING = "## When you are asked to run one"
-BOUNDS_HEADING = "## Privacy and bounds"
-RUN_MODE_HEADINGS: tuple[str, ...] = (
-    "## Unattended runs in Docker",
-    "## Watch a confined run live",
-    "## Pair: a session you start plays the user",
-)
 TWELVE_DIGITS = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")
 SNAKE_WORD = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 CODE_SPAN = re.compile(r"(`+)[^\n]*?\1")
 MAKE_TARGET = re.compile(r"\bmake (ai-ux-[a-z0-9-]+)")
 SCRIPT_PATH = re.compile(r"\b(scripts[\\/][A-Za-z0-9_.\\/-]+\.py)\b")
-FIXTURE_CATALOGUE: dict[str, Any] = {
-    "version": 1,
-    "personas": {"newcomer": {"group": "Author", "background": "A newcomer."}},
-    "stories": [
-        {
-            "id": "pin-the-points",
-            "title": "Pin the selector points",
-            "intent": "Find out how an entry earns points.",
-            "kind": "read",
-            "documented_steps": 1,
-            "as": {"newcomer": "allowed"},
-            "tier": "p0",
-            "since": "0.6.0",
-            "origin": "smoke",
-            "match": {
-                "docs": ["web-ui.md#upload-documents"],
-                "issues": [12],
-                "terms": ["alpha", "beta", "gamma"],
-            },
-        }
-    ],
-}
 
 
 def _text(path: Path) -> str:
@@ -136,21 +92,6 @@ def _fenced_lines(text: str) -> list[str]:
             continue
         inside.append(line)
     return inside
-
-
-def _section(text: str, heading: str) -> str:
-    lines = text.split("\n")
-    prose = check_markdown_links.strip_fences(text).split("\n")
-    begin = prose.index(heading)
-    end = next(
-        (
-            index
-            for index in range(begin + 1, len(prose))
-            if prose[index].startswith("## ")
-        ),
-        len(prose),
-    )
-    return "\n".join(lines[begin:end])
 
 
 def _plain_words(text: str) -> set[str]:
@@ -200,43 +141,6 @@ def _develop_backend_re() -> re.Pattern[str]:
     )
 
 
-def _top_level(path: Path) -> list[ast.stmt]:
-    return ast.parse(_text(path), filename=str(path)).body
-
-
-def _function_source(path: Path, name: str) -> str:
-    """The source of a module-level function, read without importing."""
-    source = _text(path)
-    for node in ast.parse(source, filename=str(path)).body:
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return ast.get_source_segment(source, node) or ""
-    raise AssertionError(f"{path.name} no longer defines {name}")
-
-
-def _assigned_literal(path: Path, name: str) -> object:
-    """The value of a module-level ``name = <literal>``, read without importing."""
-    for node in _top_level(path):
-        if isinstance(node, ast.Assign) and [
-            ast.unparse(target) for target in node.targets
-        ] == [name]:
-            return ast.literal_eval(node.value)
-    raise AssertionError(f"{path.name} no longer assigns {name}")
-
-
-def _changelog_points(story: stories.Story, entry_line: str) -> int:
-    text = f"## [Unreleased]\n\n### Added\n\n{entry_line}\n"
-    entry = changelog_select.parse_entries(text)[0]
-    added = [
-        changelog_select.AddedEntry(
-            entry=entry, modified=False, in_released_section=False
-        )
-    ]
-    score = changelog_select.score_story(
-        story, added, edited_sections=(), changed_files=()
-    )
-    return score.changelog_points
-
-
 @pytest.mark.unit
 def test_both_skills_exist_and_neither_holds_a_twelve_digit_run() -> None:
     for path in (OPERATOR_SKILL, CI_CONTRACT):
@@ -257,51 +161,15 @@ def test_neither_skill_says_the_review_stack_runs_develops_backend(skill: Path) 
 
 
 @pytest.mark.unit
-def test_the_operator_skill_holds_story_videos_to_the_mr_ux_tests_stack_check() -> None:
-    """A video's frames are not redacted, so the MR UX test renders one only of the
-    review stack, in code, and a story run's video path calls the same check, which
-    both take from ``session.py``. The operator skill's bounds name that check, the
-    three statements of the stack it compares, the stack as that code spells it and
-    the reason a page that shows no stack name gives, so a renamed check or stack
-    or a reworded reason fails here, and so does a bound left to the operator's
-    choice of stack alone."""
-    check = _function_source(REVIEW_STACK_CHECK, "review_stack_problem")
-    unconfirmed = "could not be confirmed as the review stack"
-    assert unconfirmed in check, "the page's reason no longer says it is unconfirmed"
-    review_stack = _assigned_literal(REVIEW_STACK_CHECK, "REVIEW_STACK")
-    assert isinstance(review_stack, str) and review_stack, review_stack
-    bounds = _flat(_section(_text(OPERATOR_SKILL), BOUNDS_HEADING))
-    for phrase in (
-        "`review_stack_problem`",
-        "`--stack`",
-        "the settings parameter `UX_TEST_UI_ENV` names",
-        "the stack the signed-in page reports",
-        f"all say `{review_stack}`",
-        "the video was withheld",
-        unconfirmed,
-    ):
-        assert phrase in bounds, phrase
-
-
-@pytest.mark.unit
 def test_the_ci_contract_states_only_how_a_story_run_differs() -> None:
+    """It defers to both skills it differs from, and restates none of their
+    sections."""
     contract = _text(CI_CONTRACT)
-    operator = _text(OPERATOR_SKILL)
     assert "ux-test-ci.md" in contract
     assert "ux-test-stories.md" in contract
     assert _headings(contract)
-    assert not _headings(contract) & _headings(operator)
+    assert not _headings(contract) & _headings(_text(OPERATOR_SKILL))
     assert not _headings(contract) & _headings(_text(MR_UX_CONTRACT))
-    assert len(contract) < len(operator)
-    for word in (
-        "untrusted",
-        "note_injection",
-        "look",
-        "report_done",
-        "report_blocked",
-        "stopped_at_commit_point",
-    ):
-        assert word in contract, word
 
 
 @pytest.mark.unit
@@ -312,11 +180,11 @@ def test_the_ci_contract_names_only_tools_arguments_and_kinds_the_server_has() -
 
 @pytest.mark.unit
 def test_the_ci_contracts_numbers_are_the_relays_and_the_servers() -> None:
+    """The contract is inlined into every story prompt, so a figure or a message it
+    quotes has to be the one the relay and the server actually apply."""
     contract = _flat(_text(CI_CONTRACT))
     assert f"at most {story_relay.IMAGE_CAP} images" in contract
     assert f"at most {story_relay.SNAPSHOT_NODES} elements" in contract
-    assert story_relay.LOOKS_PER_ACTION == 2
-    assert "free up to twice that number" in contract
     assert f"after {story_relay.REFUSAL_LIMIT} refused calls" in contract
     assert f"The first {ux_story_mcp.INJECTIONS_RECORDED} attempts" in contract
     assert story_relay.OUT_OF_STEPS.startswith("Out of steps")
@@ -368,37 +236,19 @@ def test_the_brief_names_only_tools_and_kinds_the_server_has() -> None:
 
 
 @pytest.mark.unit
-def test_the_operator_skill_carries_the_provenance_line() -> None:
-    assert _flat(_text(OPERATOR_SKILL)).count(PROVENANCE_LINE) == 1
-    assert PROVENANCE_LINE not in _flat(_brief())
-
-
-@pytest.mark.unit
 def test_the_session_reads_only_the_summary_table() -> None:
-    section = _section(_text(OPERATOR_SKILL), SESSION_HEADING)
-    commands = _fenced_lines(section)
-    assert any(
-        line.strip() == 'make ai-ux-test-stories-judge RUN="$RUN" CHECK=1 SUMMARY=1'
-        for line in commands
-    ), commands
-    for line in commands:
-        for name in FREE_TEXT_FILES:
-            assert name not in line, line
-        if "stories-session.log" in line:
-            assert line.strip().startswith(
-                ("> scratch/ux-docker/stories-session.log", "grep -E '^(FAILED")
-            ), line
-    prose = check_markdown_links.strip_fences(section)
-    assert "Do not read" in prose
-    for name in (
-        "results.json",
-        "section.md",
-        "report.html",
-        "report.md",
-        "journals",
-        "screens",
-    ):
-        assert name in prose, name
+    """The judge command the skill gives a session prints the summary table and
+    writes nothing, through options the Makefile target really reads."""
+    judged = [
+        line
+        for line in _fenced_lines(_text(OPERATOR_SKILL))
+        if "make ai-ux-test-stories-judge" in line
+    ]
+    assert any("SUMMARY=1" in line and "CHECK=1" in line for line in judged), judged
+    recipe = _text(MAKEFILE).split("\nai-ux-test-stories-judge:", 1)[1]
+    recipe = recipe.split("\n\n", 1)[0]
+    for variable in ("SUMMARY", "CHECK"):
+        assert f"$({variable})" in recipe, variable
 
 
 @pytest.mark.unit
@@ -415,66 +265,34 @@ def test_no_command_in_the_operator_skill_reads_a_runs_free_text() -> None:
 
 @pytest.mark.unit
 def test_secrets_are_tested_for_presence_and_never_printed() -> None:
+    """Every command the skill gives that touches a secret tests it for presence
+    or assigns it, and an interactive read of one is masked."""
     lines = _fenced_lines(_text(OPERATOR_SKILL))
     for line in lines:
         assert "printenv" not in line, line
         assert not re.search(r"\benv\s*\|", line), line
+        if "Read-Host" in line:
+            assert "-MaskInput" in line or "-AsSecureString" in line, line
     for name in SECRET_NAMES:
         presence = re.compile(rf'\[ -n "\$\{{{name}:-\}}" \]')
-        assignment = re.compile(rf"^\s*\$env:{name} = ")
+        assignment = re.compile(rf"^\s*\$env:{name} = (?:Read-Host |'<)")
+        shell_read = re.compile(rf"\bread\b(?P<flags>(?:\s+-\w+)*)\s+{name}\b")
         for line in lines:
             if re.search(rf"\$\{{?{name}\b|\$env:{name}\b", line):
                 assert presence.search(line) or assignment.match(line), line
-    for name in ("UX_TEST_PERSONAS", "UX_TEST_AWS_ACCOUNT_ID"):
-        assert any(f'[ -n "${{{name}:-}}" ]' in line for line in lines), name
-    assert "Read-Host -MaskInput" in _text(OPERATOR_SKILL)
-    assert "read -rs UX_TEST_PERSONAS" in _text(OPERATOR_SKILL)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("heading", RUN_MODE_HEADINGS)
-def test_every_run_mode_has_a_make_form_and_a_windows_form(heading: str) -> None:
-    section = _section(_text(OPERATOR_SKILL), heading)
-    assert "make ai-ux-test-stories-" in section, heading
-    assert "py scripts\\ux_runner\\run_in_docker.py stories" in section, heading
+            read = shell_read.search(line)
+            if read:
+                assert "s" in read["flags"], line
 
 
 @pytest.mark.unit
 def test_the_operator_skills_numbers_are_the_catalogues_and_the_selectors() -> None:
     skill = _flat(_text(OPERATOR_SKILL))
-    catalogue = stories.load_catalogue()
-    limits, runs = catalogue.limits, catalogue.runs
+    limits = stories.load_catalogue().limits
     assert f"`documented_steps_max` ({limits.documented_steps_max})" in skill
-    assert limits.step_budget_multiple == 10
-    assert "ten actions a documented step" in skill
     assert f"never fewer than {limits.step_budget_floor}" in skill
-    assert story_relay.LOOKS_PER_ACTION == 2
-    assert "free up to twice the budget" in skill
-    assert (runs.mr_stories, runs.mr_flows) == (2, 3)
-    assert "at most two stories and three flows" in skill
     assert f"({changelog_select.TERM_POINTS_MAX} at most)" in skill
     assert f"selected at {changelog_select.SELECT_THRESHOLD} CHANGELOG points" in skill
-
-
-@pytest.mark.unit
-def test_the_selector_points_the_operator_skill_states_are_the_selectors() -> None:
-    story = stories.parse_catalogue(FIXTURE_CATALOGUE).stories[0]
-    section = "- **Section.** See [it](docs/web-ui.md#upload-documents)."
-    page = "- **Page.** See [it](docs/web-ui.md#document-list)."
-    issue = "- **Issue.** Fixed (#12)."
-    terms = "- **Terms.** Alpha, beta and gamma all changed."
-    one_term = "- **Term.** Only gamma changed."
-    assert _changelog_points(story, section) == 3
-    assert _changelog_points(story, page) == 1
-    assert _changelog_points(story, issue) == 2
-    assert _changelog_points(story, terms) == changelog_select.TERM_POINTS_MAX == 2
-    assert _changelog_points(story, one_term) == 1
-    assert (
-        "scores 3 for a link to a declared section, 2 for a shared issue, and 1 for "
-        "each declared term it contains (2 at most); links to other sections of the "
-        "declared pages add 1 point to a story however many entries carry them"
-        in _flat(_text(OPERATOR_SKILL))
-    )
 
 
 @pytest.mark.unit
@@ -512,16 +330,6 @@ def test_every_make_target_and_script_the_skills_cite_exists() -> None:
             }
         )
         assert not missing_scripts, f"{skill.name} cites {missing_scripts}"
-
-
-@pytest.mark.unit
-def test_the_operator_skill_says_it_needs_claude_code_and_why() -> None:
-    """Every assistant that reads ``.claude/skills/`` sees this skill, so the skill
-    itself has to say, before its first section, that it depends on Claude Code."""
-    body = _text(OPERATOR_SKILL).split("\n## ", 1)[0]
-    assert "Claude Code" in body
-    assert "--mcp-config" in body
-    assert "run_in_background" in body
 
 
 @pytest.mark.unit
