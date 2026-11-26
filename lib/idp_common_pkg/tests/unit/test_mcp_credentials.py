@@ -11,6 +11,7 @@ replaces the configuration on update exactly as the live API was measured to.
 """
 
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -891,3 +892,286 @@ def test_revoking_the_stack_client_keeps_its_app_client(world):
     assert client not in world["gw"].allowed()
     with pytest.raises(mcp_access.McpAccessRefused, match="revoked"):
         mc.caller_from_row(mc.get_row(svc.table, client), now=NOW)
+
+
+# --- work finished after the request: deferred revocation, deadline-bound create ----
+
+
+def _deferring(world):
+    """Record what a request asks ``services.defer`` to run, without running it."""
+    asked = []
+    world["svc"].defer = lambda task, cid: asked.append((task, cid))
+    return asked
+
+
+def _row(world, cid):
+    row = mc.get_row(world["svc"].table, cid)
+    assert row is not None
+    return row
+
+
+def _client_exists(world, cid):
+    try:
+        world["svc"].cognito.describe_user_pool_client(
+            UserPoolId=world["pool"], ClientId=cid
+        )
+    except world["svc"].cognito.exceptions.ResourceNotFoundException:
+        return False
+    return True
+
+
+def _past():
+    import time
+
+    return time.monotonic() - 1
+
+
+def test_a_deferred_revoke_refuses_at_once_and_touches_nothing_slow(world):
+    cid = create(world)["clientId"]
+    asked = _deferring(world)
+    updates = world["gw"].updates
+    out = mc.revoke_credential(
+        world["svc"], cid, actor="a", now=NOW, defer_cleanup=True
+    )
+    assert out["status"] == "revoked"
+    row = mc.get_row(world["svc"].table, cid)
+    assert row[mc.CLEANUP_PENDING] is True
+    with pytest.raises(mcp_access.McpAccessRefused, match="revoked"):
+        mc.caller_from_row(row, now=NOW)
+    # No gateway write, and the client and secret are still there for the task.
+    assert world["gw"].updates == updates and cid in world["gw"].allowed()
+    assert _client_exists(world, cid)
+    assert asked == [(mc.TASK_FINISH_REVOCATION, cid)]
+    # The marker is bookkeeping and never reaches a response.
+    assert mc.CLEANUP_PENDING not in out
+
+
+def test_a_deferred_revoke_succeeds_when_the_finishing_task_cannot_be_scheduled(
+    world, caplog
+):
+    cid = create(world)["clientId"]
+
+    def broken(_task, _cid):
+        raise RuntimeError("Lambda invoke refused")
+
+    world["svc"].defer = broken
+    out = mc.revoke_credential(
+        world["svc"], cid, actor="a", now=NOW, defer_cleanup=True
+    )
+    assert out["status"] == "revoked"
+    assert mc.get_row(world["svc"].table, cid)[mc.CLEANUP_PENDING] is True
+    assert "daily sweep will finish it" in caplog.text
+
+
+def test_finishing_a_revocation_is_complete_and_idempotent(world):
+    cid = create(world)["clientId"]
+    _deferring(world)
+    mc.revoke_credential(world["svc"], cid, actor="a", now=NOW, defer_cleanup=True)
+    first = mc.finish_revocation(world["svc"], cid)
+    assert first == {"clientId": cid, "complete": True, "errors": []}
+    assert cid not in world["gw"].allowed() and not _client_exists(world, cid)
+    assert "DeletedDate" in world["svc"].secrets.describe_secret(
+        SecretId=f"stk/mcp/credentials/{cid}"
+    )
+    assert mc.CLEANUP_PENDING not in _row(world, cid)
+    # Everything is already gone, the secret already scheduled for deletion.
+    assert mc.finish_revocation(world["svc"], cid)["complete"] is True
+
+
+def test_a_partly_failed_revocation_cleanup_stays_marked_until_it_finishes(world):
+    cid = create(world)["clientId"]
+    _deferring(world)
+    mc.revoke_credential(world["svc"], cid, actor="a", now=NOW, defer_cleanup=True)
+    world["gw"].fail_next_update = True
+    partial = mc.finish_revocation(world["svc"], cid)
+    assert partial["complete"] is False
+    assert [e for e in partial["errors"] if e.startswith("gateway")]
+    row = mc.get_row(world["svc"].table, cid)
+    assert row[mc.CLEANUP_PENDING] is True and "UpdateGateway" in row["cleanupError"]
+    # The steps that could finish did.
+    assert not _client_exists(world, cid)
+    again = mc.finish_revocation(world["svc"], cid)
+    assert again["complete"] is True and cid not in world["gw"].allowed()
+    row = _row(world, cid)
+    assert mc.CLEANUP_PENDING not in row and "cleanupError" not in row
+
+
+def test_finishing_a_revocation_never_touches_a_live_credential(world):
+    cid = create(world)["clientId"]
+    result = mc.finish_revocation(world["svc"], cid)
+    assert result["skipped"] == "not revoked" and result["complete"] is False
+    assert cid in world["gw"].allowed() and _client_exists(world, cid)
+
+
+def test_an_inline_revoke_clears_its_own_marker(world):
+    cid = create(world)["clientId"]
+    mc.revoke_credential(world["svc"], cid, actor="a", now=NOW)
+    assert mc.CLEANUP_PENDING not in _row(world, cid)
+
+
+def test_a_create_past_the_gateway_deadline_keeps_the_credential_and_its_secret(
+    world,
+):
+    asked = _deferring(world)
+    out = create(world, gateway_deadline=_past())
+    cid = out["clientId"]
+    assert out["clientSecret"] and out["credential"]["status"] == "active"
+    assert mc.GATEWAY_PENDING not in out["credential"]
+    row = mc.get_row(world["svc"].table, cid)
+    assert row[mc.GATEWAY_PENDING] is True and row["status"] == "active"
+    assert _client_exists(world, cid)
+    assert cid not in world["gw"].allowed()
+    assert asked == [(mc.TASK_FINISH_GATEWAY_ADD, cid)]
+    done = mc.finish_gateway_add(world["svc"], cid)
+    assert done["complete"] is True and cid in world["gw"].allowed()
+    assert mc.GATEWAY_PENDING not in _row(world, cid)
+
+
+def test_a_create_whose_gateway_update_was_sent_is_finished_without_a_second_one(
+    world, monkeypatch
+):
+    import time
+
+    gw = world["gw"]
+    real_update = gw.update_gateway
+    reads = {"updating": 0}
+
+    def slow_update(**request):
+        reads["updating"] = 10**6
+        return real_update(**request)
+
+    real_get = gw.get_gateway
+
+    def slow_get(gatewayIdentifier):
+        state = real_get(gatewayIdentifier)
+        if reads["updating"]:
+            reads["updating"] -= 1
+            state["status"] = "UPDATING"
+        return state
+
+    monkeypatch.setattr(gw, "update_gateway", slow_update)
+    monkeypatch.setattr(gw, "get_gateway", slow_get)
+    # time.sleep is already patched out by the fixture; wait for real, briefly.
+    pause = threading.Event()
+    monkeypatch.setattr(mcp_gateway.time, "sleep", lambda s: pause.wait(min(s, 0.01)))
+    _deferring(world)
+    out = create(world, gateway_deadline=time.monotonic() + 0.2)
+    cid = out["clientId"]
+    assert mc.get_row(world["svc"].table, cid)[mc.GATEWAY_PENDING] is True
+    reads["updating"] = 0
+    updates = gw.updates
+    assert mc.finish_gateway_add(world["svc"], cid)["complete"] is True
+    assert gw.updates == updates and cid in gw.allowed()
+
+
+def test_a_create_that_fails_other_than_by_the_deadline_is_withdrawn(world):
+    import time
+
+    world["gw"].fail_next_update = True
+    asked = _deferring(world)
+    with pytest.raises(RuntimeError, match="UpdateGateway failed"):
+        create(world, gateway_deadline=time.monotonic() + 600)
+    assert world["svc"].table.scan()["Items"] == []
+    clients = world["svc"].cognito.list_user_pool_clients(
+        UserPoolId=world["pool"], MaxResults=60
+    )
+    assert clients["UserPoolClients"] == [] and asked == []
+
+
+def test_finishing_a_gateway_add_never_admits_a_revoked_client(world):
+    _deferring(world)
+    cid = create(world, gateway_deadline=_past())["clientId"]
+    mc.revoke_credential(world["svc"], cid, actor="a", now=NOW, defer_cleanup=True)
+    assert mc.GATEWAY_PENDING not in _row(world, cid)
+    result = mc.finish_gateway_add(world["svc"], cid)
+    assert result["skipped"] == "revoked"
+    assert cid not in world["gw"].allowed()
+
+
+def test_a_revoke_landing_while_a_gateway_add_is_in_flight_wins(world):
+    """The revoke's row write lands after the task read the row, and its own
+    gateway removal ran before the addition landed: the task sees the revoked row
+    after its addition and takes the client off again."""
+    _deferring(world)
+    svc = world["svc"]
+    cid = create(world, gateway_deadline=_past())["clientId"]
+
+    def revoke_meanwhile(_state):
+        mc.revoke_credential(svc, cid, actor="a", now=NOW, defer_cleanup=True)
+
+    world["gw"].concurrent = revoke_meanwhile
+    result = mc.finish_gateway_add(svc, cid)
+    assert result["complete"] is False
+    assert result["skipped"] == "revoked while being admitted"
+    assert cid not in world["gw"].allowed()
+
+
+def test_the_sweep_finishes_work_requests_left_marked(world):
+    asked = _deferring(world)
+    svc = world["svc"]
+    gone = create(world, name="gone")["clientId"]
+    mc.revoke_credential(svc, gone, actor="a", now=NOW, defer_cleanup=True)
+    new = create(world, name="new", gateway_deadline=_past())["clientId"]
+    assert len(asked) == 2
+    result = mc.sweep(svc, now=NOW, seconds_left=lambda: 250.0)
+    assert sorted(result["finished"]) == sorted([gone, new])
+    assert result["unfinished"] == []
+    assert gone not in world["gw"].allowed() and new in world["gw"].allowed()
+    assert not _client_exists(world, gone)
+    assert mc.CLEANUP_PENDING not in _row(world, gone)
+    assert mc.GATEWAY_PENDING not in _row(world, new)
+    # Nothing is left for the next day's sweep.
+    assert mc.sweep(svc, now=NOW)["finished"] == []
+
+
+def test_the_sweep_leaves_marked_work_when_time_runs_out(world):
+    _deferring(world)
+    svc = world["svc"]
+    gone = create(world, name="gone")["clientId"]
+    mc.revoke_credential(svc, gone, actor="a", now=NOW, defer_cleanup=True)
+    result = mc.sweep(svc, now=NOW, seconds_left=lambda: 5.0)
+    assert result["finished"] == []
+    assert result["unfinished"] == [
+        {"clientId": gone, "task": mc.TASK_FINISH_REVOCATION, "error": "no time"}
+    ]
+    assert _client_exists(world, gone)
+    assert mc.get_row(svc.table, gone)[mc.CLEANUP_PENDING] is True
+
+
+def test_removing_the_registry_finishes_a_deferred_revocation(world):
+    _deferring(world)
+    svc = world["svc"]
+    gone = create(world)["clientId"]
+    mc.revoke_credential(svc, gone, actor="a", now=NOW, defer_cleanup=True)
+    result = mc.revoke_all(svc, actor="cloudformation", now=NOW)
+    assert result["revoked"] == [] and result["errors"] == []
+    assert not _client_exists(world, gone)
+    assert gone not in world["gw"].allowed()
+
+
+def test_a_deferred_rotation_with_no_overlap_leaves_the_old_cleanup_to_its_task(
+    world,
+):
+    asked = _deferring(world)
+    old = create(world)["clientId"]
+    new = mc.rotate_credential(
+        world["svc"], old, overlap_days=0, actor="a", now=NOW, defer_cleanup=True
+    )
+    assert new["clientId"] in world["gw"].allowed()
+    assert mc.get_row(world["svc"].table, old)["status"] == "revoked"
+    assert _client_exists(world, old)
+    assert asked == [(mc.TASK_FINISH_REVOCATION, old)]
+
+
+def test_an_unknown_task_is_refused(world):
+    with pytest.raises(ValueError, match="Unknown MCP credential task"):
+        mc.run_task(world["svc"], "delete-everything", "c")
+
+
+def test_a_gateway_wait_past_its_deadline_reads_nothing(world):
+    gw = world["gw"]
+    called = []
+    gw.get_gateway = lambda gatewayIdentifier: called.append(1)
+    with pytest.raises(mcp_gateway.GatewayDeadlineExceeded):
+        mcp_gateway.wait_until_ready(gw, "gw-1", deadline=_past())
+    assert called == []

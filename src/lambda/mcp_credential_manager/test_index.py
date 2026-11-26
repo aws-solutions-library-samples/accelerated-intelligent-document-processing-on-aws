@@ -44,6 +44,7 @@ def manager(monkeypatch):
         "set_credential_tenant",
         "sweep",
         "revoke_all",
+        "run_task",
     ):
         monkeypatch.setattr(module.mc, name, recorder(name))
     rows = {}
@@ -52,9 +53,13 @@ def manager(monkeypatch):
         {"tenantId": "acme", "profilePattern": "acme-*"},
         {"tenantId": "globex", "profilePattern": "globex-*"},
     ]
-    monkeypatch.setattr(
-        module, "services", lambda: SimpleNamespace(table=None, tenants=lambda: tenants)
-    )
+    built = []
+
+    def fake_services(**kw):
+        built.append(kw)
+        return SimpleNamespace(table=None, tenants=lambda: tenants, **kw)
+
+    monkeypatch.setattr(module, "services", fake_services)
     own = {"scope": None}
     monkeypatch.setattr(module, "admin_scope", lambda _claims: own["scope"])
     sent = []
@@ -63,7 +68,9 @@ def manager(monkeypatch):
         "send",
         lambda _e, _c, status, _data, physical, **_kw: sent.append((status, physical)),
     )
-    yield SimpleNamespace(module=module, calls=calls, rows=rows, own=own, sent=sent)
+    yield SimpleNamespace(
+        module=module, calls=calls, rows=rows, own=own, sent=sent, built=built
+    )
     sys.modules.pop("mcp_manager_index", None)
 
 
@@ -307,3 +314,141 @@ def test_a_scoped_admin_lists_only_credentials_inside_their_scope(manager, monke
     manager.own["scope"] = None
     rows = manager.module.handler(event("listMcpCredentials"), None)
     assert [r["clientId"] for r in rows] == ["a", "g", "u"]
+
+
+# --- finishing work out of band ------------------------------------------------------
+
+
+def task(name="finish-revocation", client_id="c"):
+    return {"mcpCredentialTask": {"task": name, "clientId": client_id}}
+
+
+def test_a_revoke_through_the_api_defers_its_cleanup(manager):
+    manager.module.handler(event("revokeMcpCredential", clientId="c"), None)
+    ((name, args, kwargs),) = manager.calls
+    assert (name, args, kwargs["defer_cleanup"]) == ("revoke_credential", ("c",), True)
+    # ...and the services it is given can schedule the finishing task.
+    assert callable(manager.built[-1]["defer"])
+
+
+@pytest.mark.parametrize("field", ["createMcpCredential", "rotateMcpCredential"])
+def test_a_create_or_rotate_through_the_api_bounds_its_gateway_wait(
+    manager, monkeypatch, field
+):
+    clock = iter([100.0, 101.0, 102.0])
+    monkeypatch.setattr(manager.module.time, "monotonic", lambda: next(clock))
+    manager.module.handler(
+        event(field, clientId="c", name="n", role="Viewer", allowedConfigVersions=[]),
+        None,
+    )
+    ((_name, _args, kwargs),) = manager.calls
+    # Measured from the moment the handler started.
+    assert kwargs["gateway_deadline"] == 100.0 + manager.module.API_GATEWAY_STEP_SECONDS
+    if field == "rotateMcpCredential":
+        assert kwargs["defer_cleanup"] is True
+
+
+def test_the_gateway_budget_leaves_room_under_the_dispatchers_wait():
+    """The dispatcher gives up on a resolver 20 seconds after invoking it, cold
+    start included."""
+    import re
+
+    dispatcher = (
+        Path(__file__).resolve().parents[3]
+        / "nested/api-resolvers/src/lambda/http_api_dispatcher/index.py"
+    ).read_text()
+    wait = int(re.search(r"_RESOLVER_READ_TIMEOUT_SECONDS = (\d+)", dispatcher)[1])
+    spec = importlib.util.spec_from_file_location("mcp_manager_budget", MANAGER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.API_GATEWAY_STEP_SECONDS <= wait - 5
+
+
+def test_an_internal_task_runs_with_the_time_the_invocation_has_left(manager):
+    context = SimpleNamespace(get_remaining_time_in_millis=lambda: 300_000)
+    manager.module.handler(task(), context)
+    ((name, args, kwargs),) = manager.calls
+    assert (name, args) == ("run_task", ("finish-revocation", "c"))
+    assert kwargs["deadline"] is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"task": "delete-everything", "clientId": "c"},
+        {"task": "finish-revocation", "clientId": ""},
+        {"task": "finish-revocation", "clientId": ["a", "b"]},
+    ],
+)
+def test_a_malformed_task_does_nothing(manager, body):
+    result = manager.module.handler({"mcpCredentialTask": body}, None)
+    assert result["skipped"] == "malformed task" and manager.calls == []
+
+
+def test_an_api_event_carrying_the_task_key_is_not_a_task(manager):
+    """Every event the dispatcher sends has ``arguments`` and ``identity``, so a
+    request cannot be read as a task, wherever it puts the key."""
+    top = event("listMcpCredentials")
+    top.update(task())
+    manager.module.handler(top, None)
+    nested = event("listMcpCredentials", **task())
+    manager.module.handler(nested, None)
+    assert [c[0] for c in manager.calls] == ["list_credentials", "list_credentials"]
+    # The passthrough shape (an IAM-gated direct invoke with a null identity) is
+    # not a task either, and as an operation it is refused.
+    passthrough = {"arguments": {}, "identity": None, **task()}
+    with pytest.raises((PermissionError, ValueError)):
+        manager.module.handler(passthrough, None)
+    assert [c[0] for c in manager.calls] == ["list_credentials", "list_credentials"]
+
+
+def test_the_self_invoke_is_asynchronous_and_its_event_is_a_task(manager, monkeypatch):
+    invoked = []
+    fake = SimpleNamespace(invoke=lambda **kw: invoked.append(kw))
+    monkeypatch.setitem(manager.module._clients, "lambda", fake)
+    context = SimpleNamespace(function_name="stk-mcp-credential-manager")
+    manager.module._self_invoker(context)("finish-gateway-add", "c1")
+    ((call,),) = [invoked]
+    assert call["FunctionName"] == "stk-mcp-credential-manager"
+    assert call["InvocationType"] == "Event"
+    import json
+
+    sent = json.loads(call["Payload"])
+    assert manager.module._is_internal_task(sent)
+    assert sent == task("finish-gateway-add", "c1")
+
+
+def test_a_failed_self_invoke_still_lets_the_revoke_succeed(
+    manager, monkeypatch, caplog
+):
+    """The invoker raises; the library's scheduling step logs it and the request
+    returns normally, leaving the row marked for the sweep."""
+    from botocore.exceptions import ClientError
+
+    def refuse(**_kw):
+        raise ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Invoke"
+        )
+
+    monkeypatch.setitem(
+        manager.module._clients, "lambda", SimpleNamespace(invoke=refuse)
+    )
+    defer = manager.module._self_invoker(SimpleNamespace(function_name="f"))
+    with pytest.raises(ClientError):
+        defer("finish-revocation", "c")
+    svc = SimpleNamespace(defer=defer)
+    assert manager.module.mc._defer(svc, "finish-revocation", "c") is False
+    assert "daily sweep will finish it" in caplog.text
+
+
+def test_without_a_function_name_the_self_invoke_refuses(manager, monkeypatch):
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    with pytest.raises(RuntimeError, match="own name"):
+        manager.module._self_invoker(None)("finish-revocation", "c")
+
+
+def test_the_schedule_gives_the_sweep_the_time_left(manager):
+    context = SimpleNamespace(get_remaining_time_in_millis=lambda: 42_000)
+    manager.module.handler({"source": "aws.events"}, context)
+    ((_name, _args, kwargs),) = manager.calls
+    assert kwargs["seconds_left"]() == 42.0

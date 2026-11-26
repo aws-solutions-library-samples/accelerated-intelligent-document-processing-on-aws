@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation that the gateway has not applied within a few seconds keeps the credential, still shows its secret once, and finishes adding it shortly afterwards. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
+
 ## [0.6.16]
 
 ### Added

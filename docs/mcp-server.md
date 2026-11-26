@@ -542,6 +542,10 @@ Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or wi
   Connector settings entry. The secret is also stored in Secrets Manager as
   `<stack>/mcp/credentials/<clientId>`, encrypted with the stack's key, where an
   operator with access to that secret can read it.
+  When the gateway is slow to apply a change, a credential created on the page can
+  take up to about a minute to be accepted at the gateway. It is never shown and
+  then withdrawn: once you see its secret, it is kept. If it is still not accepted
+  after that, the daily sweep finishes adding it.
 - **Use.** Exchange the client ID and secret at the token URL (`MCPTokenURL`) for an
   access token that lasts one hour, and call the MCP server with it. The gateway's
   interceptor reads the credential on every call, so its role and profiles apply as
@@ -553,7 +557,10 @@ Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or wi
   cannot be rotated and has to be replaced with one that fits.
 - **Revoke.** Refused from the next request, even while one of its tokens is still
   valid; its app client is deleted and its secret scheduled for deletion ("Default
-  (stack-created)" keeps both; see below).
+  (stack-created)" keeps both; see below). A revoke on the page returns once the
+  credential is refused. It is taken off the gateway and its client and secret are
+  deleted straight afterwards, and if that does not finish, the daily sweep
+  finishes it. `idp-cli` and the SDK do every step before they return.
 - **Expiry.** A daily sweep revokes expired credentials and sends the Admin who
   created one an Inbox message two weeks before it expires.
 - **Audit.** Every change is logged with the acting Admin, the credential's id,
