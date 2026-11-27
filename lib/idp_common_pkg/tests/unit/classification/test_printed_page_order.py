@@ -32,6 +32,12 @@ from idp_common.classification.page_order import (
 from idp_common.classification.service import ClassificationService
 from idp_common.config.models import DocumentShapeConfig
 from idp_common.models import Document, Page, ProcessingIssue, Status
+from idp_common.ocr.service import (
+    HANDWRITING_LEGEND,
+    HANDWRITING_MARKER,
+    OCR_NOTE_HEADERS,
+    OcrService,
+)
 
 
 def _class(name: str) -> Dict[str, Any]:
@@ -692,6 +698,101 @@ class TestReadingAPrintedPageNumber:
 
     def test_a_header_number_is_read(self):
         assert read_printed_page_number(f"Page 2 of 9\n{BODY}").number == 2
+
+    # The OCR step appends notes after the page text. They are not printed on
+    # the page, so a multi-line footer must still be read with a note below it.
+    FOOTER = "Rev. 01/2026\nPage 2 of 5\nConfidential"
+
+    @staticmethod
+    def _signature_note():
+        """The note the OCR step writes for one signature, from the code that
+        writes it, so a change to its wording is what this test checks."""
+        block = {
+            "BlockType": "SIGNATURE",
+            "Id": "sig-1",
+            "Confidence": 98.1,
+            "Geometry": {
+                "BoundingBox": {"Left": 0.7, "Top": 0.9, "Width": 0.2, "Height": 0.05}
+            },
+        }
+        return OcrService._format_signature_summary(
+            OcrService._extract_signature_detections([block])
+        )
+
+    @pytest.mark.parametrize(
+        "notes",
+        [
+            pytest.param(lambda: [HANDWRITING_LEGEND], id="handwriting"),
+            pytest.param(
+                lambda: [TestReadingAPrintedPageNumber._signature_note()],
+                id="signature",
+            ),
+            pytest.param(
+                lambda: [
+                    HANDWRITING_LEGEND,
+                    TestReadingAPrintedPageNumber._signature_note(),
+                ],
+                id="both",
+            ),
+        ],
+    )
+    def test_appended_ocr_notes_do_not_take_the_footer_zone(self, notes):
+        text = "\n\n".join([f"{BODY}\n{self.FOOTER}", *notes()])
+        reading = read_printed_page_number(text)
+        assert (reading.number, reading.total) == (2, 5)
+
+    @pytest.mark.parametrize(
+        "footer, number, total",
+        [
+            (f"Page 2 {HANDWRITING_MARKER}", 2, None),
+            (f"2 {HANDWRITING_MARKER}", 2, None),
+            (f"Rev. 01/2026 Page 2 {HANDWRITING_MARKER}", 2, None),
+            (f"Page 2 of 5 {HANDWRITING_MARKER}", 2, 5),
+            (f"**Page 2** {HANDWRITING_MARKER}", 2, None),
+        ],
+    )
+    def test_a_page_number_marked_as_handwriting_is_read(self, footer, number, total):
+        """ocr.mark_handwriting puts "(HANDWRITING)" after a number Textract typed
+        as handwriting (a hand-numbered packet, a stamp). It is still the number."""
+        text = "\n\n".join([f"{BODY}\n{footer}", HANDWRITING_LEGEND])
+        reading = read_printed_page_number(text)
+        assert (reading.number, reading.total) == (number, total)
+
+    def test_the_note_headers_page_order_skips_are_the_ones_ocr_writes(self):
+        """page_order keeps its own copy of the OCR note headers so
+        classification does not import ocr. This keeps the copy equal to the
+        OCR module's list, and checks both notes really start with a listed
+        header, so adding or rewording a note fails here."""
+        assert set(page_order._OCR_NOTE_HEADERS) == set(OCR_NOTE_HEADERS)
+        for note in (HANDWRITING_LEGEND, self._signature_note()):
+            assert note, "the OCR code wrote no note"
+            assert note.splitlines()[0] in OCR_NOTE_HEADERS
+            assert page_order._OCR_NOTE_HEADER_RE.search(f"page text\n\n{note}")
+
+    def test_the_marker_page_order_removes_is_the_one_ocr_writes(self):
+        """page_order keeps its own copy of the marker so classification does
+        not import from ocr. This ties the copy to the constant: renaming
+        HANDWRITING_MARKER fails here rather than silently breaking page-number
+        reading."""
+        assert page_order._HANDWRITING_MARKER_RE.fullmatch(f" {HANDWRITING_MARKER}")
+        assert page_order._HANDWRITING_MARKER_RE.fullmatch(HANDWRITING_MARKER)
+
+    def test_a_printed_line_shaped_like_a_note_header_is_page_text(self):
+        """Only the OCR step's own headers start a note. Cutting at a line the
+        page prints itself would drop the real footer and let a body line such
+        as "p. 4" be read as the page number."""
+        body = "\n".join(f"Body line {i}" for i in range(1, 9))
+        text = (
+            f"Header\n{body}\np. 4\n\n--- OCR Report ---\nMore body text\n{self.FOOTER}"
+        )
+        reading = read_printed_page_number(text)
+        assert (reading.number, reading.total) == (2, 5)
+
+    def test_a_note_header_inside_the_page_text_is_not_a_note(self):
+        """Only a header after a blank line starts a note; the same text inside a
+        paragraph is page text."""
+        text = f"{BODY}\nsee --- OCR handwriting markers --- below\n{self.FOOTER}"
+        assert read_printed_page_number(text).number == 2
 
     @pytest.mark.parametrize(
         "line",

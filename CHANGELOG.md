@@ -53,6 +53,8 @@ SPDX-License-Identifier: MIT-0
 
 - **IDP in Action, an illustrated tour of the accelerator.** One page walks through the main features with screenshots, an eight-minute narrated overview and feature walkthroughs. See [IDP in Action](docs/idp-in-action.md).
 
+- **Mark handwriting in the page text.** New setting `ocr.mark_handwriting` (Textract only, off by default) follows each run of handwritten words on a line with `(HANDWRITING)` in the page text that classification, extraction and summarization read, and adds a short note explaining the marker. A field description or prompt can then ask for the printed value over a handwritten one without sending page images to a model. The setting is also in the OCR section of the configuration UI; the stored OCR output and confidence data are unchanged, and page-order detection still reads a hand-written page number. See [Marking handwriting in the page text](docs/configuration.md#marking-handwriting-in-the-page-text). (#2243)
+
 ### Changed
 
 - **A run starts at the step it needs.** A run after a completed review starts at the new Apply Review Changes step, a rejected document is recorded without reprocessing, Process Changes shows the steps of its run before you confirm, and hooks fire only for steps that run. Pipeline step names are consistent. ⚠️ **Action:** read [v0.6.15 → v0.6.16 Migration](docs/migration-v0615-to-v0616.md) before upgrading: `review/status.json` moves to schema version 1.1; `reprocessDocument` and `listReviewQueues` return new shapes; the SDK and CLI reprocess through a Lambda and need `lambda:InvokeFunction`; a held document runs policy rule validation before and after review; and the old and new step names are listed there.

@@ -20,7 +20,11 @@ where they put them, on evidence that did not hold for the whole document.
 
 **Where a number is looked for.** Only in the first and last
 :data:`ZONE_LINES` non-empty lines of a page's text, which is where running headers
-and footers land in the text an OCR engine produces. A number in the body of the
+and footers land in the text an OCR engine produces. The text is first cut at the
+first note the OCR step appended after it (the signature summary or the
+handwriting legend, each recognised by its exact header line), and the
+``(HANDWRITING)`` marker is removed from each line before it is matched, so neither
+takes the place of a real header or footer line. A number in the body of the
 page (a quantity, a reference to "page 4 of the instructions", a table cell) is not
 in that zone on a page of ordinary length and is never read. A short page whose
 whole text fits in the zone is read whole, which is the one place a body number can
@@ -142,8 +146,48 @@ class PageOrderPlan:
     problem_page_ids: List[str] = field(default_factory=list)
 
 
+# Notes the OCR step appends after a page's text, each after a blank line and
+# starting with its own header line: the signature-detection summary and the
+# ocr.mark_handwriting legend. They are not printed on the page, so they must not
+# take up the footer zone. This is a copy of idp_common.ocr.service.OCR_NOTE_HEADERS
+# (classification does not import ocr); a test keeps the two equal.
+#
+# Only these exact headers count. A looser pattern would also match text a page
+# prints itself (a "--- OCR Report ---" line, say), and cutting the text there
+# drops the real footer and can move a body line such as "p. 4" into the footer
+# zone, where it would be read as the page number. A page that prints one of these
+# exact headers after a blank line has the same exposure.
+_OCR_NOTE_HEADERS = (
+    "--- OCR handwriting markers ---",
+    "--- OCR signature detections ---",
+)
+_OCR_NOTE_HEADER_RE = re.compile(
+    r"\n[ \t]*\n(?:"
+    + "|".join(re.escape(header) for header in _OCR_NOTE_HEADERS)
+    + r")[ \t]*$",
+    re.M,
+)
+
+
+def _without_ocr_notes(text: str) -> str:
+    """The page text up to the first appended OCR note."""
+    match = _OCR_NOTE_HEADER_RE.search(text)
+    return text[: match.start()] if match else text
+
+
+# The in-line marker ocr.mark_handwriting puts after handwritten words. A page
+# number Textract typed as handwriting ("Page 2 (HANDWRITING)") is still the page
+# number, so the marker is removed before a line is matched. Kept as a literal
+# here rather than imported from idp_common.ocr, so the two packages stay
+# independent.
+_HANDWRITING_MARKER_RE = re.compile(r"[ \t]*\(HANDWRITING\)")
+
+
 def _zone_lines(text: str) -> List[str]:
-    lines = [line.strip(_DECORATION) for line in text.splitlines()]
+    lines = [
+        _HANDWRITING_MARKER_RE.sub("", line).strip(_DECORATION)
+        for line in _without_ocr_notes(text).splitlines()
+    ]
     lines = [line for line in lines if line]
     if len(lines) <= 2 * ZONE_LINES:
         return lines

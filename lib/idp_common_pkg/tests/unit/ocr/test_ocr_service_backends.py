@@ -2145,6 +2145,11 @@ class TestConfidenceTableDetails:
     def test_handwriting_is_flagged_in_the_confidence_table(self):
         """Hand-filled values are the least reliable text on a form.
 
+        This pins the LINE-level check, which applies to OCR backends that type
+        LINE blocks (a LambdaHook backend). Textract reports TextType on WORD
+        blocks, so its pages do not reach it in practice; for those, see
+        ``ocr.mark_handwriting``.
+
         Without the marker the assessment model sees a 95%-confidence line and no
         indication that it was handwritten, which is the signal that should lower
         its trust in the extracted value.
