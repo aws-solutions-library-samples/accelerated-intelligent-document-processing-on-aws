@@ -230,3 +230,47 @@ def test_restore_puts_back_the_captured_flows(captured):
     rbac_common.restore_auth_flows(ctx)
     payload = _update_payload(captured)
     assert payload["ExplicitAuthFlows"] == DESCRIBED["ExplicitAuthFlows"]
+
+
+def test_the_cognito_client_is_built_in_the_stacks_region(monkeypatch):
+    import boto3
+
+    made = []
+    monkeypatch.setattr(
+        boto3, "client", lambda service, **kw: made.append((service, kw)) or object()
+    )
+    rbac_common._cognito({"region": "ca-central-1"})
+    assert made == [("cognito-idp", {"region_name": "ca-central-1"})]
+
+
+class _Failing:
+    def __init__(self, fail_on):
+        self.fail_on = fail_on
+        self._ok = _Cognito(DESCRIBED)
+        self.meta = self._ok.meta
+
+    def describe_user_pool_client(self, **kwargs):
+        if self.fail_on == "describe":
+            raise ValueError("boom")
+        return self._ok.describe_user_pool_client(**kwargs)
+
+    def update_user_pool_client(self, **kwargs):
+        raise ValueError("boom")
+
+
+@pytest.mark.parametrize(
+    ("call", "fail_on", "message"),
+    [
+        (lambda: rbac_common.get_auth_flows(CTX), "describe", "describe-user-pool"),
+        (lambda: rbac_common.set_auth_flows(CTX, []), "describe", "update-user-pool"),
+        (lambda: rbac_common.set_auth_flows(CTX, []), "update", "update-user-pool"),
+    ],
+)
+def test_a_cognito_error_reaches_the_caller_as_a_runtime_error(
+    monkeypatch, call, fail_on, message
+):
+    """Callers catch RuntimeError, the contract aws() has, so a boto3 error must
+    arrive as one, naming the operation."""
+    monkeypatch.setattr(rbac_common, "_cognito", lambda ctx: _Failing(fail_on))
+    with pytest.raises(RuntimeError, match=message):
+        call()
