@@ -178,6 +178,12 @@ vocabulary:
     ci_job_log:
       external: false
       note: The CI job's own log.
+    team_notification:
+      external: true
+      note: >-
+        A pipeline run's summary as the team receives it: the copy in the CI
+        account's bucket, the failure email, the GitLab job artifact and the
+        nightly chat post.
     none:
       external: false
       note: The output goes nowhere outside the harness.
@@ -751,22 +757,39 @@ entries:
       - scripts/tests/test_ux_runner_artifacts.py::test_kept_strings_pass_exactly_while_everything_around_them_is_redacted
 
   failure-agent-harness:
-    surfaces: [harness:scripts/sdlc/failure_agent.py::run_failure_agent]
+    surfaces: [harness:scripts/sdlc/failure_agent.py::claude_command]
+    declared:
+      - scripts/sdlc/codebuild_deployment.py::_invoke_bedrock
     note: >-
-      Opt-in root-cause analysis of a failed deployment pipeline run
-      (IDP_FAILURE_AGENT=1). Its report goes into the job's own log.
+      Root-cause analysis of a failed deployment pipeline run (IDP_FAILURE_AGENT=1,
+      which the pipeline template sets), and the single-shot Bedrock summary
+      generate_deployment_summary uses when the agent is off or cannot finish.
+      Declared because that call holds no tools. Both texts become the run's
+      summary. The agent runs only on the read-only role: with
+      IDP_FAILURE_AGENT_ROLE_ARN unset or the assume failing it is skipped
+      (_readonly_credentials), and its environment is an allowlist that leaves
+      out the container-credential variables (child_env). Its session carries
+      the AI review's scope flags; its Bash rules are prefix matches, so the
+      git --output and aws --endpoint-url forms are denied, and on the pinned
+      CLI a chained, piped, redirected or substituted command is refused
+      (measured in scripts/sdlc/tests/test_failure_agent_session_scope.py, which
+      skips without that CLI, as it does in CI).
     reads: [ci_account_read_only, repository_checkout]
-    inputs: [build_log]
-    outputs: [ci_job_log, shell_commands]
-    finding:
-      outputs: [shell_commands]
-      text: >-
-        The harness grants Bash rules for read-only aws verbs, and its own docstring
-        records that they are prefix matches, not a limit on what a chained command
-        does. With IDP_FAILURE_AGENT_ROLE_ARN unset it runs on the job's ambient
-        credentials; with it set, the read-only role
-        (_readonly_credentials) bounds what those commands can change, and no test
-        exercises that function. The agent is off unless IDP_FAILURE_AGENT=1.
+    inputs: [build_log, logs_and_records]
+    outputs: [ci_job_log, shell_commands, team_notification]
+    control:
+      - {symbol: scripts/sdlc/failure_agent.py::_readonly_credentials, limits: shell_commands}
+      - {symbol: scripts/sdlc/failure_agent.py::_DISALLOWED_TOOLS, limits: shell_commands}
+      - {symbol: scripts/sdlc/failure_agent.py::child_env, limits: ci_account_read_only}
+      - {symbol: scripts/sdlc/failure_agent.py::SESSION_SCOPE_FLAGS, limits: repository_checkout}
+      - {symbol: scripts/sdlc/failure_agent.py::redact_report, limits: team_notification}
+    test:
+      - scripts/sdlc/tests/test_failure_agent.py::test_without_the_read_only_role_the_agent_does_not_run
+      - scripts/sdlc/tests/test_failure_agent.py::test_the_child_environment_is_an_allowlist
+      - scripts/sdlc/tests/test_failure_agent.py::test_the_argv_carries_the_session_scope_flags
+      - scripts/sdlc/tests/test_failure_agent.py::test_the_option_forms_that_write_or_redirect_are_denied
+      - scripts/sdlc/tests/test_failure_agent.py::test_the_agent_runs_with_the_built_environment_and_its_report_is_redacted
+      - scripts/sdlc/tests/test_failure_agent.py::test_the_single_shot_summary_is_redacted_before_it_is_published
 
   sandbox-network-probe:
     surfaces: [construct:scripts/sdlc/sandbox_network_probe.py::_run_live::CodeInterpreter]
