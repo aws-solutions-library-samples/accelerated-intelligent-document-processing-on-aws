@@ -212,11 +212,24 @@ def get_auth_flows(ctx):
     )
 
 
-# Properties UpdateUserPoolClient does NOT accept back. Everything else the
-# describe call returns has to be re-sent, because the update is a full replace.
-_CLIENT_READ_ONLY_FIELDS = frozenset(
-    {"ClientSecret", "CreationDate", "LastModifiedDate"}
-)
+# The parameters UpdateUserPoolClient accepts, read from the AWS CLI that will
+# send the update (``--generate-cli-skeleton input`` is answered locally and
+# makes no AWS call). The describe call returns more than the update accepts,
+# and the extra fields change between releases: ClientSecret and the two dates
+# always, ClientType since AWS CLI 2.41. Keeping only the accepted parameters
+# means a newly returned read-only field is dropped rather than refused, and
+# reading them from the same CLI means a newly accepted, writable field is kept
+# rather than cleared by the full replace.
+def _update_client_parameters():
+    skeleton = aws(
+        "cognito-idp", "update-user-pool-client", "--generate-cli-skeleton", "input"
+    )
+    if not isinstance(skeleton, dict) or "ClientId" not in skeleton:
+        raise RuntimeError(
+            "aws cognito-idp update-user-pool-client --generate-cli-skeleton "
+            f"input returned no parameter list: {skeleton!r}"
+        )
+    return frozenset(skeleton)
 
 
 def set_auth_flows(ctx, flows):
@@ -235,7 +248,10 @@ def set_auth_flows(ctx, flows):
     resource is unchanged in the template, so the stack update skips it and the
     out-of-band edit survives.
 
-    So read the current client, change one field, and send the whole thing back.
+    So read the current client, change one field, and send back every property
+    the update accepts. Fields it does not accept (ClientSecret, the dates,
+    ClientType) are left out, because the CLI refuses the whole request when
+    one of them is present.
     """
     current = (
         aws(
@@ -251,11 +267,8 @@ def set_auth_flows(ctx, flows):
         )
         or {}
     )
-    desired = {
-        k: v
-        for k, v in current.items()
-        if k not in _CLIENT_READ_ONLY_FIELDS and v is not None
-    }
+    update_params = _update_client_parameters()
+    desired = {k: v for k, v in current.items() if k in update_params and v is not None}
     desired["UserPoolId"] = ctx["user_pool"]
     desired["ClientId"] = ctx["client"]
     desired["ExplicitAuthFlows"] = list(flows)

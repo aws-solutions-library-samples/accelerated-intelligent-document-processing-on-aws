@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **`idp-cli tenancy verify` works with boto3 releases whose Cognito model returns `ClientType`.** To sign in its test users it briefly enables admin password sign-in on the web UI app client and then restores it, by reading the client and writing it back. It now writes back only the parameters `UpdateUserPoolClient` accepts, read from the boto3 client's own service model, so a read-only field the describe call returns no longer makes the update fail. The repository's API authorization harness (`make api-test`) uses the same rule, reading the accepted parameters from the AWS CLI.
+
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
 
 ## [0.6.16]

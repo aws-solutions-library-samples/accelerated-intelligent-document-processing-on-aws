@@ -484,28 +484,16 @@ def main() -> int:
     cog.admin_set_user_password(
         UserPoolId=pool_id, Username=NATIVE_EMAIL, Password=NATIVE_PW, Permanent=True
     )
-    preserve = {
-        k: v
-        for k, v in client.items()
-        if k
-        in (
-            "ClientName",
-            "RefreshTokenValidity",
-            "AccessTokenValidity",
-            "IdTokenValidity",
-            "TokenValidityUnits",
-            "ReadAttributes",
-            "WriteAttributes",
-            "SupportedIdentityProviders",
-            "CallbackURLs",
-            "LogoutURLs",
-            "AllowedOAuthFlows",
-            "AllowedOAuthScopes",
-            "AllowedOAuthFlowsUserPoolClient",
-            "PreventUserExistenceErrors",
-            "EnableTokenRevocation",
-        )
-    }
+    # UpdateUserPoolClient is a full replace, so every parameter it accepts is
+    # sent back; the parameter set comes from this client's own service model, so
+    # a read-only field the describe returns (ClientType) is left out and a
+    # newly accepted one is kept rather than cleared.
+    update_params = set(
+        cog.meta.service_model.operation_model(
+            "UpdateUserPoolClient"
+        ).input_shape.members
+    ) - {"UserPoolId", "ClientId", "ExplicitAuthFlows"}
+    preserve = {k: v for k, v in client.items() if k in update_params and v is not None}
     flows = client.get("ExplicitAuthFlows") or []
     restore = None
     if "ALLOW_ADMIN_USER_PASSWORD_AUTH" not in flows:

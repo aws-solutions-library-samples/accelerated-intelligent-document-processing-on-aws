@@ -939,6 +939,58 @@ def test_admin_auth_flow_preserves_the_client_and_restores_it():
 
 
 @pytest.mark.unit
+def test_admin_auth_flow_sends_only_the_parameters_the_update_accepts():
+    """The describe output can carry fields the update refuses (``ClientType`` in
+    newer service models, or one no model has yet); botocore rejects the whole
+    request when one is present, so neither is sent, and every accepted field the
+    describe returned is sent unchanged."""
+    import botocore.session
+
+    model = botocore.session.get_session().get_service_model("cognito-idp")
+    accepted = set(model.operation_model("UpdateUserPoolClient").input_shape.members)
+    described = set(
+        model.operation_model("DescribeUserPoolClient")
+        .output_shape.members["UserPoolClient"]
+        .members
+    )
+    assert {"ClientId", "CallbackURLs"} <= accepted and described - accepted
+
+    client = _Client()
+    client.state = {name: f"value-of-{name}" for name in described}
+    client.state.update(
+        ExplicitAuthFlows=["ALLOW_REFRESH_TOKEN_AUTH"],
+        ClientType="PUBLIC",
+        SomeFieldAddedNextYear={"Nested": True},
+    )
+    original = dict(client.state)
+    ctx = ui_api.UiContext("s", "us-east-1", "pool", "client", "https://x/api", "users")
+    with ui_api.AdminAuthFlow(ctx, client):
+        pass
+    assert len(client.updates) == 2
+    for update in client.updates:
+        assert set(update) <= accepted
+        assert "ClientType" not in update and "SomeFieldAddedNextYear" not in update
+        for name in (set(original) & accepted) - {"ExplicitAuthFlows"}:
+            assert update[name] == original[name], f"{name} was not sent back"
+
+
+@pytest.mark.unit
+def test_update_client_parameters_reads_the_sending_clients_model():
+    """A real boto3 client's own model is used, so a parameter that client accepts
+    is kept even when another installed model does not know it."""
+
+    class _Model:
+        def operation_model(self, name):
+            assert name == "UpdateUserPoolClient"
+            shape = type("S", (), {"members": {"ClientId": 1, "NewSetting": 2}})
+            return type("O", (), {"input_shape": shape})
+
+    client = _Client()
+    client.meta = type("M", (), {"service_model": _Model()})()
+    assert ui_api.update_client_parameters(client) == {"ClientId", "NewSetting"}
+
+
+@pytest.mark.unit
 def test_admin_auth_flow_restores_the_client_when_the_run_fails():
     """An incomplete run is the case that matters: a failure inside the block must
     not leave a live app client with admin password auth switched on."""

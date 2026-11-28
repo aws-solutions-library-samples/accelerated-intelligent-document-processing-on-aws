@@ -13,7 +13,9 @@ two behaviours that harness learned the hard way:
   every other property — callback URLs, OAuth flows, identity providers,
   ``WriteAttributes`` — and CloudFormation will not restore them. So the client is
   read, one field changed, and the whole thing written back; and restored the same
-  way.
+  way. Only the parameters the update accepts are written back, read from the
+  client's own service model, because the describe call also returns read-only
+  fields (``ClientType`` in newer models) that make the update fail.
 * **The auth flow takes a few seconds to propagate.** ``AdminInitiateAuth`` can
   answer "Auth flow not enabled for this client" right after the update; only that
   message is retried, and the wait is bounded.
@@ -36,9 +38,6 @@ logger = logging.getLogger(__name__)
 ADMIN_AUTH_FLOW = "ALLOW_ADMIN_USER_PASSWORD_AUTH"
 AUTH_FLOW_NOT_PROPAGATED = "Auth flow not enabled for this client"
 AUTH_FLOW_RETRY_DELAYS = (1, 2, 4, 8, 15, 30)
-_CLIENT_READ_ONLY_FIELDS = frozenset(
-    {"ClientSecret", "CreationDate", "LastModifiedDate"}
-)
 REQUEST_TIMEOUT_SECONDS = 40
 
 
@@ -95,6 +94,24 @@ def resolve_ui_context(stack: str, region: Optional[str], cfn: Any = None) -> Ui
     )
 
 
+def update_client_parameters(cognito: Any) -> frozenset:
+    """The parameters ``UpdateUserPoolClient`` accepts, from the client's own model.
+
+    The describe call returns more than the update accepts (``ClientSecret``, the
+    two dates, and ``ClientType`` in newer service models), and botocore refuses
+    the whole request when an unknown parameter is present. Reading the accepted
+    set from the model of the client that sends the update keeps a newly returned
+    read-only field out of the request and keeps a newly accepted field in it.
+    A stand-in without ``meta`` gets the installed botocore's model.
+    """
+    model = getattr(getattr(cognito, "meta", None), "service_model", None)
+    if model is None:
+        import botocore.session
+
+        model = botocore.session.get_session().get_service_model("cognito-idp")
+    return frozenset(model.operation_model("UpdateUserPoolClient").input_shape.members)
+
+
 class AdminAuthFlow:
     """Context manager: enable ADMIN_USER_PASSWORD_AUTH on the app client, then restore.
 
@@ -114,10 +131,9 @@ class AdminAuthFlow:
 
     def _set_flows(self, flows: list) -> None:
         current = self._describe()
+        update_params = update_client_parameters(self.cognito)
         desired = {
-            k: v
-            for k, v in current.items()
-            if k not in _CLIENT_READ_ONLY_FIELDS and v is not None
+            k: v for k, v in current.items() if k in update_params and v is not None
         }
         desired["ExplicitAuthFlows"] = list(flows)
         self.cognito.update_user_pool_client(**desired)

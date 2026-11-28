@@ -20,6 +20,13 @@ Observed on a live stack — the client came back with every one of those `null`
 after a `make api-test` run.
 
 The fix is a read-modify-write. These tests pin that shape without touching AWS.
+
+The write-back keeps only the parameters the update accepts. The describe call
+returns more than that, and the extra set grows: AWS CLI 2.41 added `ClientType`,
+which the update refuses, so a denylist of read-only fields failed both the token
+step and the restore step. The accepted set is read from the CLI's own
+`--generate-cli-skeleton input`; here the fake CLI answers it from botocore's
+service model, the same authority offline.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import botocore.session
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -43,6 +51,28 @@ def _load_rbac_common():
 
 
 rbac_common = _load_rbac_common()
+
+_COGNITO_MODEL = botocore.session.get_session().get_service_model("cognito-idp")
+# What UpdateUserPoolClient accepts and what DescribeUserPoolClient returns,
+# according to the service model.
+UPDATE_PARAMETERS = frozenset(
+    _COGNITO_MODEL.operation_model("UpdateUserPoolClient").input_shape.members
+)
+DESCRIBE_FIELDS = frozenset(
+    _COGNITO_MODEL.operation_model("DescribeUserPoolClient")
+    .output_shape.members["UserPoolClient"]
+    .members
+)
+
+
+def _skeleton():
+    """What `update-user-pool-client --generate-cli-skeleton input` prints."""
+    return {name: "" for name in UPDATE_PARAMETERS}
+
+
+def _is_skeleton_call(args):
+    return "--generate-cli-skeleton" in args
+
 
 CTX = {
     "user_pool": "us-west-2_abc123",
@@ -83,6 +113,8 @@ def captured(monkeypatch):
 
     def fake_aws(*args, region=None):
         calls.append({"args": args, "region": region})
+        if _is_skeleton_call(args):
+            return _skeleton()
         if "describe-user-pool-client" in args:
             # Honour --query the way the CLI does: get_auth_flows asks only for
             # the flows list, set_auth_flows asks for the whole client.
@@ -99,7 +131,7 @@ def captured(monkeypatch):
 def _update_payload(calls):
     """The JSON body of the update call."""
     for call in calls:
-        if "update-user-pool-client" in call["args"]:
+        if "--cli-input-json" in call["args"]:
             args = call["args"]
             idx = args.index("--cli-input-json")
             return json.loads(args[idx + 1])
@@ -181,6 +213,8 @@ def test_absent_properties_are_not_sent_as_null(monkeypatch):
 
     def fake_aws(*args, region=None):
         calls.append({"args": args, "region": region})
+        if _is_skeleton_call(args):
+            return _skeleton()
         if "describe-user-pool-client" in args:
             query = args[args.index("--query") + 1] if "--query" in args else ""
             if query.endswith("ExplicitAuthFlows"):
@@ -203,3 +237,102 @@ def test_restore_puts_back_the_captured_flows(captured):
     rbac_common.restore_auth_flows(ctx)
     payload = _update_payload(captured)
     assert payload["ExplicitAuthFlows"] == DESCRIBED["ExplicitAuthFlows"]
+
+
+def _fake_cli(monkeypatch, described):
+    calls = []
+
+    def fake_aws(*args, region=None):
+        calls.append({"args": args, "region": region})
+        if _is_skeleton_call(args):
+            return _skeleton()
+        if "describe-user-pool-client" in args:
+            return dict(described)
+        return {}
+
+    monkeypatch.setattr(rbac_common, "aws", fake_aws)
+    return calls
+
+
+def _sample_value(name):
+    """A distinct non-null value per field, so a swapped or dropped one shows."""
+    return f"value-of-{name}"
+
+
+def test_the_service_model_sets_are_not_empty():
+    """An empty derived set would make the tests below pass vacuously."""
+    assert {"UserPoolId", "ClientId", "ExplicitAuthFlows", "CallbackURLs"} <= (
+        UPDATE_PARAMETERS
+    )
+    assert DESCRIBE_FIELDS & UPDATE_PARAMETERS
+    assert DESCRIBE_FIELDS - UPDATE_PARAMETERS, (
+        "the describe output should carry at least one field the update refuses"
+    )
+
+
+def test_a_field_the_update_does_not_accept_is_not_sent(monkeypatch):
+    """ClientType (returned by AWS CLI 2.41) and a field no model has yet are both
+    left out, and every accepted field the describe returned is sent unchanged."""
+    described = {name: _sample_value(name) for name in DESCRIBE_FIELDS}
+    described["ClientType"] = "PUBLIC"
+    described["SomeFieldAddedNextYear"] = {"Nested": True}
+    calls = _fake_cli(monkeypatch, described)
+
+    rbac_common.set_auth_flows(CTX, ["ALLOW_USER_SRP_AUTH"])
+    payload = _update_payload(calls)
+
+    assert "ClientType" not in payload
+    assert "SomeFieldAddedNextYear" not in payload
+    assert set(payload) <= UPDATE_PARAMETERS
+    preserved = (set(described) & UPDATE_PARAMETERS) - {
+        "UserPoolId",
+        "ClientId",
+        "ExplicitAuthFlows",
+    }
+    assert preserved, "no field to check preservation on"
+    for name in preserved:
+        assert payload.get(name) == described[name], f"{name} was not sent back"
+    assert payload["ExplicitAuthFlows"] == ["ALLOW_USER_SRP_AUTH"]
+
+
+def test_the_accepted_set_comes_from_the_cli_that_sends_the_update(monkeypatch):
+    """A parameter the CLI accepts but the service model here does not know yet is
+    kept, because omitting it from a full replace would clear it."""
+    described = dict(DESCRIBED, NewWritableSetting="keep-me", ClientType="PUBLIC")
+    calls = []
+
+    def fake_aws(*args, region=None):
+        calls.append({"args": args, "region": region})
+        if _is_skeleton_call(args):
+            return {**_skeleton(), "NewWritableSetting": ""}
+        if "describe-user-pool-client" in args:
+            return dict(described)
+        return {}
+
+    monkeypatch.setattr(rbac_common, "aws", fake_aws)
+    rbac_common.set_auth_flows(CTX, ["ALLOW_USER_SRP_AUTH"])
+    payload = _update_payload(calls)
+    assert payload["NewWritableSetting"] == "keep-me"
+    assert "ClientType" not in payload
+
+
+def test_an_unreadable_parameter_list_stops_before_the_update(monkeypatch):
+    """With no parameter list every field would be dropped and the full replace
+    would clear the client, so it fails before any update is sent."""
+    calls = []
+
+    def fake_aws(*args, region=None):
+        calls.append({"args": args, "region": region})
+        if _is_skeleton_call(args):
+            return "not json"
+        if "describe-user-pool-client" in args:
+            return dict(DESCRIBED)
+        return {}
+
+    monkeypatch.setattr(rbac_common, "aws", fake_aws)
+    with pytest.raises(RuntimeError, match="generate-cli-skeleton"):
+        rbac_common.set_auth_flows(CTX, ["ALLOW_USER_SRP_AUTH"])
+    assert not any(
+        "update-user-pool-client" in c["args"] and "--cli-input-json" in c["args"]
+        for c in calls
+    )
