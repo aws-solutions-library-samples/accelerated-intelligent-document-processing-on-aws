@@ -51,12 +51,32 @@ Defence in depth, therefore:
 
 * IAM (the real boundary): the agent runs with credentials from
   `sts:AssumeRole` into a read-only role, `IDP_FAILURE_AGENT_ROLE_ARN`. Nothing
-  it does can mutate the account regardless of what it decides to try.
-* Harness (a speed bump, not a boundary): `--disallowedTools` strips the write
-  tools from its context, and `--allowedTools` lists only read-only `aws` verbs.
-  Bash allowlist rules are prefix globs, so `Bash(aws logs *)` does NOT stop a
-  chained `aws logs ... ; aws cloudformation delete-stack ...`. Treat the
-  allowlist as noise reduction; the read-only role is what makes it safe.
+  it does can mutate the account regardless of what it decides to try. When the
+  variable is unset or the assume fails, the agent does not run at all and the
+  caller uses its single-shot summary; it never runs on the job's own
+  credentials (`_readonly_credentials`).
+* Environment: the child gets an allowlisted environment (`child_env`): PATH, a
+  private HOME, the locale, a proxy if one is set, the region, the assumed
+  role's three values and the CLI's own settings. Nothing else in the job's
+  environment is passed, the container-credential variables CodeBuild sets
+  (`AWS_CONTAINER_CREDENTIALS_*`) included, so the job's role is not reachable
+  through the SDK's credential chain.
+* Harness: `claude_command` carries the same session-scope flags as the AI
+  review (`SESSION_SCOPE_FLAGS`, `--strict-mcp-config`, `--permission-mode
+  manual`), so no settings, CLAUDE.md, hooks or MCP servers load from the
+  checkout and the file tools stay inside the working directory and the log
+  directory. `--disallowedTools` strips the write tools, and `--allowedTools`
+  lists only read-only `aws` and `git` verbs. Those Bash rules are prefix
+  matches, so options that turn a read into a write or a request elsewhere are
+  refused by deny rules (`_DISALLOWED_TOOLS`): `--output` for git, which writes a
+  file, and `--endpoint-url` for aws. On the pinned CLI a command chained,
+  piped, redirected or substituted after an allowed prefix is refused as well;
+  `scripts/sdlc/tests/test_failure_agent_session_scope.py` measures both. The
+  allowlist still reduces noise more than it bounds anything; the read-only role
+  is what bounds what a command can change.
+* Output: the report is passed through the repository's redactor
+  (`redact_report`) before it is returned, because the caller publishes it to
+  S3, the failure email and the team's chat channel.
 * Blast radius on failure: this module never raises and never decides pass/fail.
   It returns a string or None. Python owns the verdict — the prompt-based
   routing that misclassified failures and leaked its scratchpad into the summary
@@ -78,6 +98,15 @@ import shutil
 import subprocess  # nosec B404 - fixed argv, no shell, no user input
 import sys
 import time
+from collections.abc import Mapping
+
+# The redactor lives in scripts/ux_runner. Appended, so a name in scripts/ can
+# never stand in for a standard-library module.
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1]
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.append(str(_SCRIPTS_DIR))
+
+from ux_runner import redact  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -86,12 +115,16 @@ import time
 # Opt-in. Set IDP_FAILURE_AGENT=1 in the pipeline env to enable.
 AGENT_ENABLED = os.environ.get("IDP_FAILURE_AGENT", "0").lower() in ("1", "true")
 
-# Pinned so a surprise npm release cannot change CI behaviour mid-week.
-# --permission-prompts requires >= 2.1.259; do not lower this pin without
-# also removing that flag (without it, a tool call outside the allowlist waits
-# on a prompt nobody can answer, and the agent hangs until the wall clock).
+# Pinned so a surprise npm release cannot change CI behaviour mid-week, and kept
+# equal to the AI review's CLAUDE_CODE_VERSION (asserted in
+# scripts/sdlc/tests/test_failure_agent.py), so both harnesses run the version
+# whose session-scope flags are measured. Every flag claude_command passes
+# exists there; scripts/sdlc/tests/test_failure_agent_session_scope.py measures
+# what the argv admits and refuses on it. --permission-prompts is load-bearing:
+# without it a tool call outside the allowlist waits on a prompt nobody can
+# answer, and the agent hangs until the wall clock.
 CLAUDE_CODE_NPM_SPEC = os.environ.get(
-    "IDP_FAILURE_AGENT_NPM_SPEC", "@anthropic-ai/claude-code@2.1.259"
+    "IDP_FAILURE_AGENT_NPM_SPEC", "@anthropic-ai/claude-code@2.1.281"
 )
 
 # Same model the existing single-shot summary uses (_invoke_bedrock), so this
@@ -173,12 +206,13 @@ AGENT_MAX_TURNS = int(os.environ.get("IDP_FAILURE_AGENT_MAX_TURNS", "40"))
 AGENT_MAX_BUDGET_USD = os.environ.get("IDP_FAILURE_AGENT_BUDGET_USD", "5.00")
 AGENT_WALL_CLOCK_SECONDS = int(os.environ.get("IDP_FAILURE_AGENT_TIMEOUT", "900"))
 
-# Read-only role for the agent to assume. When unset the agent still runs, but
-# on the ambient PowerUser credentials — printed loudly, because then only the
-# harness allowlist stands between the agent and a shared account.
+# Read-only role for the agent to assume. When unset, or when the assume fails,
+# the agent is skipped and the caller falls back to its single-shot summary: it
+# never runs on the job's own credentials.
 AGENT_ROLE_ARN = os.environ.get("IDP_FAILURE_AGENT_ROLE_ARN", "")
 
 WORKDIR = "/tmp/idp-failure-agent"  # nosec B108 - CodeBuild container, ephemeral
+AGENT_HOME = "/tmp/idp-failure-agent-home"  # nosec B108 - as above
 
 # Read-only AWS verbs the agent may run unprompted. Deliberately narrow: these
 # are the services that actually hold IDP failure evidence.
@@ -212,14 +246,74 @@ _ALLOWED_TOOLS = [
     "Bash(git blame*)",
 ]
 
-# Bare names remove the tool from the agent's context entirely.
+# The built-in tools the session has at all (`--tools`). `--restricted` removes
+# Bash unless it is named here, and the agent needs it for `aws` and `git`.
+_SESSION_TOOLS = ("Read", "Grep", "Glob", "Bash")
+
+# Bare names remove the tool from the agent's context entirely. The Bash rules
+# refuse options the prefix rules above would otherwise admit, and a deny rule
+# wins over an allow rule:
+#   * `--output` / `--output=<path>` is a diff option `git log`, `git show` and
+#     `git diff` all accept, and it writes the output to that path;
+#   * `--endpoint-url` sends an `aws` request to a host other than the service's.
 _DISALLOWED_TOOLS = [
     "Edit",
     "Write",
+    "MultiEdit",
     "NotebookEdit",
     "WebSearch",  # unavailable on Bedrock anyway
     "WebFetch",
+    "Task",
+    "Bash(git *--output*)",
+    "Bash(aws *--endpoint-url*)",
 ]
+
+# Flags that confine the session, the same pair the AI review uses
+# (scripts/sdlc/ai_mr_review.py::SESSION_SCOPE_FLAGS). `--restricted` confines
+# Read, Grep and Glob to the working directories and ignores the user, project
+# and local settings files; `--safe-mode` stops CLAUDE.md, rules, skills,
+# commands, agents and hooks from loading. Both exist on the pinned CLI above,
+# and scripts/sdlc/tests/test_failure_agent_session_scope.py runs this argv on it.
+SESSION_SCOPE_FLAGS = ("--restricted", "--safe-mode")
+
+# Named on the command line so that a settings file's `defaultMode` cannot widen
+# the allowlist; with `--permission-prompts none` anything outside it is denied.
+PERMISSION_MODE = "manual"
+
+# The only variables of the job's environment the child receives, by name. The
+# credentials and the CLI's own settings are set by `child_env` itself.
+_PASSED_ENV_KEYS = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+
+# Job variables whose values may never appear in the published report.
+_REDACTED_ENV_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "IDP_ADMIN_EMAIL",
+    "SLACK_WEBHOOK_URL",
+)
+
+# Environment values naming the GitLab instance, when the caller runs in a
+# GitLab job: host names as they are, URLs by their host.
+_HOST_ENV_KEYS = ("CI_SERVER_HOST", "CI_SERVER_FQDN")
+_URL_ENV_KEYS = ("CI_API_V4_URL", "CI_SERVER_URL")
 
 # Noise classes that earn no tokens. Applied only to the excerpt handed to the
 # model — the full log always reaches disk unfiltered, so the agent can still
@@ -506,8 +600,16 @@ CONFIDENCE
 
 
 def _readonly_credentials() -> dict[str, str] | None:
-    """Assume the read-only role and return its credentials as env vars."""
+    """Assume the read-only role and return its credentials as env vars.
+
+    None when the role is not configured or cannot be assumed; the caller then
+    skips the agent rather than run it on the job's own credentials.
+    """
     if not AGENT_ROLE_ARN:
+        print(
+            "⚠️  failure-agent: IDP_FAILURE_AGENT_ROLE_ARN unset — skipping the "
+            "agent; the single-shot summary is used instead"
+        )
         return None
     import boto3
 
@@ -517,16 +619,135 @@ def _readonly_credentials() -> dict[str, str] | None:
             RoleSessionName="idp-failure-agent",
             # Bounded to the agent's own wall clock plus slack, so a leaked
             # credential is useless almost immediately.
-            DurationSeconds=max(900, AGENT_WALL_CLOCK_SECONDS + 300),
+            # 3600 is the role's MaxSessionDuration (sdlc-iam-role.yml); STS
+            # refuses a longer request, which would skip the agent.
+            DurationSeconds=min(3600, max(900, AGENT_WALL_CLOCK_SECONDS + 300)),
         )["Credentials"]
     except Exception as e:  # noqa: BLE001
-        print(f"⚠️  failure-agent: could not assume {AGENT_ROLE_ARN}: {e}")
+        print(
+            f"⚠️  failure-agent: could not assume the read-only role "
+            f"({redact_report(str(e))}) — skipping the agent; the single-shot "
+            "summary is used instead"
+        )
         return None
     return {
         "AWS_ACCESS_KEY_ID": session["AccessKeyId"],
         "AWS_SECRET_ACCESS_KEY": session["SecretAccessKey"],
         "AWS_SESSION_TOKEN": session["SessionToken"],
     }
+
+
+def child_env(
+    credentials: Mapping[str, str],
+    home: str,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """The environment the agent's CLI runs in, built from an allowlist.
+
+    Only the names in `_PASSED_ENV_KEYS` are copied from the job's environment.
+    The assumed role's credentials, a private HOME and the CLI's settings are set
+    here, so no other credential source the job holds (the container-credential
+    endpoint CodeBuild exports, a shared credentials file under the job's HOME,
+    a token variable) is visible to the child or to the commands it runs.
+    """
+    environ = os.environ if environ is None else environ
+    env = {key: environ[key] for key in _PASSED_ENV_KEYS if environ.get(key)}
+    env.setdefault("PATH", os.defpath)
+    env.setdefault("AWS_REGION", env.get("AWS_DEFAULT_REGION", "us-east-1"))
+    env.setdefault("AWS_DEFAULT_REGION", env["AWS_REGION"])
+    env.update(
+        {
+            "HOME": home,
+            # The SDK's other credential sources, closed explicitly: the files
+            # under the private HOME do not exist, and instance metadata is off.
+            "AWS_CONFIG_FILE": os.devnull,
+            "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "ANTHROPIC_MODEL": regional_model_id(AGENT_MODEL, env["AWS_REGION"]),
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": regional_model_id(
+                AGENT_HAIKU_MODEL, env["AWS_REGION"]
+            ),
+            # Never let CI wait on a TTY that does not exist.
+            "CI": "1",
+            "DISABLE_TELEMETRY": "1",
+            "DISABLE_AUTOUPDATER": "1",
+        }
+    )
+    env.update(credentials)
+    return env
+
+
+def claude_command(binary: str, prompt: str, model: str, log_dir: str) -> list[str]:
+    """The exact argv the agent runs."""
+    return [
+        binary,
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--model",
+        model,
+        "--max-turns",
+        str(AGENT_MAX_TURNS),
+        "--max-budget-usd",
+        str(AGENT_MAX_BUDGET_USD),
+        # Confinement and instruction loading; see SESSION_SCOPE_FLAGS.
+        *SESSION_SCOPE_FLAGS,
+        # The build log is outside the checkout; `--restricted` confines the file
+        # tools to the working directories, so the log directory is added.
+        "--add-dir",
+        log_dir,
+        "--strict-mcp-config",
+        "--permission-mode",
+        PERMISSION_MODE,
+        # Anything outside the allowlist is DENIED rather than queued for a
+        # prompt nobody can answer. Without this the agent hangs.
+        "--permission-prompts",
+        "none",
+        "--no-session-persistence",
+        "--tools",
+        ",".join(_SESSION_TOOLS),
+        "--allowedTools",
+        *_ALLOWED_TOOLS,
+        "--disallowedTools",
+        *_DISALLOWED_TOOLS,
+    ]
+
+
+def _redactor(
+    environ: Mapping[str, str] | None = None, extra: tuple[str, ...] = ()
+) -> redact.Redactor:
+    """A redactor holding the job's credential values and the forge's host."""
+    import urllib.parse
+
+    environ = os.environ if environ is None else environ
+    redactor = redact.Redactor(extra)
+    redactor.add(*(environ.get(key, "") for key in _REDACTED_ENV_KEYS))
+    redactor.add(*(environ.get(key, "") for key in _HOST_ENV_KEYS))
+    for key in _URL_ENV_KEYS:
+        try:
+            redactor.add(urllib.parse.urlsplit(environ.get(key, "")).hostname or "")
+        except ValueError:
+            continue
+    return redactor
+
+
+def redact_report(
+    text: str,
+    environ: Mapping[str, str] | None = None,
+    extra: tuple[str, ...] = (),
+) -> str:
+    """`text` with credentials, account ids, addresses and forge hosts replaced.
+
+    Applied to every model-written summary before it leaves the job: the caller
+    puts it in S3, the failure email, a GitLab artifact and the team's chat
+    channel. `scripts/ux_runner/redact.py` holds the shapes (account ids, so ARNs
+    that carry one, access keys, session and bearer tokens, JWTs, email
+    addresses, presigned-URL signatures); the values registered here are the
+    job's own credentials and endpoints, plus `extra`.
+    """
+    return _redactor(environ, extra)(text)
 
 
 def ensure_claude_code() -> str | None:
@@ -570,6 +791,12 @@ def run_failure_agent(
 
     started = time.time()
     try:
+        # First, so that without the read-only role nothing else is done.
+        creds = _readonly_credentials()
+        if not creds:
+            return None
+        secrets = tuple(creds.values())
+
         os.makedirs(WORKDIR, exist_ok=True)
 
         log_text = fetch_full_build_log()
@@ -589,55 +816,17 @@ def run_failure_agent(
         if not claude:
             return None
 
-        env = os.environ.copy()
-        env.update(
-            {
-                "CLAUDE_CODE_USE_BEDROCK": "1",
-                "ANTHROPIC_MODEL": regional_model_id(AGENT_MODEL),
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": regional_model_id(AGENT_HAIKU_MODEL),
-                # Never let CI wait on a TTY that does not exist.
-                "CI": "1",
-                "DISABLE_TELEMETRY": "1",
-                "DISABLE_AUTOUPDATER": "1",
-            }
-        )
-        creds = _readonly_credentials()
-        if creds:
-            env.update(creds)
-            print("🔒 failure-agent: running on read-only assumed-role credentials")
-        else:
-            print(
-                "⚠️  failure-agent: IDP_FAILURE_AGENT_ROLE_ARN unset — running on "
-                "the ambient PowerUser credentials. Only the harness allowlist "
-                "limits it, and Bash allowlist rules are prefix globs, not a "
-                "security boundary. Set the role ARN before relying on this."
-            )
+        # Outside WORKDIR, which the file tools may read: the CLI writes its own
+        # state under HOME.
+        os.makedirs(AGENT_HOME, exist_ok=True)
+        env = child_env(creds, AGENT_HOME)
+        print("🔒 failure-agent: running on read-only assumed-role credentials")
 
-        cmd = [
-            claude,
-            "-p",
-            _AGENT_TASK.format(brief=brief),
-            "--output-format",
-            "json",
-            "--model",
-            regional_model_id(AGENT_MODEL),
-            "--max-turns",
-            str(AGENT_MAX_TURNS),
-            "--max-budget-usd",
-            str(AGENT_MAX_BUDGET_USD),
-            # Anything outside the allowlist is DENIED rather than queued for a
-            # prompt nobody can answer. Without this the agent hangs.
-            "--permission-prompts",
-            "none",
-            "--no-session-persistence",
-            "--allowedTools",
-            *_ALLOWED_TOOLS,
-            "--disallowedTools",
-            *_DISALLOWED_TOOLS,
-        ]
+        model = env["ANTHROPIC_MODEL"]
+        cmd = claude_command(claude, _AGENT_TASK.format(brief=brief), model, WORKDIR)
 
         print(
-            f"🤖 failure-agent: starting (model={regional_model_id(AGENT_MODEL)}, "
+            f"🤖 failure-agent: starting (model={model}, "
             f"max_turns={AGENT_MAX_TURNS}, budget=${AGENT_MAX_BUDGET_USD}, "
             f"wall_clock={AGENT_WALL_CLOCK_SECONDS}s)"
         )
@@ -656,7 +845,7 @@ def run_failure_agent(
             print(
                 f"⚠️  failure-agent: exit {result.returncode} after {elapsed:.0f}s "
                 f"— falling back to the single-shot summary. "
-                f"stderr: {result.stderr[-500:]}"
+                f"stderr: {redact_report(result.stderr[-500:], extra=secrets)}"
             )
             return None
 
@@ -664,7 +853,7 @@ def run_failure_agent(
         if not report:
             print("⚠️  failure-agent: produced no text — falling back")
             return None
-        report = _strip_preamble(report)
+        report = redact_report(_strip_preamble(report), extra=secrets)
         cost_note = f", cost ${cost:.2f}" if cost is not None else ""
         print(f"✅ failure-agent: completed in {elapsed:.0f}s{cost_note}")
         return report
@@ -676,7 +865,10 @@ def run_failure_agent(
         )
         return None
     except Exception as e:  # noqa: BLE001 - diagnostics must never fail a build
-        print(f"⚠️  failure-agent: {type(e).__name__}: {e} — falling back")
+        print(
+            f"⚠️  failure-agent: {type(e).__name__}: {redact_report(str(e))} "
+            "— falling back"
+        )
         return None
 
 

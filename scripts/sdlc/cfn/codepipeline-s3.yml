@@ -943,8 +943,9 @@ Resources:
           # Read-only credentials the agent runs on. Built by convention from
           # the IAM stack's role name rather than imported, because that stack
           # (scripts/sdlc/cfn/sdlc-iam-role.yml) exports nothing and is deployed
-          # independently of this one. If the assume fails the agent logs loudly
-          # and degrades — it does NOT silently run on this role's credentials.
+          # independently of this one. If the variable is unset or the assume
+          # fails, the agent is skipped and the single-shot summary is used: it
+          # never runs on this role's credentials.
           - Name: IDP_FAILURE_AGENT_ROLE_ARN
             Value: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FailureAgentRoleName}'
           # Keep a failed stack alive for inspection instead of tearing it down

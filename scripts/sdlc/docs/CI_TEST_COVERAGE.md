@@ -1350,6 +1350,16 @@ cases, with and without the flags, are in the script's docstring. The worktree a
 has its `.claude/` directory (apart from the pinned skills), `CLAUDE.local.md`,
 `AGENTS.md` and `.mcp.json` removed, from the one list `AGENT_CONFIG_LOCATIONS`.
 
+**The CI failure agent's session is scoped the same way.** `failure_agent.py`'s
+argv carries the same two flags plus `--strict-mcp-config` and
+`--permission-mode manual`, names `Bash` in `--tools` because `--restricted`
+removes it otherwise, and denies `git ... --output` and `aws ... --endpoint-url`.
+It runs only on its read-only role (unset or a failed assume skips it), in an
+allowlisted environment, and its report is redacted before it is published. Its
+CLI pin is kept equal to the review's. `scripts/sdlc/tests/test_failure_agent_session_scope.py`
+measures what the argv admits and refuses against a scripted model, and skips
+in both CIs for the same reason as the review's probe.
+
 **A review is checked before it is posted.** `posting_refusals` withholds a review
 whose text contains a value of one of the job's credential variables, a credential
 shape the redactor in `scripts/ux_runner/redact.py` knows, a GitHub token, an AWS

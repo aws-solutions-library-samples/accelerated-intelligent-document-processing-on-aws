@@ -58,6 +58,7 @@ from failure_agent import (  # noqa: E402
     _update_configuration_module,
     build_evidence_brief,
     fetch_full_build_log,
+    redact_report,
     regional_model_id,
     run_failure_agent,
 )
@@ -7993,7 +7994,13 @@ def _filter_root_cause_events(failed_events):
 
 
 def _invoke_bedrock(prompt):
-    """Invoke Bedrock with a prompt and return the response text"""
+    """Invoke Bedrock with a prompt and return the response text, redacted.
+
+    Every model-written summary reaches S3, the failure email, a GitLab artifact
+    and the team's chat channel, so the text goes through the same redactor as
+    the failure agent's report (`failure_agent.redact_report`) before it is
+    returned.
+    """
     region = ci_region()
     bedrock = boto3.client("bedrock-runtime", region_name=region)
     # Opus 4.8 rejects sampling params (temperature/top_p/top_k) with a 400 —
@@ -8013,7 +8020,7 @@ def _invoke_bedrock(prompt):
     # first text block rather than assuming content[0] is text.
     for block in response_body["content"]:
         if block.get("type") == "text":
-            return block["text"]
+            return redact_report(block["text"])
     # No text block (e.g. truncated response) — raise so callers fall back to
     # their manual summary instead of silently printing nothing.
     raise ValueError(
