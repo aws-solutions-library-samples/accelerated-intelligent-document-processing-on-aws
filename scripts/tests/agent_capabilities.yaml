@@ -173,8 +173,11 @@ vocabulary:
       external: true
       note: >-
         Shell commands a harness lets the model run. Claude Code's Bash allowlist
-        rules are prefix matches, so a command chained after an allowed prefix runs
-        too, and reaches whatever the shell and its credentials can.
+        rules are prefix matches, so an option after an allowed prefix is admitted
+        unless a deny rule names it, and what an admitted command reaches is
+        whatever the shell and its credentials can. Whether a chained command is
+        admitted depends on the CLI version and its flags; an entry that relies on
+        it being refused cites a measurement.
     ci_job_log:
       external: false
       note: The CI job's own log.

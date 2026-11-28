@@ -115,12 +115,16 @@ from ux_runner import redact  # noqa: E402
 # Opt-in. Set IDP_FAILURE_AGENT=1 in the pipeline env to enable.
 AGENT_ENABLED = os.environ.get("IDP_FAILURE_AGENT", "0").lower() in ("1", "true")
 
-# Pinned so a surprise npm release cannot change CI behaviour mid-week.
-# --permission-prompts requires >= 2.1.259; do not lower this pin without
-# also removing that flag (without it, a tool call outside the allowlist waits
-# on a prompt nobody can answer, and the agent hangs until the wall clock).
+# Pinned so a surprise npm release cannot change CI behaviour mid-week, and kept
+# equal to the AI review's CLAUDE_CODE_VERSION (asserted in
+# scripts/sdlc/tests/test_failure_agent.py), so both harnesses run the version
+# whose session-scope flags are measured. Every flag claude_command passes
+# exists there; scripts/sdlc/tests/test_failure_agent_session_scope.py measures
+# what the argv admits and refuses on it. --permission-prompts is load-bearing:
+# without it a tool call outside the allowlist waits on a prompt nobody can
+# answer, and the agent hangs until the wall clock.
 CLAUDE_CODE_NPM_SPEC = os.environ.get(
-    "IDP_FAILURE_AGENT_NPM_SPEC", "@anthropic-ai/claude-code@2.1.259"
+    "IDP_FAILURE_AGENT_NPM_SPEC", "@anthropic-ai/claude-code@2.1.281"
 )
 
 # Same model the existing single-shot summary uses (_invoke_bedrock), so this
@@ -268,7 +272,8 @@ _DISALLOWED_TOOLS = [
 # (scripts/sdlc/ai_mr_review.py::SESSION_SCOPE_FLAGS). `--restricted` confines
 # Read, Grep and Glob to the working directories and ignores the user, project
 # and local settings files; `--safe-mode` stops CLAUDE.md, rules, skills,
-# commands, agents and hooks from loading. Both exist on the pinned CLI above.
+# commands, agents and hooks from loading. Both exist on the pinned CLI above,
+# and scripts/sdlc/tests/test_failure_agent_session_scope.py runs this argv on it.
 SESSION_SCOPE_FLAGS = ("--restricted", "--safe-mode")
 
 # Named on the command line so that a settings file's `defaultMode` cannot widen
@@ -614,7 +619,9 @@ def _readonly_credentials() -> dict[str, str] | None:
             RoleSessionName="idp-failure-agent",
             # Bounded to the agent's own wall clock plus slack, so a leaked
             # credential is useless almost immediately.
-            DurationSeconds=max(900, AGENT_WALL_CLOCK_SECONDS + 300),
+            # 3600 is the role's MaxSessionDuration (sdlc-iam-role.yml); STS
+            # refuses a longer request, which would skip the agent.
+            DurationSeconds=min(3600, max(900, AGENT_WALL_CLOCK_SECONDS + 300)),
         )["Credentials"]
     except Exception as e:  # noqa: BLE001
         print(

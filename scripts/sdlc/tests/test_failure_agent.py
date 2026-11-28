@@ -497,3 +497,37 @@ def test_the_single_shot_summary_is_redacted_before_it_is_published(cbd, monkeyp
     for leaked in ("123456789012", "someone@example.com", "AKIAIOSFODNN7EXAMPLE"):
         assert leaked not in summary, leaked
     assert "function:f" in summary
+
+
+def test_the_cli_pin_is_the_ai_reviews():
+    """One CLI version, the one whose session-scope flags are measured."""
+    import yaml
+
+    jobs = yaml.safe_load(
+        (Path(__file__).resolve().parents[3] / ".gitlab-ci.yml").read_text()
+    )
+    pinned = str(jobs["ai_mr_review"]["variables"]["CLAUDE_CODE_VERSION"])
+    assert fa.CLAUDE_CODE_NPM_SPEC == f"@anthropic-ai/claude-code@{pinned}"
+
+
+def test_the_session_never_outlasts_the_roles_ceiling(monkeypatch):
+    import boto3
+
+    seen = {}
+
+    class _Sts:
+        def assume_role(self, **kwargs):
+            seen.update(kwargs)
+            return {
+                "Credentials": {
+                    "AccessKeyId": _ASSUMED["AWS_ACCESS_KEY_ID"],
+                    "SecretAccessKey": _ASSUMED["AWS_SECRET_ACCESS_KEY"],
+                    "SessionToken": _ASSUMED["AWS_SESSION_TOKEN"],
+                }
+            }
+
+    monkeypatch.setattr(fa, "AGENT_ROLE_ARN", "arn:aws:iam::123456789012:role/ro")
+    monkeypatch.setattr(fa, "AGENT_WALL_CLOCK_SECONDS", 7200)
+    monkeypatch.setattr(boto3, "client", lambda service, **_: _Sts())
+    assert fa._readonly_credentials() == _ASSUMED
+    assert seen["DurationSeconds"] == 3600
