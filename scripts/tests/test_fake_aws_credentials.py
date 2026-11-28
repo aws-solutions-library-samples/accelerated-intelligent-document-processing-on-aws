@@ -18,6 +18,11 @@ Two rules, over every file git tracks or would track:
   that length. A git SHA fixture beside a fake key is the usual case; build it as an
   expression, ``"1234abcd" * 5``, which is a value and not a literal.
 
+  A run of letters only is not reported: a secret access key is random base64, so a
+  40-character one with no digit, ``/``, ``+`` or ``=`` turns up about once in five
+  thousand keys, while letters-only runs of that length are ordinary identifiers.
+  ``EnablePropagateAdditionalUserContextData``, a Cognito app-client field, is one.
+
 The convention, and how to keep a fixture distinct while following it, is in
 ``.claude/skills/testing-qa/SKILL.md``.
 """
@@ -54,7 +59,9 @@ def unmarked_secret_length_literals(text: str) -> list[str]:
     if not KEY_ID_RE.search(text):
         return []
     return [
-        m for m in SECRET_LENGTH_LITERAL_RE.findall(text) if PLACEHOLDER_MARK not in m
+        m
+        for m in SECRET_LENGTH_LITERAL_RE.findall(text)
+        if PLACEHOLDER_MARK not in m and not m.isalpha()
     ]
 
 
@@ -139,6 +146,13 @@ def test_key_id_rule(text: str, found: list[str]) -> None:
             [],
         ),
         ('ID = "AKIAIOSFODNN7EXAMPLE"\nTREE = "0123abcd" * 5', []),
+        (
+            'ID = "AKIAIOSFODNN7EXAMPLE"\n'
+            'FIELD = "EnablePropagateAdditionalUserContextData"',
+            [],
+        ),
+        (f'ID = "AKIAIOSFODNN7EXAMPLE"\nKEY = "{"Ab" * 19}/x"', [f"{'Ab' * 19}/x"]),
+        (f'ID = "AKIAIOSFODNN7EXAMPLE"\nKEY = "{"Ab" * 19}9x"', [f"{'Ab' * 19}9x"]),
     ],
 )
 def test_secret_length_rule(text: str, found: list[str]) -> None:

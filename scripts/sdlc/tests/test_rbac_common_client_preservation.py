@@ -58,7 +58,7 @@ DESCRIBED = {
     "UserPoolId": "us-west-2_abc123",
     "ClientName": "IDP-Client",
     "ClientId": "clientid123",
-    "ClientSecret": "should-not-be-sent-back",
+    "ClientSecret": "should-not-be-sent-back-placeholder",
     "CreationDate": "2026-01-01T00:00:00Z",
     "LastModifiedDate": "2026-01-02T00:00:00Z",
     "ClientType": "PUBLIC",

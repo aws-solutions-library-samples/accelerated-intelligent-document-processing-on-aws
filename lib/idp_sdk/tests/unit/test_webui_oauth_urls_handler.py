@@ -208,7 +208,7 @@ def test_keeps_every_writable_field_and_drops_describe_only_ones():
             "AuthSessionValidity": 5,
             "EnablePropagateAdditionalUserContextData": False,
             "ClientType": "PUBLIC",
-            "ClientSecret": "not-a-real-secret",
+            "ClientSecret": "not-a-real-secret-placeholder",
             "CreationDate": "2026-01-01T00:00:00Z",
             "LastModifiedDate": "2026-01-02T00:00:00Z",
             "WriteAttributes": None,

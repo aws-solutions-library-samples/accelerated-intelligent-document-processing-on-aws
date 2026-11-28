@@ -29,7 +29,7 @@ CLIENT = "clientid123"
 
 #: Read-only fields describe returns that the update does not accept.
 READ_ONLY = {
-    "ClientSecret": "not-a-real-secret",
+    "ClientSecret": "not-a-real-secret-placeholder",
     "CreationDate": "2026-01-01T00:00:00Z",
     "LastModifiedDate": "2026-01-02T00:00:00Z",
 }

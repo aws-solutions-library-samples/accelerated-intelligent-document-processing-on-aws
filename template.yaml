@@ -14431,12 +14431,11 @@ Resources:
     DependsOn: ExternalIdentityProviderReady
     # MAINTENANCE NOTE: In APIGateway hosting mode the WebUIClientOAuthUrls custom
     # resource does a read-modify-write of this client (to add the execute-api
-    # CallbackURLs/LogoutURLs post-deploy — see that resource). Its Lambda
-    # preserves a fixed list of this client's writable properties when calling
-    # UpdateUserPoolClient. If you add a new writable property here (e.g.
-    # AuthSessionValidity, AnalyticsConfiguration), also add it to that Lambda's
-    # preserve list (WebUIClientOAuthUrlsFunction InlineCode), or the custom
-    # resource will silently reset it on update.
+    # CallbackURLs/LogoutURLs post-deploy — see that resource). Its Lambda sends
+    # back every field DescribeUserPoolClient returns that the SDK's
+    # UpdateUserPoolClient model accepts, so a writable property added here is
+    # preserved without a code change, as long as the Lambda runtime's botocore
+    # models it.
     Properties:
       ClientName: !Sub "${AWS::StackName}-Client"
       AllowedOAuthFlows:
