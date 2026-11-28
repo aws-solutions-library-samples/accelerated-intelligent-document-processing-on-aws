@@ -1,0 +1,988 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-vdxcvpsm"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Release Validation: v0.6.16 | GenAI IDP</title><link rel="canonical" href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/release-validation/v0616/"/><link rel="sitemap" href="/accelerated-intelligent-document-processing-on-aws/sitemap-index.xml"/><link rel="shortcut icon" href="/accelerated-intelligent-document-processing-on-aws/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v7.4.12"/><meta name="generator" content="Starlight v0.41.4"/><meta property="og:title" content="Release Validation: v0.6.16"/><meta property="og:type" content="article"/><meta property="og:url" content="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/release-validation/v0616/"/><meta property="og:locale" content="en"/><meta property="og:description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><meta property="og:site_name" content="GenAI IDP"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg><svg aria-hidden="true" class="dark astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg><svg aria-hidden="true" class="auto astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg></template><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/print.ehPL0gv-.css" media="print"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/common.DrVeimLH.css"><style>@layer starlight.components{.card:where(.astro-zts4jgjd){--sl-card-border:var(--sl-color-purple);--sl-card-bg:var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);flex-direction:column;gap:clamp(.5rem,.125rem + 1vw,1rem);padding:clamp(1rem,.125rem + 3vw,2.5rem)}.card:where(.astro-zts4jgjd):nth-child(4n+1){--sl-card-border:var(--sl-color-orange);--sl-card-bg:var(--sl-color-orange-low)}.card:where(.astro-zts4jgjd):nth-child(4n+3){--sl-card-border:var(--sl-color-green);--sl-card-bg:var(--sl-color-green-low)}.card:where(.astro-zts4jgjd):nth-child(4n+4){--sl-card-border:var(--sl-color-red);--sl-card-bg:var(--sl-color-red-low)}.card:where(.astro-zts4jgjd):nth-child(4n+5){--sl-card-border:var(--sl-color-blue);--sl-card-bg:var(--sl-color-blue-low)}.title:where(.astro-zts4jgjd){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);align-items:center;gap:1rem}.card:where(.astro-zts4jgjd) .icon:where(.astro-zts4jgjd){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);border-radius:.25rem;flex-shrink:0;padding:.2em}.card:where(.astro-zts4jgjd) .body:where(.astro-zts4jgjd){font-size:clamp(var(--sl-text-sm), calc(.5rem + 1vw), var(--sl-text-body));margin:0}.card-grid:where(.astro-lmor3ela){grid-template-columns:100%;gap:1rem;display:grid}.card-grid:where(.astro-lmor3ela)>*{margin-top:0!important}@media (width>=50rem){.card-grid:where(.astro-lmor3ela){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-lmor3ela){--stagger-height:5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-lmor3ela)>:nth-child(2n){transform:translateY(var(--stagger-height))}}.sl-link-card:where(.astro-vodiqeol){border:1px solid var(--sl-color-gray-5);box-shadow:var(--sl-shadow-sm);border-radius:.5rem;grid-template-columns:1fr auto;gap:.5rem;padding:1rem;display:grid;position:relative}a:where(.astro-vodiqeol){line-height:var(--sl-line-height-headings);text-decoration:none}a:where(.astro-vodiqeol):before{content:"";position:absolute;inset:0}.stack:where(.astro-vodiqeol){flex-direction:column;gap:.5rem}.title:where(.astro-vodiqeol){color:var(--sl-color-white);font-weight:600;font-size:var(--sl-text-lg)}.description:where(.astro-vodiqeol){color:var(--sl-color-gray-3);line-height:1.5}.icon:where(.astro-vodiqeol){color:var(--sl-color-gray-3)}.sl-link-card:where(.astro-vodiqeol):hover{background:var(--sl-color-gray-7,var(--sl-color-gray-6));border-color:var(--sl-color-gray-2)}.sl-link-card:where(.astro-vodiqeol):hover .icon:where(.astro-vodiqeol){color:var(--sl-color-white)}}
+@layer starlight.components{svg:where(.astro-n5k4ipy7){color:var(--sl-icon-color);font-size:var(--sl-icon-size,1em);width:1em;height:1em}}
+</style><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/page.cNngjUgL.js"></script></head><body class="astro-vdxcvpsm"><a class="sl-skip-link astro-vxeigawq" href="#_top">Skip to content</a><div class="page sl-flex astro-gqpr5s5a"><header class="header astro-gqpr5s5a"><div class="header astro-nczgtkxc"><div class="title-wrapper sl-flex astro-nczgtkxc"><a href="/accelerated-intelligent-document-processing-on-aws/" class="site-title sl-flex astro-clw6ags5"><img class="light:sl-hidden print:hidden astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-dark.CDSNlVMV.svg" width="120" height="32"><img class="dark:sl-hidden print:block astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-light.CszXvHpe.svg" width="120" height="32"><span class="astro-clw6ags5" translate="no">GenAI IDP</span></a></div><div class="sl-flex print:hidden astro-nczgtkxc"><site-search class="astro-nczgtkxc astro-r5ar4xm7" data-translations="{&quot;placeholder&quot;:&quot;Search&quot;}"><button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-r5ar4xm7"><svg aria-hidden="true" class="astro-r5ar4xm7 astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg><span class="sl-hidden md:sl-block astro-r5ar4xm7" aria-hidden="true">Search</span><kbd class="sl-hidden md:sl-flex astro-r5ar4xm7" style="display: none;"><kbd class="astro-r5ar4xm7">Ctrl</kbd><kbd class="astro-r5ar4xm7">K</kbd></kbd></button><dialog style="padding:0" aria-label="Search" class="astro-r5ar4xm7"><div class="dialog-frame sl-flex astro-r5ar4xm7"><button data-close-modal class="sl-flex md:sl-hidden astro-r5ar4xm7">Cancel</button><div class="search-container astro-r5ar4xm7"><div id="starlight__search" class="astro-r5ar4xm7"></div></div></div></dialog></site-search><script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/Search.astro_astro_type_script_index_0_lang.BC-LT3sv.js"></script></div><div class="sl-hidden md:sl-flex print:hidden right-group astro-nczgtkxc"><div class="sl-flex social-icons astro-nczgtkxc"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script><script type="module">var e=`starlight-theme`,t=e=>e===`auto`||e===`dark`||e===`light`?e:`auto`,n=()=>t(typeof localStorage<`u`&&localStorage.getItem(e));function r(t){typeof localStorage<`u`&&localStorage.setItem(e,t===`light`||t===`dark`?t:``)}var i=()=>matchMedia(`(prefers-color-scheme: light)`).matches?`light`:`dark`;function a(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e===`auto`?i():e,r(e)}matchMedia(`(prefers-color-scheme: light)`).addEventListener(`change`,()=>{n()===`auto`&&a(`auto`)});var o=class extends HTMLElement{constructor(){super(),a(n()),this.querySelector(`select`)?.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&a(t(e.currentTarget.value))})}};customElements.define(`starlight-theme-select`,o);</script><script type="module">var e=class extends HTMLElement{constructor(){super();let e=this.querySelector(`select`);e&&(e.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=e.currentTarget.value)}),window.addEventListener(`pageshow`,t=>{if(!t.persisted)return;let n=e.querySelector(`option[selected]`)?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}};customElements.define(`starlight-lang-select`,e);</script></div></div></header><nav class="sidebar print:hidden astro-gqpr5s5a" aria-label="Main"><starlight-menu-button class="print:hidden astro-vvx7mffu"><button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-vvx7mffu"><svg aria-hidden="true" class="open-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg><svg aria-hidden="true" class="close-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="m13.41 12 6.3-6.29a1.004 1.004 0 1 0-1.42-1.42L12 10.59l-6.29-6.3a1.004 1.004 0 0 0-1.42 1.42l6.3 6.29-6.3 6.29a1 1 0 0 0 0 1.42.998.998 0 0 0 1.42 0l6.29-6.3 6.29 6.3a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.42L13.41 12Z"/></svg></button></starlight-menu-button><script type="module">var e=class extends HTMLElement{btn=this.querySelector(`button`);constructor(){super(),this.btn.addEventListener(`click`,()=>this.toggleExpanded());let e=this.closest(`nav`);e&&e.addEventListener(`keyup`,e=>this.closeOnEscape(e)),matchMedia(`(min-width: 50em)`).addEventListener(`change`,()=>this.setExpanded(!1))}setExpanded(e){this.setAttribute(`aria-expanded`,String(e)),document.body.toggleAttribute(`data-mobile-menu-expanded`,e),document.querySelectorAll(`.main-frame, .sl-skip-link`).forEach(t=>{t.toggleAttribute(`inert`,e)})}toggleExpanded(){this.setExpanded(this.getAttribute(`aria-expanded`)!==`true`)}closeOnEscape(e){e.code===`Escape`&&(this.setExpanded(!1),this.btn.focus())}};customElements.define(`starlight-menu-button`,e);</script><div id="starlight__sidebar" class="sidebar-pane astro-gqpr5s5a"><div class="sidebar-content sl-flex astro-gqpr5s5a"><sl-sidebar-state-persist data-hash="1dyvbxh" class="astro-f5yvicm7"><script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script><ul class="top-level astro-ojxuodky"><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Overview</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="0"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/" class="astro-ojxuodky"><span class="astro-ojxuodky">Welcome</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-in-action/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP in Action</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/references/" class="astro-ojxuodky"><span class="astro-ojxuodky">Blogs, Customer Stories &amp; Research</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/workshops/" class="astro-ojxuodky"><span class="astro-ojxuodky">Hands-on Workshops</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/solution-profile/" class="astro-ojxuodky"><span class="astro-ojxuodky">Solution Profile</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/fit-check/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fit Check</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Core</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="1"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/quick-start/" class="astro-ojxuodky"><span class="astro-ojxuodky">Quick Start</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-deployment-ai-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">AI-Guided Deployment Walkthrough</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/terraform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Terraform Deployment (Experimental)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/terraform-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Migrating from genai-idp-terraform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/headless-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Headless Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/apigateway-hosting/" class="astro-ojxuodky"><span class="astro-ojxuodky">API Gateway Hosting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment-private-network/" class="astro-ojxuodky"><span class="astro-ojxuodky">Private Network Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/vpc-secured-mode/" class="astro-ojxuodky"><span class="astro-ojxuodky">VPC-Secured Mode</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-profiles/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Profiles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/multi-tenancy/" class="astro-ojxuodky"><span class="astro-ojxuodky">Multi-Tenant Isolation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Versions (renamed)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-configuration-best-practices/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Best Practices</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/json-schema-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">JSON Schema Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/web-ui/" class="astro-ojxuodky"><span class="astro-ojxuodky">Web UI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-appsync-to-rest/" class="astro-ojxuodky"><span class="astro-ojxuodky">UI ⇄ Backend Transport (AppSync → REST)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-cli/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP CLI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-sdk/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP SDK</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idpcommon-api-reference/" class="astro-ojxuodky"><span class="astro-ojxuodky">idp_common API Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/demo-videos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Demo Videos</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/troubleshooting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Troubleshooting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/error-analyzer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Error Analyzer</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Processing Modes</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="2"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-1/" class="astro-ojxuodky"><span class="astro-ojxuodky">BDA Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-2/" class="astro-ojxuodky"><span class="astro-ojxuodky">Pipeline Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Discovery</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/policy-discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Policy Discovery</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Document Processing Features</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="3"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/classification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction &amp; Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment-bounding-boxes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment Bounding Boxes (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/few-shot-examples/" class="astro-ojxuodky"><span class="astro-ojxuodky">Few-Shot Examples</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/human-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Human-in-the-Loop Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/review-queues/" class="astro-ojxuodky"><span class="astro-ojxuodky">Review Queues</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/review-routing/" class="astro-ojxuodky"><span class="astro-ojxuodky">Review Routing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation-z3/" class="astro-ojxuodky"><span class="astro-ojxuodky">Z3 Rule Validation Engine</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/missing-page-handling/" class="astro-ojxuodky"><span class="astro-ojxuodky">Missing Page Handling</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/ocr-image-sizing-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">OCR Image Sizing Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/languages/" class="astro-ojxuodky"><span class="astro-ojxuodky">Languages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Evaluation &amp; Testing</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="4"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/testing/" class="astro-ojxuodky"><span class="astro-ojxuodky">Testing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Evaluation Framework</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation-enhanced-reporting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Enhanced Reporting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/test-studio/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Studio</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/creating-custom-test-sets/" class="astro-ojxuodky"><span class="astro-ojxuodky">Creating Custom Test Sets</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mlflow-integration/" class="astro-ojxuodky"><span class="astro-ojxuodky">MLflow Experiment Tracking</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Validation</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="5"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation Records</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0611/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.11</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0612/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.12</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.13</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0614/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.14</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0616/" aria-current="page" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.6</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.8</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v069/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.9</span></a></li></ul></details></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Benchmarks &amp; Performance</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="6"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmarking Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/config-guidance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Guidance</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Audit Trail</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="7"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit Trail</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.0 vs v0.5.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0611/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.11 vs v0.6.10</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0612/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.12 vs v0.6.11</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.13 vs v0.6.12</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0614/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.14 vs v0.6.13</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v0616/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark: v0.6.16 vs v0.6.15</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.5 vs v0.6.4</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fix Verification: v0.6.5 correctness fixes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.6 vs v0.6.5</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v067/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.7</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.8</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v069/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.9</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Studies</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="8"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/advanced-extraction-refinements/" class="astro-ojxuodky"><span class="astro-ojxuodky">Advanced Extraction — Seven Candidate Refinements, Measured</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/classification-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification Confidence — Does the Score Carry Signal?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/confidence-calibration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Confidence Calibration — Can the Score Route Human Review?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/feature-multi-instance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Study: multi-instance sections (#715 / #753)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/greedy-decoding-tool-use/" class="astro-ojxuodky"><span class="astro-ojxuodky">Greedy Decoding and Invalid Tool-Use Sequences</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-cache-padding-proposal/" class="astro-ojxuodky"><span class="astro-ojxuodky">Should we pad prompts to clear the cache minimum?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-caching/" class="astro-ojxuodky"><span class="astro-ojxuodky">Prompt Caching — Measured Behaviour</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark Studies</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/schema-restatement-tokens/" class="astro-ojxuodky"><span class="astro-ojxuodky">Schema Restatement — What Turning It Off Actually Costs</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-scaling-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction Scaling Guide</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">AI Agents &amp; Analytics</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="9"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-analysis/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Analysis</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-companion-chat/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Companion Chat</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/code-intelligence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Code Intelligence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/knowledge-base/" class="astro-ojxuodky"><span class="astro-ojxuodky">Knowledge Base</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-mcp-agent/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom MCP Agent</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-connector/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Connector</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-server/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Server</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Integration &amp; Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="10"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform-developer-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform Developer Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/marketplace-subscription-next-steps/" class="astro-ojxuodky"><span class="astro-ojxuodky">After Subscribing on AWS Marketplace</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="11"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/auto-optimizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Auto Optimizer (Beta)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/decision-model-decider/" class="astro-ojxuodky"><span class="astro-ojxuodky">Decision Model: Strands Decider</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-monitor/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP Monitor</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/pii-anonymizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">PII Anonymization</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/confbench-testset/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set - ConfBench</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-data-generator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set Generator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-document-status/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Document Status (feature add-on)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-health-insurance-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Health Insurance Review</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-attributes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Attributes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/post-processing-lambda-hook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Post-Processing Lambda Hook</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/lambda-hook-inference/" class="astro-ojxuodky"><span class="astro-ojxuodky">Lambda Hook Inference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/decision-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">Decision Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/nova-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Nova Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-model-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom Model Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/service-tiers/" class="astro-ojxuodky"><span class="astro-ojxuodky">Service Tiers</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Monitoring &amp; Operations</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="12"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/monitoring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Monitoring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting Database</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting SQL Layer</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Capacity Planning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cost-calculator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cost Calculator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/circuit-breaker/" class="astro-ojxuodky"><span class="astro-ojxuodky">Circuit Breaker</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cross-account-bedrock/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cross-Account Bedrock</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/version-update-indicator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Version Update Indicator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Runbook</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Planning &amp; Security</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="13"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/threat-model/" class="astro-ojxuodky"><span class="astro-ojxuodky">Threat Model</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/malware-scanning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Malware Scanning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/customer-managed-kms-key/" class="astro-ojxuodky"><span class="astro-ojxuodky">Customer Managed KMS Key</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/well-architected/" class="astro-ojxuodky"><span class="astro-ojxuodky">Well-Architected Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/aws-services-and-roles/" class="astro-ojxuodky"><span class="astro-ojxuodky">AWS Services &amp; IAM Roles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rbac/" class="astro-ojxuodky"><span class="astro-ojxuodky">Role-Based Access Control (RBAC)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/external-idp/" class="astro-ojxuodky"><span class="astro-ojxuodky">External Identity Provider</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">GovCloud</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="14"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-operations/" class="astro-ojxuodky"><span class="astro-ojxuodky">Operations</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-batch-api/" class="astro-ojxuodky"><span class="astro-ojxuodky">Batch API</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/eu-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">EU Region Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/canada-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">Canada (Central) Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/openai-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">OpenAI Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/grok-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">xAI Grok Models</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Development Setup</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="15"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-linux/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Linux</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-macos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: macOS</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-wsl/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: WSL</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-windows/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Windows</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/using-notebooks-with-idp-common/" class="astro-ojxuodky"><span class="astro-ojxuodky">Using Notebooks</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-mirroring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Dependency Mirroring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" class="astro-ojxuodky"><span class="astro-ojxuodky">Installing First-Party Packages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Migration</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="16"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0615-to-v0616/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.6.15 → v0.6.16 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v0612-to-v0613/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.6.12 → v0.6.13 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v05-to-v06/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.5 → v0.6 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v04-to-v05/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.4 → v0.5 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-granular-retirement/" class="astro-ojxuodky"><span class="astro-ojxuodky">Granular Assessment Retirement</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/data-mart-migration-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Data Mart Migration Runbook</span></a></li></ul></details></li></ul><script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script></sl-sidebar-state-persist><div class="md:sl-hidden"><div class="mobile-preferences sl-flex astro-b5gddk54"><div class="social-icons astro-b5gddk54"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script></div></div></div></div></nav><div class="main-frame astro-gqpr5s5a"><script type="module">var e=document.getElementById(`starlight__sidebar`),t=e?.querySelector(`sl-sidebar-state-persist`),n=`sl-sidebar-state`,r=()=>{let r=[],i=t?.dataset.hash||``;try{let e=sessionStorage.getItem(n),t=JSON.parse(e||`{}`);Array.isArray(t.open)&&t.hash===i&&(r=t.open)}catch{}return{hash:i,open:r,scroll:e?.scrollTop||0}},i=e=>{try{sessionStorage.setItem(n,JSON.stringify(e))}catch{}},a=()=>i(r()),o=(e,t)=>{let n=r();n.open[t]=e,i(n)};t?.addEventListener(`click`,e=>{if(!(e.target instanceof Element))return;let t=e.target.closest(`summary`)?.closest(`details`);if(!t)return;let n=t.querySelector(`sl-sidebar-restore`),r=parseInt(n?.dataset.index||``);isNaN(r)||o(!t.open,r)}),addEventListener(`visibilitychange`,()=>{document.visibilityState===`hidden`&&a()});</script><div class="lg:sl-flex astro-abfeecmu"><aside class="right-sidebar-container print:hidden astro-abfeecmu"><div class="right-sidebar astro-abfeecmu"><div class="lg:sl-hidden astro-q5mffni3"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-5ulgm6bh"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-5ulgm6bh"><details id="starlight__mobile-toc" class="astro-5ulgm6bh"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-5ulgm6bh"><span class="toggle sl-flex astro-5ulgm6bh">On this page<svg aria-hidden="true" class="caret astro-5ulgm6bh astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-5ulgm6bh"></span></summary><div class="dropdown astro-5ulgm6bh"><ul class="isMobile astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#verdict" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Verdict</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#results-per-tier-group" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Results per tier group</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-a--test-coverage-as-measured" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier A — test coverage, as measured</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-b--security-gate-results-compared-with-the-previous-record" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier B — security gate results compared with the previous record</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-c--the-six-deploy-variants" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier C — the six deploy variants</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-d--template-transforms-and-the-limits-of-a-commercial-region-run" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier D — template transforms, and the limits of a commercial-region run</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-e--in-place-upgrade-and-what-it-did-to-extracted-values" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier E — in-place upgrade, and what it did to extracted values</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-f--benchmarks" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier F — benchmarks</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-g--browser-ux-review" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier G — browser UX review</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-h--library-integration-tests" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier H — library integration tests</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-i--terraform-property-parity" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier I — Terraform property parity</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-j--migration-from-genai-idp-terraform" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier J — migration from genai-idp-terraform</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-k--in-place-terraform-upgrade-0615--0616" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier K — in-place Terraform upgrade 0.6.15 → 0.6.16</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#findings-most-important-first" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Findings, most important first</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#1-a-document-sent-back-from-review-or-reprocessed-from-a-step-is-scored-at-100-confidence-and-completes-unreviewed-product-defect-this-release" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">1. A document sent back from review, or reprocessed from a step, is scored at 100% confidence and completes unreviewed (product defect, this release)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#2-an-in-place-terraform-upgrade-from-0615-drops-one-inline-policy-from-the-state-machines-role-product-defect-terraform-module" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">2. An in-place Terraform upgrade from 0.6.15 drops one inline policy from the state machine’s role (product defect, Terraform module)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#3-advanced-mode-extraction-costs-about-half-as-much-on-100-row-documents-improvement-cause-inferred" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">3. Advanced-mode extraction costs about half as much on 100-row documents (improvement, cause inferred)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#4-make-test-fails-at-the-tag-and-on-develop-on-five-story-catalogue-tests-test-tooling" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">4. make test fails at the tag, and on develop, on five story-catalogue tests (test tooling)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#5-the-tenant-isolation-harness-cannot-accept-a-document-held-for-review-test-tooling-triggered-by-this-releases-default" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">5. The tenant-isolation harness cannot accept a document held for review (test tooling, triggered by this release’s default)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#6-the-rbac-dynamic-test-could-not-change-the-app-clients-auth-flows-test-tooling-environment-triggered" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">6. The RBAC dynamic test could not change the app client’s auth flows (test tooling, environment-triggered)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#7-two-terraform-tier-drivers-failed-before-measuring-anything-test-tooling" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">7. Two Terraform tier drivers failed before measuring anything (test tooling)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#8-two-measurement-instruments-reported-a-clean-result-they-had-not-established-test-tooling" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">8. Two measurement instruments reported a clean result they had not established (test tooling)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#9-the-transform-runner-disables-the-new-review-routing-default-before-its-document-test-test-coverage" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">9. The transform runner disables the new Review Routing default before its document test (test coverage)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#10-the-browser-reviews-usability-and-french-findings-tier-g" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10. The browser review’s usability and French findings (tier G)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#11-the-agent-capability-audit-what-was-checked-security-review-details-withheld" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">11. The agent capability audit: what was checked (security review, details withheld)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#12-environment-events-and-counts-that-moved-informational" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">12. Environment events and counts that moved (informational)</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#issues-filed-and-their-status" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Issues filed and their status</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#what-was-not-validated" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">What was NOT validated</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reproduce" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reproduce</span></a></li></ul></div></details></nav></mobile-starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.BcSo_yiZ.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-q5mffni3"><div class="sl-container astro-q5mffni3"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#verdict" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Verdict</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#results-per-tier-group" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Results per tier group</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-a--test-coverage-as-measured" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier A — test coverage, as measured</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-b--security-gate-results-compared-with-the-previous-record" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier B — security gate results compared with the previous record</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-c--the-six-deploy-variants" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier C — the six deploy variants</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-d--template-transforms-and-the-limits-of-a-commercial-region-run" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier D — template transforms, and the limits of a commercial-region run</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-e--in-place-upgrade-and-what-it-did-to-extracted-values" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier E — in-place upgrade, and what it did to extracted values</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-f--benchmarks" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier F — benchmarks</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-g--browser-ux-review" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier G — browser UX review</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-h--library-integration-tests" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier H — library integration tests</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-i--terraform-property-parity" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier I — Terraform property parity</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-j--migration-from-genai-idp-terraform" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier J — migration from genai-idp-terraform</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#tier-k--in-place-terraform-upgrade-0615--0616" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Tier K — in-place Terraform upgrade 0.6.15 → 0.6.16</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#findings-most-important-first" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Findings, most important first</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#1-a-document-sent-back-from-review-or-reprocessed-from-a-step-is-scored-at-100-confidence-and-completes-unreviewed-product-defect-this-release" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">1. A document sent back from review, or reprocessed from a step, is scored at 100% confidence and completes unreviewed (product defect, this release)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#2-an-in-place-terraform-upgrade-from-0615-drops-one-inline-policy-from-the-state-machines-role-product-defect-terraform-module" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">2. An in-place Terraform upgrade from 0.6.15 drops one inline policy from the state machine’s role (product defect, Terraform module)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#3-advanced-mode-extraction-costs-about-half-as-much-on-100-row-documents-improvement-cause-inferred" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">3. Advanced-mode extraction costs about half as much on 100-row documents (improvement, cause inferred)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#4-make-test-fails-at-the-tag-and-on-develop-on-five-story-catalogue-tests-test-tooling" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">4. make test fails at the tag, and on develop, on five story-catalogue tests (test tooling)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#5-the-tenant-isolation-harness-cannot-accept-a-document-held-for-review-test-tooling-triggered-by-this-releases-default" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">5. The tenant-isolation harness cannot accept a document held for review (test tooling, triggered by this release’s default)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#6-the-rbac-dynamic-test-could-not-change-the-app-clients-auth-flows-test-tooling-environment-triggered" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">6. The RBAC dynamic test could not change the app client’s auth flows (test tooling, environment-triggered)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#7-two-terraform-tier-drivers-failed-before-measuring-anything-test-tooling" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">7. Two Terraform tier drivers failed before measuring anything (test tooling)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#8-two-measurement-instruments-reported-a-clean-result-they-had-not-established-test-tooling" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">8. Two measurement instruments reported a clean result they had not established (test tooling)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#9-the-transform-runner-disables-the-new-review-routing-default-before-its-document-test-test-coverage" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">9. The transform runner disables the new Review Routing default before its document test (test coverage)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#10-the-browser-reviews-usability-and-french-findings-tier-g" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10. The browser review’s usability and French findings (tier G)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#11-the-agent-capability-audit-what-was-checked-security-review-details-withheld" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">11. The agent capability audit: what was checked (security review, details withheld)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#12-environment-events-and-counts-that-moved-informational" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">12. Environment events and counts that moved (informational)</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#issues-filed-and-their-status" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Issues filed and their status</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#what-was-not-validated" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">What was NOT validated</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reproduce" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reproduce</span></a></li></ul></nav></starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/TableOfContents.astro_astro_type_script_index_0_lang.Csloo1VZ.js"></script></div></div></div></aside><div class="main-pane astro-abfeecmu"><main data-pagefind-body class="astro-vdxcvpsm" lang="en" dir="ltr"><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><h1 id="_top" class="astro-2sm4b3ln">Release Validation: v0.6.16</h1></div></div><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><div class="sl-markdown-content"><p>Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0</p>
+<div class="sl-heading-wrapper level-h1"><h1 id="release-validation-record--v0616">Release Validation Record — v0.6.16</h1><a class="sl-anchor-link" href="#release-validation-record--v0616"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Release Validation Record — v0.6.16”</span></a></div>
+<p><strong>Release:</strong> v0.6.16 (<code dir="auto">CHANGELOG.md</code> section <code dir="auto">[0.6.16]</code>; <code dir="auto">VERSION</code> at the tag reads <code dir="auto">0.6.16</code>)
+<strong>Validated:</strong> 2026-11-25 to 2026-11-26, <code dir="auto">us-west-2</code> (seller tier <code dir="auto">us-east-1</code>), commercial partition
+<strong>Commit measured:</strong> <code dir="auto">689e2b4df</code>, the commit tag <code dir="auto">v0.6.16</code> points to. Every offline figure in
+this record was measured in a dedicated <code dir="auto">git worktree</code> at that commit, and the build, transform,
+stack-test and Terraform tiers ran from a second worktree at the same commit, so no other
+session’s work and no build output could move the tree under the gates.
+<strong>Artifact under test:</strong> the <strong>published</strong> object
+<code dir="auto">https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.16.yaml</code>,
+<code dir="auto">Description</code> <code dir="auto">AWS GenAI IDP Accelerator (uksb-r8evguc4p9) (SO9027) (v0.6.16)</code>, and the published
+Terraform module <code dir="auto">0.6.16/terraform/idp-terraform-0.6.16.zip</code> beside it. Every CloudFormation
+stack in tiers B, C and E was created from that template (or, for tier E, from the published
+v0.6.15 template and then updated to it). Tier D publishes from source at the tag to apply its
+transforms, and tier A’s build row is a local <code dir="auto">publish.py --clean-build</code>.
+<strong>Account</strong> <code dir="auto">&#x3C;ACCOUNT_ID></code>. <strong>PREV</strong> = v0.6.15. No validation record was published for v0.6.15,
+so every “vs PREV” comparison of a recorded figure below is against the <strong>v0.6.14</strong> record and
+spans two releases; the tier E upgrade and the tier F1 A/B measured v0.6.15 directly.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="verdict">Verdict</h2><a class="sl-anchor-link" href="#verdict"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Verdict”</span></a></div>
+<p>⚠️ <strong>Ship with two product defects to fix in a patch release, both in paths this release adds
+or changes.</strong> The published artifact deploys in all six shipped configurations, both template
+transforms deploy and process a real document, the CloudFormation upgrade from 0.6.15 completes
+with no consistent change in extracted values, all four security gates pass, and the 342-run
+release A/B shows <strong>0 regressions</strong> with recall and cell accuracy identical over the same 23,370
+compared cells. Advanced-mode extraction is markedly cheaper on this release (Finding 3).</p>
+<p><strong>The two defects:</strong></p>
+<ol>
+<li><strong>A document sent back from review, or reprocessed from a step, is scored at 100% confidence
+and completes without review</strong> (Finding 1). The tracking table does not persist each page’s
+OCR-confidence location, so a document rebuilt from it for a rerun reaches assessment with
+no OCR confidence data. In the browser review a document that had raised six confidence
+alerts on its first run came back from <strong>Send back</strong> with every non-empty field at exactly
+100.0% and no alert, and completed. Send back and Reprocess-from-a-step are both new in this
+release, and Review Routing is now on by default for new stacks, so the path that is meant
+to keep a document under review is the one that releases it.</li>
+<li><strong>An in-place Terraform upgrade from 0.6.15 leaves the state machine’s role without one of
+its inline policies until a second <code dir="auto">terraform apply</code></strong> (Finding 2). The module names inline
+policies by position; a renumbered policy is replaced, and the replacement’s late destroy
+deletes the newly created policy of the same name. The missing grant is
+<code dir="auto">lambda:InvokeFunction</code> on the pipeline-hooks dispatcher.</li>
+</ol>
+<p><strong>Every tier has a result.</strong> Tiers B, D, E, F1, H and J pass. Tier A passes except <code dir="auto">make test</code>,
+which fails on five story-catalogue tests that also fail on <code dir="auto">develop</code> (Finding 4); the same five
+take the <code dir="auto">scripts</code> tree out of the coverage ratchet. Tier C passes five of six variants; the
+tenant-isolation harness passed 22 of 23 checks, and its one failure is the harness’s, which does
+not accept a document held for review (Finding 5). Tier G passed 15 flows, failed one (Finding 1)
+and was blocked on one. Tier K failed (Finding 2). Tier I reached no verdict, because the parity
+tool’s normalisation does not cover most of what it reported (Finding 7). Tier F’s guidance
+refresh (F2–F4) measured every suite but regenerated the guidance paper only in part; it is
+carried by <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/2265">#2265</a>.</p>
+<p>Several test-tooling defects were found and are recorded separately from the product findings
+(Findings 4–8). Three of them blocked a tier until patched locally, uncommitted, in the
+validation worktree; each patch is described where it was used, and none touches shipped code.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="results-per-tier-group">Results per tier group</h2><a class="sl-anchor-link" href="#results-per-tier-group"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Results per tier group”</span></a></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tier</th><th>Gate</th><th>Result</th><th>vs v0.6.14 record</th></tr></thead><tbody><tr><td>A — SRT</td><td>✅ PASS</td><td>0 open/reopened HIGH counted against the gate; 113 Bandit <code dir="auto">B105</code>/<code dir="auto">B106</code> identifier names in test code scoped out by the documented rule; 58 suppressed; 68,239 tracked findings. The first scan of the pass was <strong>not</strong> a valid pass (Finding 8)</td><td>57 → 113 scoped out; 53,423 → 68,239 tracked</td></tr><tr><td>A — <code dir="auto">make test</code></td><td>❌ <strong>FAIL</strong></td><td>5 failed / 12,722 passed / 52 skipped in <code dir="auto">scripts/tests</code>; every other test root green. All five are first-time-user story catalogue tests, and they fail identically on <code dir="auto">develop</code> (Finding 4)</td><td>0 → 5 failures</td></tr><tr><td>A — <code dir="auto">make lint-cicd</code></td><td>✅ PASS</td><td>exit 0; link gate clean over 442 Markdown files</td><td>402 → 442 files</td></tr><tr><td>A — <code dir="auto">make dep-audit</code></td><td>✅ PASS</td><td>2,096 packages, 0 gating, 3 allowlisted, 3 below HIGH, 0 stale allowlist entries, 3 unmapped advisories listed for review</td><td>1,757 → 2,096 packages</td></tr><tr><td>A — <code dir="auto">make typecheck</code></td><td>✅ PASS</td><td><strong>0 errors / 73 warnings</strong> (32 <code dir="auto">reportImportCycles</code>, 30 <code dir="auto">reportUnsupportedDunderAll</code>, 11 other)</td><td>47 → 73 warnings</td></tr><tr><td>A — UI tests (<code dir="auto">vitest</code>)</td><td>✅ PASS</td><td><strong>412 files, 5,364 passed, 7 skipped</strong></td><td>251 / 2,805 → 412 / 5,364</td></tr><tr><td>A — build + package</td><td>✅ PASS</td><td><code dir="auto">publish.py --clean-build</code> in a clean env, <strong>5 min</strong>; template validation passed; <code dir="auto">cfn-lint</code> 9 advisory warnings on the packaged templates</td><td>5.7 → 5 min; 8 → 9 warnings</td></tr><tr><td>A — coverage</td><td>⚠️ 10 of 11 trees</td><td>all 11 trees measured; the ratchet refuses the <code dir="auto">scripts</code> tree because its run carried Finding 4’s five failures; the other 10 are green (559 files at or above floor)</td><td>see <em>Test coverage</em></td></tr><tr><td>A — translation coverage</td><td>✅</td><td><code dir="auto">fr-CA</code> 3,303 of 3,303 translated, 0 missing, 0 stale</td><td>—</td></tr><tr><td>A — solution profile</td><td>✅</td><td>release rules ON, valid, cross-checks passed</td><td>—</td></tr><tr><td>A — agent capability audit</td><td>⚠️ ran</td><td>22 entries checked: 2 match the code, 15 understated, 2 overstated, 1 control not on the path that runs, 2 cited tests that do not assert their control (Finding 11)</td><td>first record with this row</td></tr><tr><td>B — security snapshot</td><td>✅ <strong>4 of 4 gates</strong></td><td>SRT PASS · RBAC static PASS (0 fail / 2 known-gap warn) · RBAC dynamic PASS (<strong>1,328 checks</strong>, 0 hard fail, 0 not run, 25 skipped) · ZAP PASS (High 0, Medium 1). RBAC dynamic needed a local tooling fix (Finding 6)</td><td>4 → 2 static warnings; 1,204 → 1,328 dynamic checks</td></tr><tr><td>C — deploy variants</td><td>⚠️ <strong>5 of 6, plus 22/23</strong></td><td>hosting-global (36 min), WAF (36 min), hosting-private (62 min), Jobs API (57 min), seller (2 min) pass; tenant isolation <strong>22 of 23</strong>, the one failure the harness’s, not the product’s (Finding 5)</td><td>23/23 → 22/23</td></tr><tr><td>D — transforms</td><td>✅ 2 of 2</td><td><code dir="auto">--headless</code> and <code dir="auto">--govcloud</code> both deployed from source and processed <code dir="auto">lending_package.pdf</code> (17/22 fields, <code dir="auto">Payslip</code>) — commercial-partition result</td><td>unchanged</td></tr><tr><td>E — upgrade 0.6.15 → 0.6.16</td><td>✅ PASS</td><td><code dir="auto">UPDATE_COMPLETE</code> in about 25 min, no failed event, no rollback; no field changed consistently across 9 pre/post pairs</td><td>first attempt succeeded (v0.6.14 needed two)</td></tr><tr><td>F1 — release A/B</td><td>✅ PASS</td><td>171/171 both sides; 0 regressions; recall and cell accuracy identical over 23,370 cells; grid cost −16%, wall −13% (Finding 3)</td><td>—</td></tr><tr><td>F2–F4 — guidance refresh</td><td>⚠️ measured in full, docs partly regenerated</td><td>30 sets, 3,197 scored rows, $1,550.72; 9 rows did not complete, all expected simple-mode refusals at 3,200 rows; the guidance paper gained a v0.6.16 summary and its later sections still carry v0.6.14 text (<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/2265">#2265</a>)</td><td>5 → 9 refusals (more repeats)</td></tr><tr><td>G — browser UX review</td><td>⚠️ 15 pass, 1 fail, 1 blocked</td><td>the fail is Finding 1 seen in the browser</td><td>1 fail → 1 fail</td></tr><tr><td>H — integration tests</td><td>✅ PASS</td><td><code dir="auto">idp_common</code> 19 passed; <code dir="auto">idp_sdk</code> 13 passed, 0 skipped; <code dir="auto">idp_cli</code> has no integration-marked tests</td><td>unchanged</td></tr><tr><td>I — Terraform property parity</td><td>⚠️ <strong>no verdict</strong></td><td>513 resources compared, 166 unexplained differences, all sampled ones naming or representation differences the tool does not normalise; 19 resources unpaired and 38 unreadable. The tool crashed on its first run (Finding 7)</td><td>first record with this tier</td></tr><tr><td>J — migration from <code dir="auto">genai-idp-terraform</code></td><td>✅ PASS</td><td>all 26 phases, ~168 min; 22 imports, 0 destroys; data, users, passwords, scope and the configuration edit preserved; 0 leftovers</td><td>first record with this tier</td></tr><tr><td>K — Terraform upgrade 0.6.15 → 0.6.16</td><td>❌ <strong>FAIL</strong></td><td>upgrade applied; the re-plan did not converge (Finding 2); the data, sign-in and post-upgrade document checks were not reached</td><td>first record with this tier</td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-a--test-coverage-as-measured">Tier A — test coverage, as measured</h3><a class="sl-anchor-link" href="#tier-a--test-coverage-as-measured"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier A — test coverage, as measured”</span></a></div>
+<p><code dir="auto">make coverage-all</code> over all eleven registry trees, then <code dir="auto">make check-coverage-debt</code>, in the
+dedicated worktree. The ratchet refused to reach a verdict for the whole set: the <code dir="auto">scripts</code>
+tree’s report was written by a run that recorded five test failures (Finding 4), so the files
+those tests would have covered look like falls that are artefacts of the run. With that one
+report set aside, the other ten trees are green: 559 files at or above their recorded coverage.
+The <code dir="auto">scripts</code> figure below is therefore partial and is not a measurement of that tree.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>tree</th><th>measured</th><th>v0.6.14 record</th><th>delta</th></tr></thead><tbody><tr><td><strong>api_resolvers</strong></td><td><strong>77.68%</strong> (lowest)</td><td>72.28%</td><td>+5.40</td></tr><tr><td>seller_entitlement</td><td>82.03%</td><td>82.03%</td><td>—</td></tr><tr><td>pii_anonymizer_hook</td><td>87.64%</td><td>86.98%</td><td>+0.66</td></tr><tr><td>idp_common</td><td>90.14%</td><td>86.26%</td><td>+3.88</td></tr><tr><td>scripts</td><td>92.04% <em>(partial)</em></td><td>92.00%</td><td>not comparable</td></tr><tr><td>src_lambda</td><td>92.87%</td><td>91.18%</td><td>+1.69</td></tr><tr><td>main_stack_extensions</td><td>93.90%</td><td>93.90%</td><td>—</td></tr><tr><td>pii_anonymizer_api</td><td>96.00%</td><td>95.87%</td><td>+0.13</td></tr><tr><td>idp_cli</td><td>97.04%</td><td>98.07%</td><td><strong>−1.03</strong></td></tr><tr><td>idp_sdk</td><td>97.49%</td><td>98.01%</td><td>−0.52</td></tr><tr><td>idp_feature_sdk</td><td>99.88%</td><td>99.94%</td><td>−0.06</td></tr></tbody></table>
+<p><code dir="auto">api_resolvers</code> is still the lowest tree, now at 77.68%, five points up on the v0.6.14 record.
+<code dir="auto">idp_cli</code> lost just over a point, inside the ratchet’s tolerance; the deltas span two releases
+because v0.6.15 has no record, so which release moved it was not checked.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-b--security-gate-results-compared-with-the-previous-record">Tier B — security gate results compared with the previous record</h3><a class="sl-anchor-link" href="#tier-b--security-gate-results-compared-with-the-previous-record"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier B — security gate results compared with the previous record”</span></a></div>
+<p>All four gates pass, at the tag’s commit, against the upgraded reference stack. The snapshot is
+in <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/security/test-results/0.6.16/MANIFEST.md"><code dir="auto">security/test-results/0.6.16/</code></a>.
+ZAP is unchanged from the v0.6.14 snapshot: High 0, and the same Medium <em>Cross-Domain
+Misconfiguration</em> alert on five URLs.</p>
+<p>The counts that moved, against the v0.6.14 snapshot (there is no v0.6.15 snapshot):</p>
+<ul>
+<li><strong>RBAC dynamic 1,204 → 1,328 checks</strong>, all passing or skipped, and <strong>the static scan’s
+operation count reached 189</strong>. Two releases of new API operations (review routing, review
+endings, reprocess, prefix-mapping history, tenant selection among them) account for the
+growth; the per-operation matrix is in the snapshot.</li>
+<li><strong>RBAC static known-gap warnings 4 → 2.</strong></li>
+<li><strong>SRT tracked findings 53,423 → 68,239, and scoped-out test-code identifier names 57 →
+113.</strong> None gates. The scoped-out set is the documented rule that Bandit’s password-name
+heuristic (<code dir="auto">B105</code>/<code dir="auto">B106</code>) is reported at Bandit’s own severity in test code no artifact is
+built from.</li>
+</ul>
+<p>The first run of <code dir="auto">make security-results</code> did not reach RBAC dynamic or ZAP (Finding 6).</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-c--the-six-deploy-variants">Tier C — the six deploy variants</h3><a class="sl-anchor-link" href="#tier-c--the-six-deploy-variants"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier C — the six deploy variants”</span></a></div>
+<p>Every variant self-deployed its own throwaway stack from the published template, ran its
+assertions, and tore down:</p>
+<ul>
+<li><strong>hosting-global</strong>: a regional REST API serves the web UI.</li>
+<li><strong>WAF</strong>: the WebACL is associated with the API.</li>
+<li><strong>hosting-private</strong>: a private REST API with its resource policy, in the purpose-built
+stack-test VPC (<code dir="auto">&#x3C;VPC_ID></code>, two private subnets, an <code dir="auto">execute-api</code> interface endpoint).</li>
+<li><strong>Jobs API</strong>: deployed into the same VPC.</li>
+<li><strong>tenant isolation</strong>: a <code dir="auto">TenantIsolationMode=Strict</code> stack with the <code dir="auto">verify-tenant-isolation</code>
+harness: <strong>22 of 23 checks pass</strong>. Every cross-tenant read is refused (HTTP 403), a document
+outside every tenant’s prefixes is refused at ingest, a cross-tenant prefix mapping and an
+overlapping tenant are refused, and the access-point uploader cannot write under the other
+tenant. The failing row and why it is the harness’s is Finding 5. No <code dir="auto">idp-tiv-uploader-*</code> role
+was left behind.</li>
+<li><strong>seller</strong>: the unsigned-request and unentitled-account refusals (both 403, with no internal
+detail leaked), and 15 hostile payloads refused with no 5xx, in <code dir="auto">us-east-1</code>.</li>
+</ul>
+<p>As in every earlier record, the seller tier asserts refusals only; no token was issued and
+verified, and its teardown leaves the signing KMS key scheduled for deletion on a 7-day window.
+After the VPC tiers, four orphaned Lambda network interfaces were swept from the stack-test VPC,
+two from the hosting-private stack and two from the Jobs API stack, after confirming both stacks
+were deleted.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-d--template-transforms-and-the-limits-of-a-commercial-region-run">Tier D — template transforms, and the limits of a commercial-region run</h3><a class="sl-anchor-link" href="#tier-d--template-transforms-and-the-limits-of-a-commercial-region-run"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier D — template transforms, and the limits of a commercial-region run”</span></a></div>
+<p>Both transforms deployed from source at the tag and processed <code dir="auto">samples/lending_package.pdf</code> end
+to end: the expected address string was found, 17 of 22 fields were populated and the document
+was classified <code dir="auto">Payslip</code>, the same as at v0.6.14.</p>
+<ul>
+<li><strong><code dir="auto">--headless</code></strong>: the transform removed 116 of 378 resources (UI, Cognito and CloudFront) and
+16 of 59 conditions, removed the six policy statements that referenced removed resources, and
+disabled the Knowledge Base. 257 resources deployed.</li>
+<li><strong><code dir="auto">--govcloud</code></strong>: the result contains no <code dir="auto">AWS::CloudFront::*</code> or <code dir="auto">AWS::Lambda::Url</code> resource,
+the LWA chat-stream family is removed (#677), and the UI is retained and hosted on API
+Gateway. 341 resources deployed.</li>
+</ul>
+<p>⚠️ <strong>The <code dir="auto">--govcloud</code> result is a commercial-partition result.</strong> It proves the CloudFront-free,
+API-Gateway-hosted template deploys and processes documents. It proves <strong>nothing</strong> about
+partition ARNs, GovCloud model availability or the BDA project rejection (#676/#677 were
+invisible to a commercial run). The Knowledge Base was disabled in the <code dir="auto">--govcloud</code> run, which is
+the runner’s default.</p>
+<p>The transform runner turns Review Routing off in the stack’s default profile before its document
+test, because v0.6.16 turns it on for new stacks and a held document would never complete. So
+neither transform run exercised the new default (Finding 9).</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-e--in-place-upgrade-and-what-it-did-to-extracted-values">Tier E — in-place upgrade, and what it did to extracted values</h3><a class="sl-anchor-link" href="#tier-e--in-place-upgrade-and-what-it-did-to-extracted-values"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier E — in-place upgrade, and what it did to extracted values”</span></a></div>
+<p>A fresh stack, <code dir="auto">IDPUpg0615to0616</code>, was created from the published v0.6.15 template and processed
+three copies of <code dir="auto">lending_package.pdf</code>. It was then updated to the published v0.6.16 template
+with <code dir="auto">UsePreviousValue=true</code> on all 96 existing parameters, and processed the same three copies
+again.</p>
+<ul>
+<li>The update started at 22:26 UTC on 2026-11-25 and reached <code dir="auto">UPDATE_COMPLETE</code> at 22:51 UTC, with
+no failed event and no rollback. The <code dir="auto">UpdateConfiguration</code> custom resource’s log holds no
+error, warning or migration line.</li>
+<li>The parameter set gained three entries, each with a default that keeps the existing behaviour:
+<code dir="auto">CustomerManagedKmsKeyArn</code>, <code dir="auto">ManageApiGatewayAccountSettings</code> and <code dir="auto">TenantSelection</code>. Nothing was
+removed or newly required.</li>
+<li>The upgraded stack did <strong>not</strong> turn Review Routing on: all three post-upgrade documents
+completed with none awaiting review. The new default applies to new stacks only, as the
+CHANGELOG says.</li>
+</ul>
+<p>All six runs found the same six sections with the same classes (<code dir="auto">Payslip</code>,
+<code dir="auto">US-drivers-licenses</code>, <code dir="auto">Bank-checks</code>, <code dir="auto">Bank-Statement</code>, <code dir="auto">W2</code>, <code dir="auto">Homeowners-Insurance-Application</code>).
+Comparing field values pairwise, about 170 fields per run:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>pairs</th><th>fields that differ</th></tr></thead><tbody><tr><td>pre-upgrade vs pre-upgrade (3 pairs)</td><td>1, 7, 8</td></tr><tr><td>post-upgrade vs post-upgrade (3 pairs)</td><td>2, 8, 10</td></tr><tr><td>pre-upgrade vs post-upgrade (9 pairs)</td><td>1 to 10</td></tr></tbody></table>
+<p>No field differed in all nine pre/post pairs, so the upgrade changed no extracted value
+consistently: the pre/post differences are the size of the same-version variation on this
+document.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-f--benchmarks">Tier F — benchmarks</h3><a class="sl-anchor-link" href="#tier-f--benchmarks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier F — benchmarks”</span></a></div>
+<p>The release A/B entry and the regenerated guidance are carried by the sibling benchmark pull
+request. This section holds the part that belongs to the validation record.</p>
+<p><strong>F1.</strong> Same published templates, byte-identical configurations, only the code version differs:
+<code dir="auto">corefast</code>, <code dir="auto">repeats: 3</code>, <code dir="auto">--native-upload --validate-against-release v0.6.15</code>, both sides on the
+same stack, the PREV side run before <code dir="auto">update-stack</code> (21:27–22:24 UTC) and the NEW side after it
+(22:55 UTC onwards).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>v0.6.15</th><th>v0.6.16</th><th>delta</th></tr></thead><tbody><tr><td>runs / successful</td><td>171 / 171</td><td>171 / 171</td><td>—</td></tr><tr><td>grid cost</td><td>$24.99</td><td>$20.95</td><td>−16.2%</td></tr><tr><td>grid wall</td><td>8,414.8 s</td><td>7,326.0 s</td><td>−12.9%</td></tr><tr><td>mean completeness recall</td><td>1.0000</td><td>1.0000</td><td>—</td></tr><tr><td>mean cell accuracy</td><td>1.0000</td><td>1.0000</td><td>—</td></tr><tr><td><code dir="auto">cells_compared</code></td><td>23,370</td><td>23,370</td><td>—</td></tr><tr><td>processing issues</td><td>16</td><td>14</td><td>mostly <code dir="auto">extraction_row_count_unverified</code> (info) on both sides</td></tr></tbody></table>
+<p><code dir="auto">aggregate.py --compare</code> reports <strong>0 regressions, 0 improvements and 0 cell-level changes</strong>, and
+seven inconclusive rows: six advanced-mode cells whose cost fell 21–47%, and the <code dir="auto">bedrock_llm</code> OCR
+arm’s scalar accuracy (1.000 → 0.889, paired spread ±0.333, inside its own variation). Finding 3
+explains why the cost rows are not noise. The wall-time figure is not a performance claim; wall
+time on a shared account is load-sensitive.</p>
+<p><strong>F2–F4.</strong> The guidance refresh ran on the upgraded reference stack in 30 lanes, six at a time,
+from 00:06 to 07:18 UTC on 2026-11-26: the <code dir="auto">core</code> grid with its reference corpora, thirteen
+<code dir="auto">coresynth</code> model sweeps, three <code dir="auto">simplegrid</code> sets, and the premium-model, cost, scaling, hazard and
+feature suites. <strong>3,197 scored rows for $1,550.72</strong>, against 3,338 for $1,970.57 at v0.6.14. Nine
+rows did not complete, all simple-mode requests on the 3,200-row document refused as too long, the
+expected outcome at that size; the count rose from five because two suites ran at more repeats. No
+lane was lost. The extraction-model grid ranks as before at lower cost (Opus 5.5 still the cheapest
+arm at ceiling accuracy), RealKIE accuracy fell by 0.0095 on one bimodal document, and no result
+reverses a recommendation in the guidance. The classification-variant benchmark (§5.6) did not
+run. ⚠️ <strong>The documentation refresh is partial:</strong> <code dir="auto">config-guidance.md</code> gained a <em>Re-measurement on
+v0.6.16</em> section and its header, <code dir="auto">index.md</code> and the release entry were updated, but the paper’s
+sections after the summary still carry the v0.6.14 edition’s text and figures. The sibling pull
+request, <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/2265">#2265</a>, carries the data and the pages.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-g--browser-ux-review">Tier G — browser UX review</h3><a class="sl-anchor-link" href="#tier-g--browser-ux-review"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier G — browser UX review”</span></a></div>
+<p>Headless Chromium (Playwright, 1440×900) against the upgraded reference stack (UI Deployment
+Info: Version 0.6.16), with four throwaway users (Admin, Reviewer, Author, Viewer), all deleted
+afterwards. One new configuration profile, <code dir="auto">ux-rv0616</code>, was saved from the default with Review
+Routing on, to exercise the review flows; it is left on the reference stack. Three copies of
+<code dir="auto">lending_package.pdf</code> were processed under it (five pipeline runs) and deleted afterwards.</p>
+<p>Flows chosen from this release’s UI changes: flow 1 (sign-in → upload → process → results), the
+Routing Rules tab, the three review endings, Reprocess from a step and Process Changes, the French
+(Canada) language menu, Prefix Mappings change history, the Pricing page’s restore and
+delete-unit behaviour, Quick Start’s Admin-only visibility, the guided tour for Author and Viewer,
+and singular counts.</p>
+<p><strong>15 pass, 1 fail, 1 blocked.</strong> The failure is <strong>Send back</strong> (Finding 1). The blocked flow is a
+populated prefix-mapping change history: the stack had no mappings and creating one was out of
+scope. Quick Start appears for Admin only; the Author tour ran 9 of 9 steps and the Viewer tour 5
+of 5, and a Reviewer-only user is not offered a tour; “Upload (1 file)” is singular, which the
+v0.6.13 record had found as “1 files”. The usability and French findings are Finding 10.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-h--library-integration-tests">Tier H — library integration tests</h3><a class="sl-anchor-link" href="#tier-h--library-integration-tests"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier H — library integration tests”</span></a></div>
+<p>On the upgraded reference stack: <code dir="auto">lib/idp_common_pkg</code> <code dir="auto">make test-integration</code> <strong>19 passed</strong>;
+<code dir="auto">IDP_STACK_NAME=&#x3C;stack> pytest -m integration lib/idp_sdk/tests/integration</code> <strong>13 passed, 0
+skipped</strong>. <code dir="auto">lib/idp_cli_pkg</code> has no integration-marked tests (<code dir="auto">pytest -m integration</code> collects
+nothing), as at v0.6.13 and v0.6.14.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-i--terraform-property-parity">Tier I — Terraform property parity</h3><a class="sl-anchor-link" href="#tier-i--terraform-property-parity"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier I — Terraform property parity”</span></a></div>
+<p>A fresh Terraform deployment of the published 0.6.16 module (<code dir="auto">idp-cli deploy --terraform --terraform-module-version 0.6.16</code>, 33 minutes, default parameters and the same admin email) was
+compared with the tier E stack by <code dir="auto">make terraform-parity</code>. ⚠️ The CloudFormation side is the
+<strong>upgraded</strong> stack, not a fresh one, and it was carrying the benchmark load at the time, so
+properties that drift with history or use are expected to differ.</p>
+<p>The first run crashed before comparing anything (Finding 7). With the tool patched locally to list
+a resource whose Cloud Control identifier it cannot form rather than crash, the second run
+completed: <strong>513 resources compared, 6 differences explained by the baseline, 166 unexplained, 19
+resources found only on the CloudFormation side, 38 listed as not readable through Cloud
+Control.</strong> The tool’s gate therefore fails. <strong>No difference was shown to be a configuration the
+two deployments actually store differently</strong>, but the 166 were not triaged one by one, so that is
+not established either. By property path:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>property</th><th>differences</th><th>what the samples show</th></tr></thead><tbody><tr><td><code dir="auto">VpcConfig</code></td><td>47</td><td>CloudFormation reports an empty <code dir="auto">VpcConfig</code> on functions outside a VPC; Terraform reports none</td></tr><tr><td><code dir="auto">Policies</code></td><td>24</td><td>the same statements under differently formed policy names</td></tr><tr><td><code dir="auto">QueueName</code>, <code dir="auto">EventSourceArn</code>, DLQ ARNs</td><td>32</td><td>Terraform’s generated queue names are random strings, CloudFormation’s start with the stack name, and the normaliser does not map one to the other</td></tr><tr><td><code dir="auto">BucketEncryption</code></td><td>10</td><td>the same <code dir="auto">aws:kms</code> configuration; the key id is not normalised</td></tr><tr><td><code dir="auto">CorsConfiguration</code></td><td>7</td><td>samples identical in their first 500 characters; not examined further</td></tr><tr><td><code dir="auto">Tags</code>, <code dir="auto">UserPoolTags</code></td><td>10</td><td>CloudFormation’s own <code dir="auto">aws:cloudformation:*</code> tags</td></tr><tr><td>other</td><td>36</td><td>31 further paths, one to three each, including a DynamoDB table’s warm read throughput (15,522 on the loaded CloudFormation table, 12,000 on the idle Terraform one)</td></tr></tbody></table>
+<p>The 19 CloudFormation-only resources are all SQS queue and S3 bucket policies. The Terraform
+queues sampled do carry their <code dir="auto">EnforceSSLOnly</code> policies, so these look like resources the tool
+does not pair with their Terraform form rather than missing policies; that is inferred from two
+queues. The 38 unreadable resources are Cognito groups, user, client and domain, Glue tables,
+Lambda permissions and some API Gateway resources, and are listed, not compared. The normaliser
+also rewrote <code dir="auto">Authorization</code> inside a CORS header list to <code dir="auto">&#x3C;&#x3C;AuthorGroup>Group>ization</code>,
+replacing a substring that matched a group name — harmless here because both sides were rewritten
+alike, but it shows name normalisation running on values it should leave alone. The Terraform
+deployment was destroyed afterwards.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-j--migration-from-genai-idp-terraform">Tier J — migration from <code dir="auto">genai-idp-terraform</code></h3><a class="sl-anchor-link" href="#tier-j--migration-from-genai-idp-terraform"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier J — migration from genai-idp-terraform”</span></a></div>
+<p><code dir="auto">make stacktest-terraform-migration</code> with the published 0.6.16 module zip, <code dir="auto">terraform</code> 1.17.2,
+against upstream <code dir="auto">awslabs/genai-idp-terraform</code> at the tag and commit the driver pins
+(<code dir="auto">v0.6.9-tf.0</code>, <code dir="auto">5fdac033b237</code>), <code dir="auto">examples/unified-processor</code>. <strong>PASS: all 26 phases</strong>, about 168
+minutes end to end, 76 of them the two DynamoDB time-to-live waits the guide describes.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>phase group</th><th>result</th></tr></thead><tbody><tr><td>upstream deploy and seed</td><td>17.7 + 2.6 min: two documents completed, an Admin and a scoped Author, one configuration edit, a baseline and a test set</td></tr><tr><td><code dir="auto">migrate-from-genai-idp-terraform plan</code></td><td>22 import blocks; verdicts adopt 22, adopt-after-fix 1, adopt-by-parameter 1, bucket-or-table setting 31, keep-unmanaged 5, recreate 734</td></tr><tr><td>retention check, freeze, snapshot</td><td>8 buckets checked; the upstream S3 event rule disabled; 7 buckets (235 objects), 8 tables, 2 users snapshotted</td></tr><tr><td><code dir="auto">fix-config</code>, <code dir="auto">adopt-user-pool</code>, TTL settle</td><td>1 row fixed; 3 changes; 61-minute wait</td></tr><tr><td><code dir="auto">apply</code> (dry run, then real)</td><td>22 to import, 1,622 to add, 21 to change, <strong>0 to destroy</strong>; 34.2 min</td></tr><tr><td><code dir="auto">restore-config</code>, verify</td><td><code dir="auto">default</code> restored; snapshot preserved; both users signed in by SRP with their old passwords and kept their scope; the configuration edit kept; a new document completed on the new state machine and not the old</td></tr><tr><td><code dir="auto">detach</code>, <code dir="auto">check-destroy</code>, old destroy</td><td>58 addresses removed from the old state; 734 deletions, none of them a kept resource; old deployment destroyed</td></tr><tr><td>verify after the old destroy</td><td>adopted buckets and tables stand; both users still sign in</td></tr><tr><td>new destroy, sweep, leftover check</td><td>27 retained resources swept; nothing left</td></tr></tbody></table>
+<p>The Region’s API Gateway logging-role setting was empty before the run and is empty after it, so
+the migration did not leave another deployment’s logging pointed at a deleted role.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="tier-k--in-place-terraform-upgrade-0615--0616">Tier K — in-place Terraform upgrade 0.6.15 → 0.6.16</h3><a class="sl-anchor-link" href="#tier-k--in-place-terraform-upgrade-0615--0616"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Tier K — in-place Terraform upgrade 0.6.15 → 0.6.16”</span></a></div>
+<p><code dir="auto">make stacktest-terraform-upgrade</code> with the published 0.6.15 and 0.6.16 module zips, one
+deployment, <code dir="auto">terraform</code> 1.17.2. It needed a local fix to its driver before it could start
+(Finding 7).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>phase</th><th>result</th><th>minutes</th></tr></thead><tbody><tr><td>preflight</td><td>PASS</td><td>0.1</td></tr><tr><td>deploy-from (0.6.15)</td><td>PASS, 1,599 resources</td><td>40.1</td></tr><tr><td>seed</td><td>PASS: 2 documents completed, 2 users, 1 configuration edit, a baseline and a test set</td><td>2.8</td></tr><tr><td>snapshot-before</td><td>PASS: 15 buckets (7,676 objects), 16 tables, 3 users</td><td>3.4</td></tr><tr><td>upgrade (0.6.16)</td><td>PASS: 68 to add, 171 to change, 14 to destroy</td><td>23.4</td></tr><tr><td>replan</td><td><strong>FAIL</strong>: 1 resource to create</td><td>1.3</td></tr><tr><td>destroy, sweep, leftover check</td><td>PASS, 0 leftovers</td><td>22.3</td></tr></tbody></table>
+<p>The upgrade applied; the replacements in its plan included three Lambda layers and the label
+stack’s template object, both expected on a version change. The plan after it was not empty, which is
+Finding 2. Because the driver stops forward phases at a non-converging plan, the snapshot
+comparison, the users’ sign-in with their old passwords, the configuration-edit check and the
+post-upgrade document were <strong>not run</strong>, so this record says nothing about data preservation
+across a Terraform upgrade.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="findings-most-important-first">Findings, most important first</h2><a class="sl-anchor-link" href="#findings-most-important-first"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Findings, most important first”</span></a></div>
+<div class="sl-heading-wrapper level-h3"><h3 id="1-a-document-sent-back-from-review-or-reprocessed-from-a-step-is-scored-at-100-confidence-and-completes-unreviewed-product-defect-this-release">1. A document sent back from review, or reprocessed from a step, is scored at 100% confidence and completes unreviewed (product defect, this release)</h3><a class="sl-anchor-link" href="#1-a-document-sent-back-from-review-or-reprocessed-from-a-step-is-scored-at-100-confidence-and-completes-unreviewed-product-defect-this-release"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “1. A document sent back from review, or reprocessed from a step, is scored at 100% confidence and completes unreviewed (product defect, this release)”</span></a></div>
+<p><strong>Measured in the browser (tier G).</strong> <code dir="auto">lending_package.pdf</code> under a profile with Review Routing on
+raised six confidence alerts on its first run and was held in the Default queue. As Reviewer, the
+document was claimed, one field corrected, and <strong>Send back for reprocessing</strong> chosen; separately,
+as Admin, <strong>Reprocess › Start at Assessment</strong> was run on the same document. Both runs ended
+<code dir="auto">COMPLETED</code> with 0 alerts and Review Status N/A. In section 1 every non-empty field scored exactly
+100.0% and every empty field 0.0%, after both runs; a normal first run of the same file scored 23
+fields at 100.0%, 9 at 99.0% and the rest between 55% and 94%. The Processing Flow shows the
+assessment step succeeding on every section, in 2–7 seconds each.</p>
+<p><strong>Measured in the logs.</strong> The assessment function logged <code dir="auto">Failed to generate text confidence data for page N: No module named 'pypdfium2'</code> exactly six times — once per page — in each of the two
+reprocessing windows, and never in the document’s first run or in two windows in which only the
+benchmark battery was running. The log lines do not name the document.</p>
+<p><strong>Read in the code at the tag.</strong> <code dir="auto">idp_common/dynamodb/service.py</code> writes each page of the tracking
+record with <code dir="auto">ImageUri</code>, <code dir="auto">TextUri</code> and <code dir="auto">OcrPageDataUri</code> but not <code dir="auto">TextConfidenceUri</code>, while the
+reader that rebuilds a <code dir="auto">Document</code> from the record reads <code dir="auto">TextConfidenceUri</code> (always absent) and
+sets the page’s raw text location to <code dir="auto">TextUri</code>, the parsed text. The reprocess resolver rebuilds
+the document through that reader. <code dir="auto">AssessmentService._get_text_confidence_data</code> therefore finds no
+confidence file and falls back to regenerating it through <code dir="auto">OcrService</code>, an import that needs
+<code dir="auto">pypdfium2</code>, which the assessment function’s <code dir="auto">[assessment]</code> extra does not install; the fallback
+returns an empty confidence block. Even with the module present, the fallback would be handed
+parsed text rather than the raw OCR response.</p>
+<p><strong>Inferred, not traced:</strong> that an assessment prompt with an empty OCR-confidence block is what
+yields the uniform 100% scores.</p>
+<p><strong>Why it matters.</strong> Send back exists to put a document back under review, and the dialog says the
+document “can return to a review queue afterwards”. Instead it comes back with perfect scores and
+completes, and nothing on the page says assessment had no data. Review Routing is on by default
+for new stacks in this release, so this is the default review path. Filed as <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2258">#2258</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="2-an-in-place-terraform-upgrade-from-0615-drops-one-inline-policy-from-the-state-machines-role-product-defect-terraform-module">2. An in-place Terraform upgrade from 0.6.15 drops one inline policy from the state machine’s role (product defect, Terraform module)</h3><a class="sl-anchor-link" href="#2-an-in-place-terraform-upgrade-from-0615-drops-one-inline-policy-from-the-state-machines-role-product-defect-terraform-module"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “2. An in-place Terraform upgrade from 0.6.15 drops one inline policy from the state machine’s role (product defect, Terraform module)”</span></a></div>
+<p><strong>Measured (tier K).</strong> After <code dir="auto">terraform apply</code> of the 0.6.16 module over a 0.6.15 deployment, the
+next plan wanted to create
+<code dir="auto">module.idp.module.patternstack.aws_iam_role_policy.document_processing_state_machine_role_15</code>,
+named <code dir="auto">DocumentProcessingStateMachineRolePolicy15</code>, granting <code dir="auto">lambda:InvokeFunction</code> on the
+pipeline-hooks dispatcher function.</p>
+<p><strong>Read in the apply log.</strong> The upgrade plan renamed the existing <code dir="auto">..._role_14</code> policy from
+<code dir="auto">DocumentProcessingStateMachineRolePolicy15</code> to <code dir="auto">...Policy14</code>, which forces replacement, and added
+<code dir="auto">..._role_15</code> under the name <code dir="auto">...Policy15</code>. The apply created <code dir="auto">..._role_15</code> first and destroyed the
+deposed <code dir="auto">..._role_14</code> object afterwards. An inline policy is identified by role and name, so
+destroying the deposed object deleted the policy <code dir="auto">..._role_15</code> had just created. The role then
+lacks the grant until a second apply recreates it.</p>
+<p><strong>Inferred, not measured:</strong> what this does to processing between the two applies. A workflow that
+calls the pipeline-hooks dispatcher would be refused; the tier K driver stops at the
+non-converging plan, so no document was processed on the upgraded deployment. The same position
+numbering applies to every role with several inline policies, so any release that inserts a policy
+ahead of others can do this to other roles. Filed as <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2259">#2259</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="3-advanced-mode-extraction-costs-about-half-as-much-on-100-row-documents-improvement-cause-inferred">3. Advanced-mode extraction costs about half as much on 100-row documents (improvement, cause inferred)</h3><a class="sl-anchor-link" href="#3-advanced-mode-extraction-costs-about-half-as-much-on-100-row-documents-improvement-cause-inferred"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “3. Advanced-mode extraction costs about half as much on 100-row documents (improvement, cause inferred)”</span></a></div>
+<p>In the F1 A/B, the configurations were byte-identical on both sides, so the change is the code’s.
+Every advanced-mode cell cost 45–52% less on the two 100-row documents, with per-run ranges that do
+not overlap: <code dir="auto">core-tt-adv-sep</code> on <code dir="auto">longdesc_100</code> cost $0.248–$0.288 a run on v0.6.15 and
+$0.113–$0.153 on v0.6.16; <code dir="auto">core-bda-adv-sep</code> on <code dir="auto">small_narrow</code> $0.173–$0.207 and $0.089–$0.121.
+The single-page <code dir="auto">tiny_form</code> cost the same on both. Recall and cell accuracy were identical.</p>
+<p>The CHANGELOG’s fix “Agentic table extraction no longer counts a table’s header rows as data on
+some runs” also changed the table tool to parse the section’s own OCR text, so the agent no longer
+spends output tokens reproducing the table. That is the likely cause; the token split per call was
+not examined. <code dir="auto">aggregate.py --compare</code> labels these cells inconclusive (Finding 8 explains why it
+cannot see a consistent per-document change).</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="4-make-test-fails-at-the-tag-and-on-develop-on-five-story-catalogue-tests-test-tooling">4. <code dir="auto">make test</code> fails at the tag, and on <code dir="auto">develop</code>, on five story-catalogue tests (test tooling)</h3><a class="sl-anchor-link" href="#4-make-test-fails-at-the-tag-and-on-develop-on-five-story-catalogue-tests-test-tooling"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “4. make test fails at the tag, and on develop, on five story-catalogue tests (test tooling)”</span></a></div>
+<p>All five failures are in <code dir="auto">scripts/tests/test_ux_test_stories_*.py</code>, and the same five fail on
+<code dir="auto">develop</code> at <code dir="auto">587409c58</code>. They check <code dir="auto">scripts/ux_stories.toml</code> against text the release
+preparation edited: the <code dir="auto">send-a-review-back</code> story quotes the CHANGELOG lead “More review
+outcomes.”, which the prepared CHANGELOG renamed “More ways to end a review.”; the <code dir="auto">docs/rbac.md</code>
+permission table gained a “View/Edit configuration” row the catalogue parser does not know; and the
+<code dir="auto">take-the-guided-tour</code> story is no longer selected by its entry now that the entry sits in a
+released section. No product code is involved. It also takes the <code dir="auto">scripts</code> coverage tree out of
+the coverage ratchet for this release (see <em>Test coverage</em>). Filed as <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2260">#2260</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="5-the-tenant-isolation-harness-cannot-accept-a-document-held-for-review-test-tooling-triggered-by-this-releases-default">5. The tenant-isolation harness cannot accept a document held for review (test tooling, triggered by this release’s default)</h3><a class="sl-anchor-link" href="#5-the-tenant-isolation-harness-cannot-accept-a-document-held-for-review-test-tooling-triggered-by-this-releases-default"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “5. The tenant-isolation harness cannot accept a document held for review (test tooling, triggered by this release’s default)”</span></a></div>
+<p>The failing row, <code dir="auto">ingest:tiv-a-prefix-with-tiv-b-metadata</code>, uploads a document under tenant A’s
+prefix naming tenant B’s profile in its metadata. The document was processed under <code dir="auto">tivA-default</code>,
+tenant A’s own profile, and B’s profile was ignored — the outcome the harness’s own comment calls a
+pass. It failed because the document was then held for review (<code dir="auto">HITL_IN_PROGRESS</code>), since a new
+stack now has Review Routing on, and the harness waits only for <code dir="auto">COMPLETED</code> or <code dir="auto">FAILED</code>
+(<code dir="auto">idp_sdk/_core/tenancy_verify.py</code>). Isolation held; the harness needs to treat a held document as
+processed. Filed as <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2261">#2261</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="6-the-rbac-dynamic-test-could-not-change-the-app-clients-auth-flows-test-tooling-environment-triggered">6. The RBAC dynamic test could not change the app client’s auth flows (test tooling, environment-triggered)</h3><a class="sl-anchor-link" href="#6-the-rbac-dynamic-test-could-not-change-the-app-clients-auth-flows-test-tooling-environment-triggered"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “6. The RBAC dynamic test could not change the app client’s auth flows (test tooling, environment-triggered)”</span></a></div>
+<p><code dir="auto">scripts/rbac_common.py::set_auth_flows</code> reads the Cognito app client with
+<code dir="auto">describe-user-pool-client</code> and writes it back with <code dir="auto">update-user-pool-client</code>, dropping a fixed
+list of read-only fields. <code dir="auto">aws-cli</code> 2.41.0 now returns <code dir="auto">ClientType</code>, which the update refuses, so
+the first run stopped before any dynamic check and before ZAP; its restore step failed the same
+way, and the client was checked afterwards and found unchanged (<code dir="auto">ALLOW_REFRESH_TOKEN_AUTH</code>,
+<code dir="auto">ALLOW_USER_SRP_AUTH</code>). Adding <code dir="auto">ClientType</code> to the read-only list in the validation worktree
+(uncommitted) let the rerun complete. Filed as <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2262">#2262</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="7-two-terraform-tier-drivers-failed-before-measuring-anything-test-tooling">7. Two Terraform tier drivers failed before measuring anything (test tooling)</h3><a class="sl-anchor-link" href="#7-two-terraform-tier-drivers-failed-before-measuring-anything-test-tooling"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “7. Two Terraform tier drivers failed before measuring anything (test tooling)”</span></a></div>
+<ul>
+<li><strong>The Terraform upgrade driver</strong> (<code dir="auto">scripts/sdlc/terraform_upgrade_test.py</code>) fails in preflight
+with <code dir="auto">AttributeError: 'Settings' object has no attribute 'variant'</code>, at the tag and on <code dir="auto">develop</code>:
+it inherits identity checks from the migration driver that read <code dir="auto">variant</code> and
+<code dir="auto">upstream_iam_path</code>, which its own <code dir="auto">Settings</code> never defines. Its 100 offline tests pass because
+none runs the real preflight. Adding the two fields with their base defaults (uncommitted) let
+tier K run.</li>
+<li><strong>The parity tool</strong> (<code dir="auto">terraform/tools/parity.py</code>) stops at the first resource type whose Cloud
+Control identifier is compound — here <code dir="auto">AWS::Cognito::UserPoolGroup</code>, whose physical id <code dir="auto">Admin</code> is
+not a valid identifier for <code dir="auto">UserPoolId|GroupName</code> — because it tolerates only
+<code dir="auto">UnsupportedActionException</code> and <code dir="auto">TypeNotFoundException</code>. Treating Cloud Control’s
+<code dir="auto">ValidationException</code> as “not readable” (uncommitted) let the second run complete, at the cost of
+38 resources listed rather than compared. Separately, its baseline and name normaliser do not
+cover Terraform’s generated queue names, KMS key ids, empty <code dir="auto">VpcConfig</code> or CloudFormation’s own
+tags, which is most of tier I’s 166 unexplained differences, and the normaliser rewrites
+substrings inside values.</li>
+</ul>
+<p>Filed as <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2263">#2263</a>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="8-two-measurement-instruments-reported-a-clean-result-they-had-not-established-test-tooling">8. Two measurement instruments reported a clean result they had not established (test tooling)</h3><a class="sl-anchor-link" href="#8-two-measurement-instruments-reported-a-clean-result-they-had-not-established-test-tooling"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “8. Two measurement instruments reported a clean result they had not established (test tooling)”</span></a></div>
+<ul>
+<li><strong>SRT.</strong> The first scan of the pass exited 0 with “no high-priority security issues found”,
+but Semgrep had not run: a stray <code dir="auto">~/.local/bin/pysemgrep</code> on the host shadowed SRT’s own and
+crashed on import. SRT’s scanner-health check printed the omission, and the exit code did not
+reflect it. The scan counted in this record was re-run with SRT’s own environment first on
+<code dir="auto">PATH</code>, and every scanner completed. The stray copy belongs to the host, not the repository;
+the exit code is the repository’s.</li>
+<li><strong>The A/B comparison.</strong> <code dir="auto">aggregate.py --compare</code> judges a cell’s cost change against the cell’s
+spread pooled across its three documents, whose sizes differ by a factor of 100, so a consistent
+per-document halving (Finding 3) reads as “within noise”. A per-document paired comparison would
+report it.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="9-the-transform-runner-disables-the-new-review-routing-default-before-its-document-test-test-coverage">9. The transform runner disables the new Review Routing default before its document test (test coverage)</h3><a class="sl-anchor-link" href="#9-the-transform-runner-disables-the-new-review-routing-default-before-its-document-test-test-coverage"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “9. The transform runner disables the new Review Routing default before its document test (test coverage)”</span></a></div>
+<p>Both transform runs turn Review Routing off in the default profile so the sample document
+completes. That keeps the tier meaningful, but it means no tier in this record processed a document
+on a fresh stack with the new default left on, other than the tenant-isolation stack, where it
+surfaced Finding 5. The runner also prints “No document classes defined” while saving that change;
+the document still classified correctly.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="10-the-browser-reviews-usability-and-french-findings-tier-g">10. The browser review’s usability and French findings (tier G)</h3><a class="sl-anchor-link" href="#10-the-browser-reviews-usability-and-french-findings-tier-g"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10. The browser review’s usability and French findings (tier G)”</span></a></div>
+<p>Ranked, abbreviated; Finding 1 is the most important of them as a user sees it.</p>
+<ol>
+<li><strong>A routing rule can silently re-hold every reviewed document.</strong> A custom rule without a
+“Reviewed false” condition, placed first, re-places a reviewed document up to “Maximum
+placements in a row” times. All three built-in rules carry the guard; the tab does not warn
+when a new rule lacks it.</li>
+<li><strong>The Default queue’s “Routing rules that use this queue” panel took 33 seconds</strong> (27 paged
+requests) and listed 531 rows: the three built-in rules for each of 177 profiles, including
+profiles with Review Routing off.</li>
+<li><strong>The Reprocess dialog shows no run plan</strong>, while Process Changes does, and it offers Policy Rule
+Validation as a start step when that step is off; Process Changes then says “Starts at Policy
+Rule Validation” for a step it lists as Not enabled.</li>
+<li><strong>Raw identifiers in the UI:</strong> <code dir="auto">HITL_IN_PROGRESS</code> in both languages, state-machine state names in
+the Processing Flow (each map iteration listed twice), <code dir="auto">NO_BASELINE</code>, “Decision_model Pricing”.</li>
+<li><strong>Reject and Complete give no confirmation; Send back does.</strong></li>
+<li><strong>Smaller:</strong> alert chips without a parent path; a held document shows a “Completed” timestamp
+and a duration that includes review idle time; the Viewer’s Welcome page and tour describe
+actions a Viewer cannot take, and every tour step is titled “Task 1”; the upload page keeps the
+file selected after a successful upload.</li>
+</ol>
+<p><strong>French (Canada).</strong> The language menu switches the page (<code dir="auto">lang="fr-CA"</code>), and dates, decimals and
+percentages are formatted for French. What only the French shows: column headers and timestamps cut
+off in the Document List and on configuration profiles; the routing reason and built-in rule labels
+on the Reviewer’s main screen are still English, as are most Configuration tabs and the Pricing
+page (the CHANGELOG discloses English admin screens, but these are on the review screen); file
+sizes in English format (“2.62 MB”); “Claim” translated three different ways on one screen; and
+steps that have not yet run marked “Exécutée”.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="11-the-agent-capability-audit-what-was-checked-security-review-details-withheld">11. The agent capability audit: what was checked (security review, details withheld)</h3><a class="sl-anchor-link" href="#11-the-agent-capability-audit-what-was-checked-security-review-details-withheld"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “11. The agent capability audit: what was checked (security review, details withheld)”</span></a></div>
+<p>The audit re-verified each of the 22 entries in <code dir="auto">scripts/tests/agent_capabilities.yaml</code> against the
+code at the tag, one read-only subagent per group of entries. Results: <strong>2 match, 15 understated
+(the code reads, receives or sends more than the entry declares), 2 overstated, 1 named control not
+on the path that runs, and 2 cited tests that do not exercise their control.</strong> About ten model calls
+whose output is saved or rendered are not in the manifest. Per the audit’s own rules, the findings’
+substance is not published here; the manifest edits that record the behaviour are a separate change,
+and anything exploitable goes through the channel in <code dir="auto">SECURITY.md</code>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="12-environment-events-and-counts-that-moved-informational">12. Environment events and counts that moved (informational)</h3><a class="sl-anchor-link" href="#12-environment-events-and-counts-that-moved-informational"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “12. Environment events and counts that moved (informational)”</span></a></div>
+<ul>
+<li><code dir="auto">make typecheck</code> warnings 47 → 73 against the v0.6.14 record, almost all import-cycle and
+<code dir="auto">__all__</code> warnings; still 0 errors.</li>
+<li><code dir="auto">dep-audit</code> lists three advisories it cannot map to a package for review; none at or above HIGH
+gates.</li>
+<li>The validation’s own tier I script deleted the first Terraform parity deployment when the parity
+tool crashed, which cost a second 33-minute deployment.</li>
+</ul>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="issues-filed-and-their-status">Issues filed and their status</h2><a class="sl-anchor-link" href="#issues-filed-and-their-status"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Issues filed and their status”</span></a></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Issue</th><th>Finding</th><th>Status</th></tr></thead><tbody><tr><td><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2258">#2258</a> — Send back or reprocess from a step scores every field at 100% confidence</td><td>1</td><td>open</td></tr><tr><td><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2259">#2259</a> — Terraform upgrade drops an inline policy from the state machine role</td><td>2</td><td>open</td></tr><tr><td><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2260">#2260</a> — <code dir="auto">make test</code> fails on five story-catalogue tests</td><td>4</td><td>open</td></tr><tr><td><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2261">#2261</a> — tenant-isolation harness fails a document held for review</td><td>5</td><td>open</td></tr><tr><td><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2262">#2262</a> — RBAC dynamic test vs <code dir="auto">ClientType</code></td><td>6</td><td>open</td></tr><tr><td><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2263">#2263</a> — Terraform upgrade driver and parity tool</td><td>7</td><td>open</td></tr></tbody></table>
+<p>The agent capability audit’s findings (Finding 11) are not filed publicly.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="what-was-not-validated">What was NOT validated</h2><a class="sl-anchor-link" href="#what-was-not-validated"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “What was NOT validated”</span></a></div>
+<ul>
+<li><strong>Real GovCloud.</strong> Tier D’s <code dir="auto">--govcloud</code> run was <code dir="auto">REGION=us-west-2</code> with commercial credentials.
+Partition ARNs, GovCloud model availability and the BDA project rejection are unproven, and the
+Knowledge Base was disabled in that run.</li>
+<li><strong>Terraform property parity.</strong> Tier I reached no verdict (Finding 7).</li>
+<li><strong>A full rewrite of the guidance paper from v0.6.16 data.</strong> Only its summary section is new; the
+sections after it are v0.6.14 text. The classification-variant benchmark did not run.</li>
+<li><strong>Data preservation across a Terraform upgrade.</strong> Tier K stopped at its non-converging plan
+(Finding 2) before the snapshot comparison, the sign-in check and the post-upgrade document.</li>
+<li><strong>The seller positive path.</strong> No token was issued or verified.</li>
+<li><strong><code dir="auto">TenantSelection</code> and <code dir="auto">TenantGrantSource=IdpClaim</code>.</strong> The tenant-isolation tier uses the default
+<code dir="auto">Manual</code> grant source; choosing among several tenants at sign-in was not exercised.</li>
+<li><strong><code dir="auto">CustomerManagedKmsKeyArn</code>.</strong> No stack was deployed with a customer-managed key.</li>
+<li><strong>The new section-classification methods</strong> (<code dir="auto">decision_model</code>, <code dir="auto">embeddings</code>) and
+<code dir="auto">pageOrder: printed_page_numbers</code>. No benchmark suite or tier exercises them.</li>
+<li><strong>Review Routing in BDA mode</strong>, a non-Default queue, an Annotator assignment, DMN import and a
+saved custom routing rule routing a live document (tier G).</li>
+<li><strong><code dir="auto">idp_cli</code> integration behaviour.</strong> The suite is empty.</li>
+<li><strong>Whether Finding 1’s uniform 100% scores come from the empty confidence block</strong>, as opposed to
+being observed alongside it.</li>
+<li><strong>Canada (<code dir="auto">ca-central-1</code>) and <code dir="auto">eu-central-1</code>.</strong> All stacks were <code dir="auto">us-west-2</code> (seller <code dir="auto">us-east-1</code>).</li>
+<li><strong>Malware scanning.</strong> <code dir="auto">MalwareScanning</code> defaulted to <code dir="auto">DISABLED</code> in every stack.</li>
+</ul>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="reproduce">Reproduce</h2><a class="sl-anchor-link" href="#reproduce"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Reproduce”</span></a></div>
+<div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier A (offline), in a dedicated worktree at the tag — never in a shared checkout</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">git</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">worktree</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">add</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;path></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">v0.6.16</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#C5E478;--1:#3B61B0">cd</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;path></span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">setup-venv</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#C5E478;--1:#3B61B0">source</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">.venv/bin/activate</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">CI</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">1</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scripts/srt/setup.py</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#C5E478;--1:#3B61B0">PATH</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#C5E478;--1:#3B61B0">$PWD</span><span style="--0:#ECC48D;--1:#3B61B0">/.srt/.venv/bin:</span><span style="--0:#C5E478;--1:#3B61B0">$PATH</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">srt-scan</span><span style="--0:#D6DEEB;--1:#403F53">   </span><span style="--0:#919F9F;--1:#5F636F"># before anything writes build output</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">test</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lint-cicd</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">typecheck</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">dep-audit</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; (</span><span style="--0:#C5E478;--1:#3B61B0">cd</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">src/ui</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">npx</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">vitest</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">run</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ui-i18n-coverage</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">solution-profile-check</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scripts/coverage_all.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--jobs</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">1</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">check-coverage-debt</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">publish.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;bucket-base></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;prefix></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--clean-build</span><span style="--0:#D6DEEB;--1:#403F53">     </span><span style="--0:#919F9F;--1:#5F636F"># second worktree, clean env</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">URL</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.16.yaml</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier B, against the upgraded stack (after the tier A scan; SKIP_SRT curates it)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">security-results</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">STACK_NAME=&#x3C;stack></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">SKIP_SRT=</span><span style="--0:#F78C6C;--1:#AA0982">1</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier C (6 variants)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-hosting-global</span><span style="--0:#D6DEEB;--1:#403F53">  </span><span style="--0:#ECC48D;--1:#3B61B0">TEMPLATE_URL=</span><span style="--0:#C5E478;--1:#3B61B0">$URL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;email></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-waf</span><span style="--0:#D6DEEB;--1:#403F53">             </span><span style="--0:#ECC48D;--1:#3B61B0">TEMPLATE_URL=</span><span style="--0:#C5E478;--1:#3B61B0">$URL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;email></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-hosting-private</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">TEMPLATE_URL=</span><span style="--0:#C5E478;--1:#3B61B0">$URL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;email></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">VPC_ID=&#x3C;VPC_ID></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">SUBNET_IDS=&#x3C;SUBNET_A>,&#x3C;SUBNET_B></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">LAMBDA_SG_ID=&#x3C;SG_ID></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">APIGW_VPCE_ID=&#x3C;VPCE_ID></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-jobsapi</span><span style="--0:#D6DEEB;--1:#403F53">         </span><span style="--0:#ECC48D;--1:#3B61B0">TEMPLATE_URL=</span><span style="--0:#C5E478;--1:#3B61B0">$URL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;email></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">VPC_ID=&#x3C;VPC_ID></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">SUBNET_IDS=&#x3C;SUBNET_A>,&#x3C;SUBNET_B></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">LAMBDA_SG_ID=&#x3C;SG_ID></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">APIGW_VPCE_ID=&#x3C;VPCE_ID></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-tenancy</span><span style="--0:#D6DEEB;--1:#403F53">         </span><span style="--0:#ECC48D;--1:#3B61B0">TEMPLATE_URL=</span><span style="--0:#C5E478;--1:#3B61B0">$URL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;email></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-seller</span><span style="--0:#D6DEEB;--1:#403F53">                                  </span><span style="--0:#919F9F;--1:#5F636F"># REGION deliberately unset -> us-east-1</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier D</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">transform-deploy-test-all</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;email></span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier E — three documents per side, or run-to-run variation reads as a version effect</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">cloudformation</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">create-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">IDPUpg0615to0616</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--template-url</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;0.6.15</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">URL></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">...</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">cloudformation</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">update-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">IDPUpg0615to0616</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--template-url</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">$URL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--parameters</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">file://&#x3C;every</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">existing</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">parameter</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">with</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">UsePreviousValue=true>.json</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier F1, PREV side before update-stack, NEW side after, on the same stack</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;stack></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">corefast</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--repeats</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--validate-against-release</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">v0.6.15</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/aggregate.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--compare</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;v0.6.16</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">summary></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--baseline</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;v0.6.15</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">summary></span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier G: headless Chromium via Playwright, throwaway users from scripts/ux_test_session.py</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tier H, on the upgraded stack</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#C5E478;--1:#3B61B0">cd</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_common_pkg</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">test-integration</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">IDP_STACK_NAME</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;stack></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">python</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">pytest</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">integration</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_sdk/tests/integration</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Tiers I, J, K (published module zips under &#x3C;prefix>/&#x3C;version>/terraform/)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">deploy</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--terraform</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--terraform-module-version</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">0.6.16</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;tf></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--admin-email</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;email></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">terraform-parity</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">CFN_STACK=&#x3C;stack></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">TF_STACK=&#x3C;tf></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-terraform-migration</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">OLD_NAME=&#x3C;old></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">NEW_NAME=&#x3C;new></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">TERRAFORM_MODULE_URL=&#x3C;0.6.16</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">zip></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">WORK_DIR=&#x3C;dir</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">outside</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">/tmp></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">TERRAFORM_BIN=&#x3C;terraform</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">1.7+></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">make</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">stacktest-terraform-upgrade</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">STACK_NAME=&#x3C;tf></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ADMIN_EMAIL=&#x3C;you>@example.com</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">FROM_MODULE_URL=&#x3C;0.6.15</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">zip></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">TO_MODULE_URL=&#x3C;0.6.16</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">zip></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">REGION=us-west-2</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">WORK_DIR=&#x3C;dir</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">outside</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">/tmp></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">TERRAFORM_BIN=&#x3C;terraform</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">1.7+></span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="git worktree add <path> v0.6.16 &#x26;&#x26; cd <path> &#x26;&#x26; make setup-venv &#x26;&#x26; source .venv/bin/activateCI=1 python3 scripts/srt/setup.py &#x26;&#x26; PATH=$PWD/.srt/.venv/bin:$PATH make srt-scan   # before anything writes build outputmake test &#x26;&#x26; make lint-cicd &#x26;&#x26; make typecheck &#x26;&#x26; make dep-audit &#x26;&#x26; (cd src/ui &#x26;&#x26; npx vitest run)make ui-i18n-coverage &#x26;&#x26; make solution-profile-checkpython3 scripts/coverage_all.py --jobs 1 &#x26;&#x26; make check-coverage-debtpython3 publish.py <bucket-base> <prefix> us-west-2 --clean-build     # second worktree, clean envURL=https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.16.yamlmake security-results STACK_NAME=<stack> REGION=us-west-2 SKIP_SRT=1make stacktest-hosting-global  TEMPLATE_URL=$URL REGION=us-west-2 ADMIN_EMAIL=<email>make stacktest-waf             TEMPLATE_URL=$URL REGION=us-west-2 ADMIN_EMAIL=<email>make stacktest-hosting-private TEMPLATE_URL=$URL REGION=us-west-2 ADMIN_EMAIL=<email> \    VPC_ID=<VPC_ID> SUBNET_IDS=<SUBNET_A>,<SUBNET_B> LAMBDA_SG_ID=<SG_ID> APIGW_VPCE_ID=<VPCE_ID>make stacktest-jobsapi         TEMPLATE_URL=$URL REGION=us-west-2 ADMIN_EMAIL=<email> \    VPC_ID=<VPC_ID> SUBNET_IDS=<SUBNET_A>,<SUBNET_B> LAMBDA_SG_ID=<SG_ID> APIGW_VPCE_ID=<VPCE_ID>make stacktest-tenancy         TEMPLATE_URL=$URL REGION=us-west-2 ADMIN_EMAIL=<email>make stacktest-seller                                  # REGION deliberately unset -> us-east-1make transform-deploy-test-all REGION=us-west-2 ADMIN_EMAIL=<email>aws cloudformation create-stack --stack-name IDPUpg0615to0616 --template-url <0.6.15 URL> ...aws cloudformation update-stack --stack-name IDPUpg0615to0616 --template-url $URL \    --parameters file://<every existing parameter with UsePreviousValue=true>.jsonpython benchmarks/harness/run_matrix.py --stack <stack> --suite corefast --repeats 3 \    --native-upload --validate-against-release v0.6.15 --max-inflight 4python benchmarks/harness/aggregate.py --compare <v0.6.16 summary> --baseline <v0.6.15 summary>(cd lib/idp_common_pkg &#x26;&#x26; make test-integration)IDP_STACK_NAME=<stack> python -m pytest -m integration lib/idp_sdk/tests/integrationidp-cli deploy --terraform --terraform-module-version 0.6.16 --stack-name <tf> --admin-email <email>make terraform-parity CFN_STACK=<stack> TF_STACK=<tf> REGION=us-west-2make stacktest-terraform-migration OLD_NAME=<old> NEW_NAME=<new> TERRAFORM_MODULE_URL=<0.6.16 zip> \    REGION=us-west-2 WORK_DIR=<dir outside /tmp> TERRAFORM_BIN=<terraform 1.7+>make stacktest-terraform-upgrade STACK_NAME=<tf> ADMIN_EMAIL=<you>@example.com \    FROM_MODULE_URL=<0.6.15 zip> TO_MODULE_URL=<0.6.16 zip> REGION=us-west-2 \    WORK_DIR=<dir outside /tmp> TERRAFORM_BIN=<terraform 1.7+>"><div></div></button></div></figure></div></div><footer class="sl-flex astro-xhxjzfa7"><div class="meta sl-flex astro-xhxjzfa7"></div><div class="pagination-links print:hidden astro-jgq3vlii" dir="ltr"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v0614/" rel="prev" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg><span class="astro-jgq3vlii">Previous<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Release Validation: v0.6.14</span></span></a><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v066/" rel="next" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg><span class="astro-jgq3vlii">Next<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Release Validation: v0.6.6</span></span></a></div></footer></div></div></main></div></div></div></div></body></html>
