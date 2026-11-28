@@ -2888,9 +2888,12 @@ def test_step13_permission_boundaries(stack_name):
         return {"success": False, "error": f"Permission-boundary check failed: {e}"}
 
 
-# Tracking statuses after which nothing more happens to a document: the ones
-# `terminal_document_status` can produce for a finished execution, plus FAILED
-# written at ingest (a reject mapping) and ABORTED written by `abortWorkflow`.
+# Tracking statuses at which step 15 stops waiting for a document. They are the
+# ones `terminal_document_status` can produce for a finished execution (including
+# HITL_IN_PROGRESS, where a document whose abort did not take waits for a
+# reviewer indefinitely), FAILED written at ingest by a reject mapping, ABORTED
+# written by `abortWorkflow`, and the malware gate's QUARANTINED and
+# MALWARE_SCAN_FAILED.
 _CPM_SETTLED_STATUSES = frozenset(
     {
         "COMPLETED",
@@ -2898,9 +2901,17 @@ _CPM_SETTLED_STATUSES = frozenset(
         "ABORTED",
         "REJECTED",
         "REDACTED_SUPERSEDED",
+        "HITL_IN_PROGRESS",
         "QUARANTINED",
         "MALWARE_SCAN_FAILED",
     }
+)
+# The abort is one synchronous resolver call (Timeout: 60). Read for longer than
+# the function can run, and do not retry: a retried abort holds the `finally`
+# for minutes before the mappings are dropped, and a missed abort costs only a
+# document reported as still in flight.
+_CPM_ABORT_CLIENT_CONFIG = _BotoConfig(
+    read_timeout=120, connect_timeout=10, retries={"total_max_attempts": 1}
 )
 # Bound on waiting for step 15's aborted documents to settle before cleanup.
 _CPM_SETTLE_TIMEOUT_SECONDS = 300
@@ -3235,7 +3246,7 @@ def test_step15_config_prefix_mappings(stack_name):
             if abort_fn:
                 print(f"  aborting {len(to_stop)} documents through abortWorkflow")
                 _cpm_invoke_abort(
-                    boto3.client("lambda", config=_THROTTLE_RETRY_CONFIG),
+                    boto3.client("lambda", config=_CPM_ABORT_CLIENT_CONFIG),
                     abort_fn,
                     to_stop,
                 )

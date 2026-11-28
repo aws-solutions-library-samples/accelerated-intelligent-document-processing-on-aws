@@ -319,3 +319,25 @@ class TestCpmSettle:
         assert unsettled == []
         assert keep == {"queued-aborted"}
         assert now[0] == 0  # nothing to wait for, so no sleep
+
+    def test_a_document_waiting_for_review_does_not_hold_the_wait(self):
+        # An abort that did not take can leave a document at the review point,
+        # where its execution has finished and its row reads HITL_IN_PROGRESS
+        # for as long as nobody reviews it. That is not worth the full bound.
+        clock, sleep, now = self._clock()
+        unsettled, keep = cd._cpm_settle(
+            ["held"],
+            observe=lambda k: ("HITL_IN_PROGRESS", "arn:h", "SUCCEEDED"),
+            timeout=300,
+            interval=10,
+            clock=clock,
+            sleep=sleep,
+        )
+        assert (unsettled, keep, now[0]) == ([], set(), 0)
+
+
+@pytest.mark.unit
+def test_the_abort_call_is_not_retried_and_outlasts_the_resolver():
+    retries = cd._CPM_ABORT_CLIENT_CONFIG.retries or {}
+    assert retries.get("total_max_attempts") == 1
+    assert (cd._CPM_ABORT_CLIENT_CONFIG.read_timeout or 0) > 60
