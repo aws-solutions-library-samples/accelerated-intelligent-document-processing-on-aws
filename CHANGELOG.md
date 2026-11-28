@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Multi-document discovery reports each discovered type as a class name.** The type name the discovery agent writes for a cluster is reduced to the class-name character set (letters, digits, `-` and `_`, at most 64 characters) before it reaches the discovery job's results, the reflection report and the Quick Start chat, as single-document discovery already did for its class ids; a failed reflection report is shown as plain text. Quick Start's chat sends only names of that form to its agent, and its agent no longer activates `default` or a stack-managed profile, which you activate from **Configuration › View/Edit Configuration**. See [Multi-Document Collection Discovery](docs/discovery.md#multi-document-collection-discovery).
+
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
 
 ## [0.6.16]

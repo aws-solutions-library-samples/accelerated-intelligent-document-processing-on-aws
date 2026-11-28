@@ -30,3 +30,31 @@ export const withPanelContext = (visible: string, context: string): string => {
 
 /** What the sender of a chat message sees of it: the text without its `<panel-context>` blocks. */
 export const visibleChatText = (content: string): string => content.replace(PANEL_CONTEXT_BLOCKS, '').trim();
+
+const CLASS_NAME_INVALID_CHARS = /[^a-zA-Z0-9_-]/g;
+const HYPHEN_RUN = /-+/g;
+const EDGE_HYPHENS = /^-+|-+$/g;
+
+/** Longest document type name a `<panel-context>` block carries: the backend's `MAX_DISCOVERED_CLASS_NAME_CHARS`. */
+export const MAX_CONTEXT_CLASS_NAME_CHARS = 64;
+
+/**
+ * The document type names Discovery reported, as the class names a `<panel-context>` block
+ * may carry: letters, digits, `-` and `_` only, the character set of a class id
+ * (`idp_common.config.class_names`), at most {@link MAX_CONTEXT_CLASS_NAME_CHARS} long. Any
+ * other character becomes a hyphen, and a name with nothing left is dropped. Discovery's
+ * job record already holds names of this form; the panel applies the rule again because
+ * the names come from the user's documents and the block goes to the Quick Start agent.
+ */
+export const contextClassNames = (names: ReadonlyArray<unknown>): string[] =>
+  names
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) =>
+      name
+        .replace(CLASS_NAME_INVALID_CHARS, '-')
+        .replace(HYPHEN_RUN, '-')
+        .replace(EDGE_HYPHENS, '')
+        .slice(0, MAX_CONTEXT_CLASS_NAME_CHARS)
+        .replace(EDGE_HYPHENS, ''),
+    )
+    .filter((name) => name.length > 0);

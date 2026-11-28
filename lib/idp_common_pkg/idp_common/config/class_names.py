@@ -26,6 +26,11 @@ from idp_common.config.schema_constants import ID_FIELD
 # BDA's blueprintName constraint and the UI's CLASS_NAME_PATTERN.
 CLASS_NAME_PATTERN: Final = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+#: Longest class id discovery gives a class it named from a model's label. BDA's
+#: ``blueprintName`` is at most 128 characters and is composed as
+#: ``{stack}-{class_id}-{suffix}``, so a class id leaves room for the other parts.
+MAX_DISCOVERED_CLASS_NAME_CHARS: Final = 64
+
 _INVALID_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 _HYPHEN_RUN = re.compile(r"-+")
 

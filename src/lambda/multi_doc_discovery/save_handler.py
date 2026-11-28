@@ -15,6 +15,7 @@ import os
 import boto3
 
 from idp_common.bedrock.client import BedrockClient
+from idp_common.discovery.discovered_text import clean_text
 from idp_common.discovery.discovery_agent import DiscoveredClass, DiscoveryAgent
 
 from appsync_status import update_status
@@ -78,7 +79,9 @@ def handler(event, context):
         reflection_report = agent.reflect(discovered_classes)
     except Exception as e:
         logger.error(f"Reflection failed: {e}")
-        reflection_report = f"Reflection failed: {e}"
+        # The error text can quote the model's response, and the report is shown
+        # in the UI, so it is cleaned like the report it replaces.
+        reflection_report = clean_text(f"Reflection failed: {e}")
 
     # Save to config version if specified
     saved_classes = []

@@ -135,7 +135,10 @@ ends the conversation.
 6. **Activate.** The agent then **activates** the new profile and confirms it's
    ready. As with attached documents, it
    activates straight away only on a stack with no profile of its own yet;
-   otherwise it names the profile in use and asks first. Upload a document from
+   otherwise it names the profile in use and asks first. Quick Start activates only
+   the profiles it creates: it does not activate `default` or a stack-managed
+   profile, which you activate yourself from **Configuration › View/Edit
+   Configuration**. Upload a document from
    **Upload Documents** in the side navigation and it's processed with your new
    configuration. The new profile takes its **Review Routing** setting from
    `default`, and a new stack has it on. A document the built-in routing rules

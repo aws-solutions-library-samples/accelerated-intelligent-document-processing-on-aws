@@ -137,6 +137,14 @@ class discovery flows), on `DiscoveryAgent.analyze_cluster` and `reflect`, and o
 rules path (`discovery_rules_from_document` and `to_policy_class`). Existing, authored
 classes in the target profile are not cleaned.
 
+A multi-document cluster's `classification` label is a class name, not free text:
+`DiscoveredClass` passes it through `discovery_agent.discovered_class_name`, which
+cleans it, reduces it to the class-id character set with
+`config.class_names.sanitize_class_name` and caps it at
+`MAX_DISCOVERED_CLASS_NAME_CHARS`, falling back to `Cluster_<id>`. Its `error` text is
+cleaned too. Because the constructor applies both, the save step's rebuilt objects,
+the job record and the reflection prompt all carry the same value.
+
 ### Multi-document results separate noise from failed embeddings
 
 `MultiDocDiscoveryResult` reports two disjoint sets of documents that no
