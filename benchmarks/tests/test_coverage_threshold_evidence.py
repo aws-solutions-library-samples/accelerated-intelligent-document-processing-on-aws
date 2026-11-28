@@ -466,7 +466,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     a hole if those runs were producing rows the measurement could not see. They are
     not: every such run with a synthetic row count recorded returned no list at all.
 
-    ``rows_extracted == 0`` is how that reads on all but six runs, and the exception
+    ``rows_extracted == 0`` is how that reads on all but nine runs, and the exception
     is this scorer rather than the walk — see the carve-out below, which is the one
     place in this suite where a non-zero row count does not mean rows.
     """
@@ -478,10 +478,11 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
         if isinstance(r.get("rows_extracted"), (int, float)) and r["rows_extracted"]
     ]
 
-    # ⚠️ Six runs record a non-zero `rows_extracted` here, and the defect is in
+    # ⚠️ Nine runs record a non-zero `rows_extracted` here, and the defect is in
     # THIS SCORER rather than in the coverage walk (#1505). On six
     # `coresynth__extraction-model-sonnet55` runs over `med_narrow.pdf` — four in the
-    # v0.6.12 grid, two in the v0.6.13 grid and two in the v0.6.14 grid — the
+    # v0.6.12 grid, two in the v0.6.13 grid, two in the v0.6.14 grid and one in the
+    # v0.6.16 grid — the
     # `Transactions` field came back as a prose refusal — "The statement contains 400
     # transactions (SEQ00000 to SEQ00399). They are too many to list in full here
     # ..." — so there was no array, and `expected_rows == 0` is the coverage walk
@@ -495,7 +496,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     # So the carve-out stands but the premise it carves out of is intact: no rows were
     # extracted on these runs, and the extraction-side signal for the shape is
     # `extraction_list_field_not_a_list` (#1505). It postdates the v0.6.12 grid, and
-    # both v0.6.13 instances and both v0.6.14 instances carry it, which is the
+    # both v0.6.13 instances, both v0.6.14 instances and the v0.6.16 instance carry it, which is the
     # detection working on the shape rather than a new defect.
     # `rows_extracted` is deliberately NOT re-derived: the raw section objects these
     # grids were scored from are not committed, so a changed scan cannot be
@@ -511,6 +512,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
         ("v0.6.12/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 4,
         ("v0.6.13/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 2,
         ("v0.6.14/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 2,
+        ("v0.6.16/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 1,
     }
 
     known = [(g, r) for g, r in with_rows if (g, r["doc"]) in KNOWN_UNDEFINED_WITH_ROWS]
