@@ -25,7 +25,10 @@ here, and the assertion runs in **both** directions:
 calls live in two modules today and ``api_security_cases`` is in the closure with
 none; all three are read, so a call added to any of them is covered without an
 edit here. ``test_every_module_in_the_harness_closure_is_read`` fails if the
-closure grows a fourth.
+closure grows a fourth. Calls take two shapes: the ``aws cognito-idp <op>`` CLI,
+and boto3 method calls named after a cognito-idp operation, which are also read in
+the ``idp_common`` modules the harness imports — the app-client read-modify-write
+in ``set_auth_flows`` runs through ``idp_common.cognito_user_pool_client``.
 
 What this does **not** check is whether the grant is *deployed*. The policy is
 part of ``genaiic-sdlc-codepipeline``, a stack installed by hand (see
@@ -46,6 +49,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 PIPELINE_TEMPLATE = REPO_ROOT / "scripts" / "sdlc" / "cfn" / "codepipeline-s3.yml"
+IDP_COMMON_ROOT = REPO_ROOT / "lib" / "idp_common_pkg"
 POLICY_NAME = "CodeBuildCognitoRBACTest"
 
 # Every module Step 12 loads. `test_api_rbac` is the entry point; the other two
@@ -81,18 +85,98 @@ def _string_literals_in_source_order(path: Path) -> list[str]:
     grammar and therefore holds for any call shape.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # `boto3.client("cognito-idp", ...)` names the service but no operation; its
+    # calls are read by `cognito_sdk_operations_called`, so the literal is skipped
+    # here rather than pairing with whatever string happens to come next.
+    client_service_args = {
+        id(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "client")
+            or (isinstance(node.func, ast.Name) and node.func.id == "client")
+        )
+    }
     consts: list[tuple[int, int, str]] = [
         (node.lineno, node.col_offset, node.value)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in client_service_args
     ]
     consts.sort()
     return [value for _, _, value in consts]
 
 
-def cognito_subcommands_called() -> dict[str, set[Path]]:
-    """Map each ``aws cognito-idp <op>`` the harness invokes to the files calling it."""
+def idp_common_modules_imported() -> list[Path]:
+    """The ``idp_common`` modules the harness imports, resolved to source files.
+
+    Part of the call universe: ``rbac_common.set_auth_flows`` makes its
+    describe/update through ``idp_common.cognito_user_pool_client``, with the
+    CodeBuild role's credentials, so that module's calls need the grant too.
+    """
+    found: set[Path] = set()
+    for path in HARNESS_MODULES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+                and node.module.split(".")[0] == "idp_common"
+            ):
+                continue
+            base = IDP_COMMON_ROOT.joinpath(*node.module.split("."))
+            for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+                if candidate.is_file():
+                    found.add(candidate)
+                    break
+            # `from idp_common.x import y` may name a submodule `y`.
+            for alias in node.names:
+                sub = base / f"{alias.name}.py"
+                if sub.is_file():
+                    found.add(sub)
+    return sorted(found)
+
+
+def _cognito_sdk_method_names() -> dict[str, str]:
+    """boto3 method name -> CLI subcommand, for every cognito-idp operation."""
+    import botocore.session
+    from botocore import xform_name
+
+    model = botocore.session.get_session().get_service_model("cognito-idp")
+    return {xform_name(op): xform_name(op, "-") for op in model.operation_names}
+
+
+def cognito_sdk_operations_called() -> dict[str, set[Path]]:
+    """Map each cognito-idp operation called through boto3 to the files calling it.
+
+    A method call whose name is a cognito-idp operation in the installed botocore
+    model (``.describe_user_pool_client(...)``) counts, in the harness modules and
+    in the ``idp_common`` modules they import. Keyed by the CLI subcommand, so both
+    call shapes share one required set.
+    """
+    methods = _cognito_sdk_method_names()
     found: dict[str, set[Path]] = {}
+    for path in [*HARNESS_MODULES, *idp_common_modules_imported()]:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in methods
+            ):
+                found.setdefault(methods[node.func.attr], set()).add(path)
+    return found
+
+
+def cognito_subcommands_called() -> dict[str, set[Path]]:
+    """Map each cognito-idp operation the harness invokes to the files calling it,
+    whether through ``aws cognito-idp <op>`` or a boto3 client."""
+    found: dict[str, set[Path]] = {
+        op: set(files) for op, files in cognito_sdk_operations_called().items()
+    }
     for path in HARNESS_MODULES:
         literals = _string_literals_in_source_order(path)
         for i, literal in enumerate(literals[:-1]):
@@ -172,6 +256,17 @@ def test_the_harness_calls_are_actually_found():
     # The one whose absence took out the whole of Step 12, pinned by name so a
     # reading change cannot drop exactly it and stay green.
     assert "admin-list-groups-for-user" in called
+
+
+def test_the_boto3_calls_are_actually_found():
+    """The app-client read-modify-write goes through boto3 and ``idp_common``; a
+    reading that stopped seeing it would drop the UpdateUserPoolClient grant's
+    only caller and leave its describe ungated."""
+    called = cognito_sdk_operations_called()
+    helper = IDP_COMMON_ROOT / "idp_common" / "cognito_user_pool_client.py"
+    assert helper in idp_common_modules_imported()
+    assert helper in called.get("update-user-pool-client", set())
+    assert helper in called.get("describe-user-pool-client", set())
 
 
 def test_the_template_grant_is_actually_found():

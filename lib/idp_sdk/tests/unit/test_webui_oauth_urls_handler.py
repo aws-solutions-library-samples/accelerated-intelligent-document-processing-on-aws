@@ -74,18 +74,45 @@ def _load_handler_module(fake_cognito):
 
     fake_cfnresponse.send = _send
 
+    # The inline module binds both names when it runs, so the real modules are
+    # put back straight afterwards rather than leaking the fakes into later tests.
+    saved = {name: sys.modules.get(name) for name in ("boto3", "cfnresponse")}
     sys.modules["boto3"] = fake_boto3
     sys.modules["cfnresponse"] = fake_cfnresponse
-
-    mod = types.ModuleType("webui_oauth_handler")
-    exec(compile(code, "<WebUIClientOAuthUrlsFunction>", "exec"), mod.__dict__)  # nosec B102 - executes this repo's own shipped handler source under test
+    try:
+        mod = types.ModuleType("webui_oauth_handler")
+        exec(compile(code, "<WebUIClientOAuthUrlsFunction>", "exec"), mod.__dict__)  # nosec B102 - executes this repo's own shipped handler source under test
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
     return mod, sent
 
 
+def _real_cognito():
+    import boto3
+
+    return boto3.client(
+        "cognito-idp",
+        region_name="us-east-1",
+        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+        aws_secret_access_key="1234abcd" * 5,
+    )
+
+
 class _FakeCognito:
-    """Minimal stand-in for the cognito-idp client used by the handler."""
+    """Stand-in for the cognito-idp client used by the handler.
+
+    ``meta`` is a real client's, so the handler's field filter reads the installed
+    botocore model, and every update is validated against that model through the
+    real client under a ``Stubber``: a field the update rejects fails here as it
+    would in Lambda."""
 
     def __init__(self, callback=None, logout=None, extra=None):
+        self._real = _real_cognito()
+        self.meta = self._real.meta
         self.client = {
             "ClientName": "stack-Client",
             "CallbackURLs": list(callback or []),
@@ -102,8 +129,12 @@ class _FakeCognito:
         return {"UserPoolClient": dict(self.client)}
 
     def update_user_pool_client(self, **kwargs):
+        from botocore.stub import Stubber
+
         self.updated_with = kwargs
-        return {}
+        with Stubber(self._real) as stub:
+            stub.add_response("update_user_pool_client", {"UserPoolClient": {}})
+            return self._real.update_user_pool_client(**kwargs)
 
 
 def _props():
@@ -158,6 +189,50 @@ def test_preserves_existing_writable_fields():
     assert fake.updated_with["ExplicitAuthFlows"] == ["ALLOW_USER_SRP_AUTH"]
     assert fake.updated_with["SupportedIdentityProviders"] == ["COGNITO"]
     assert fake.updated_with["AllowedOAuthFlows"] == ["code"]
+
+
+def test_keeps_every_writable_field_and_drops_describe_only_ones():
+    """The update is a full replace: a writable field outside any hand-kept list
+    (``RefreshTokenRotation``, ``AuthSessionValidity``) must be sent back, and a
+    describe-only one (``ClientType``, ``ClientSecret``, the dates) must not, or
+    the update is rejected."""
+    fake = _FakeCognito(
+        callback=[PLACEHOLDER],
+        extra={
+            "UserPoolId": "us-gov-west-1_pool",
+            "ClientId": "client123",
+            "RefreshTokenRotation": {
+                "Feature": "ENABLED",
+                "RetryGracePeriodSeconds": 10,
+            },
+            "AuthSessionValidity": 5,
+            "EnablePropagateAdditionalUserContextData": False,
+            "ClientType": "PUBLIC",
+            "ClientSecret": "not-a-real-secret-placeholder",
+            "CreationDate": "2026-01-01T00:00:00Z",
+            "LastModifiedDate": "2026-01-02T00:00:00Z",
+            "WriteAttributes": None,
+        },
+    )
+    mod, sent = _load_handler_module(fake)
+    mod.handler({"RequestType": "Create", "ResourceProperties": _props()}, None)
+    assert sent["status"] == "SUCCESS", sent
+    update = fake.updated_with
+    assert update["RefreshTokenRotation"] == {
+        "Feature": "ENABLED",
+        "RetryGracePeriodSeconds": 10,
+    }
+    assert update["AuthSessionValidity"] == 5
+    assert update["EnablePropagateAdditionalUserContextData"] is False
+    assert not {
+        "ClientType",
+        "ClientSecret",
+        "CreationDate",
+        "LastModifiedDate",
+        "WriteAttributes",
+    } & set(update)
+    assert update["UserPoolId"] == "us-gov-west-1_pool"
+    assert update["ClientId"] == "client123"
 
 
 def test_delete_never_blocks_teardown_on_error():

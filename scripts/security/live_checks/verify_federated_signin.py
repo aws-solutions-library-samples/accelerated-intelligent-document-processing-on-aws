@@ -22,6 +22,8 @@ import boto3
 import requests
 from cognito_groups import cognito_role_groups
 
+from idp_common.cognito_user_pool_client import update_user_pool_client_preserving
+
 ADMIN_IDP_GROUP = "IdP-Admins"
 VIEWER_IDP_GROUP = "IdP-Viewers"
 
@@ -484,37 +486,16 @@ def main() -> int:
     cog.admin_set_user_password(
         UserPoolId=pool_id, Username=NATIVE_EMAIL, Password=NATIVE_PW, Permanent=True
     )
-    preserve = {
-        k: v
-        for k, v in client.items()
-        if k
-        in (
-            "ClientName",
-            "RefreshTokenValidity",
-            "AccessTokenValidity",
-            "IdTokenValidity",
-            "TokenValidityUnits",
-            "ReadAttributes",
-            "WriteAttributes",
-            "SupportedIdentityProviders",
-            "CallbackURLs",
-            "LogoutURLs",
-            "AllowedOAuthFlows",
-            "AllowedOAuthScopes",
-            "AllowedOAuthFlowsUserPoolClient",
-            "PreventUserExistenceErrors",
-            "EnableTokenRevocation",
-        )
-    }
     flows = client.get("ExplicitAuthFlows") or []
     restore = None
     if "ALLOW_ADMIN_USER_PASSWORD_AUTH" not in flows:
         restore = list(flows)
-        cog.update_user_pool_client(
-            UserPoolId=pool_id,
-            ClientId=client_id,
+        # A full replace: every other field the update accepts is sent back.
+        update_user_pool_client_preserving(
+            cog,
+            pool_id,
+            client_id,
             ExplicitAuthFlows=flows + ["ALLOW_ADMIN_USER_PASSWORD_AUTH"],
-            **preserve,
         )
         print("  temporarily enabled ADMIN_USER_PASSWORD_AUTH")
     try:
@@ -576,11 +557,8 @@ def main() -> int:
         )
     finally:
         if restore is not None:
-            cog.update_user_pool_client(
-                UserPoolId=pool_id,
-                ClientId=client_id,
-                ExplicitAuthFlows=restore,
-                **preserve,
+            update_user_pool_client_preserving(
+                cog, pool_id, client_id, ExplicitAuthFlows=restore
             )
             print("\n  restored the app client's auth flows")
         try:

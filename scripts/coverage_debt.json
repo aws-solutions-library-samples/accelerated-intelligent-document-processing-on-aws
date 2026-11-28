@@ -127,6 +127,7 @@
         "idp_common/classification/page_order.py": 100.0,
         "idp_common/classification/service.py": 72.14,
         "idp_common/cognito_id_token.py": 100.0,
+        "idp_common/cognito_user_pool_client.py": 100.0,
         "idp_common/config/__init__.py": 62.5,
         "idp_common/config/active_profile.py": 100.0,
         "idp_common/config/class_names.py": 100.0,

@@ -901,7 +901,19 @@ def test_an_empty_verify_result_is_an_error_not_a_pass():
 
 
 class _Client:
+    """A cognito-idp app client with full-replace update semantics.
+
+    ``meta`` is a real botocore client's, so the field filter reads the installed
+    service model. ``ClientType`` is a describe-only field newer models return,
+    which the update rejects."""
+
     def __init__(self):
+        self.meta = boto3.client(
+            "cognito-idp",
+            region_name="us-east-1",
+            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+            aws_secret_access_key="1234abcd" * 5,
+        ).meta
         self.state = {
             "UserPoolId": "pool",
             "ClientId": "client",
@@ -909,9 +921,11 @@ class _Client:
             "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH"],
             "CallbackURLs": ["https://example.com/cb"],
             "WriteAttributes": ["email"],
+            "RefreshTokenRotation": {"Feature": "ENABLED"},
             "CreationDate": "x",
             "LastModifiedDate": "y",
             "ClientSecret": None,
+            "ClientType": "PUBLIC",
         }
         self.updates: List[Dict[str, Any]] = []
 
@@ -934,8 +948,10 @@ def test_admin_auth_flow_preserves_the_client_and_restores_it():
         assert client.state["WriteAttributes"] == ["email"]
     assert client.state["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]
     assert client.state["CallbackURLs"] == ["https://example.com/cb"]
+    assert client.state["RefreshTokenRotation"] == {"Feature": "ENABLED"}
+    assert client.updates
     for update in client.updates:
-        assert "CreationDate" not in update and "ClientSecret" not in update
+        assert not {"CreationDate", "ClientSecret", "ClientType"} & set(update)
 
 
 @pytest.mark.unit

@@ -13,7 +13,9 @@ two behaviours that harness learned the hard way:
   every other property — callback URLs, OAuth flows, identity providers,
   ``WriteAttributes`` — and CloudFormation will not restore them. So the client is
   read, one field changed, and the whole thing written back; and restored the same
-  way.
+  way. What is written back is decided by the SDK's own model of the update, in
+  ``idp_common.cognito_user_pool_client``, which this module shares with that
+  harness.
 * **The auth flow takes a few seconds to propagate.** ``AdminInitiateAuth`` can
   answer "Auth flow not enabled for this client" right after the update; only that
   message is retried, and the wait is bounded.
@@ -36,9 +38,6 @@ logger = logging.getLogger(__name__)
 ADMIN_AUTH_FLOW = "ALLOW_ADMIN_USER_PASSWORD_AUTH"
 AUTH_FLOW_NOT_PROPAGATED = "Auth flow not enabled for this client"
 AUTH_FLOW_RETRY_DELAYS = (1, 2, 4, 8, 15, 30)
-_CLIENT_READ_ONLY_FIELDS = frozenset(
-    {"ClientSecret", "CreationDate", "LastModifiedDate"}
-)
 REQUEST_TIMEOUT_SECONDS = 40
 
 
@@ -113,14 +112,16 @@ class AdminAuthFlow:
         )["UserPoolClient"]
 
     def _set_flows(self, flows: list) -> None:
-        current = self._describe()
-        desired = {
-            k: v
-            for k, v in current.items()
-            if k not in _CLIENT_READ_ONLY_FIELDS and v is not None
-        }
-        desired["ExplicitAuthFlows"] = list(flows)
-        self.cognito.update_user_pool_client(**desired)
+        from idp_common.cognito_user_pool_client import (
+            update_user_pool_client_preserving,
+        )
+
+        update_user_pool_client_preserving(
+            self.cognito,
+            self.ctx.user_pool,
+            self.ctx.client,
+            ExplicitAuthFlows=list(flows),
+        )
 
     def __enter__(self) -> "AdminAuthFlow":
         flows = list(self._describe().get("ExplicitAuthFlows") or [])
