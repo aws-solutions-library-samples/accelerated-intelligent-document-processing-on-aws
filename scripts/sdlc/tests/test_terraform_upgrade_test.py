@@ -16,6 +16,9 @@ checked without AWS is what decides whether a green run means anything:
   * a refused plan's addresses reach the failure message rather than only a log;
   * a failed phase still tears down, and a preflight that refused tears nothing
     down, because the sweep deletes by name;
+  * the real preflight, inherited sweep included, runs with this driver's own
+    ``Settings`` against fake clients, so a setting only the migration test
+    defined fails here rather than on the first live step;
   * the Makefile target refuses to run without the four values it needs.
 """
 
@@ -469,6 +472,123 @@ def test_a_resumed_run_under_another_name_is_refused(tmp_path):
     second = _Scripted(_settings(tmp_path, stack_name="tfup2", resume=True))
     assert second.execute() == 2
     assert second.calls == []
+
+
+# -- the real preflight -----------------------------------------------------
+
+
+class _Pages:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def paginate(self, **_kw):
+        return self.pages
+
+
+class _Client:
+    """One fake AWS client: each method name answers with a fixed value, each
+    paginator name with fixed pages, and anything else is an error, so a call the
+    preflight was not expected to make fails the test."""
+
+    def __init__(self, answers=None, pages=None):
+        self.answers = answers or {}
+        self.pages = pages or {}
+
+    def get_paginator(self, name):
+        return _Pages(self.pages[name])
+
+    def __getattr__(self, name):
+        answers = object.__getattribute__(self, "answers")
+        if name not in answers:
+            raise AttributeError(name)
+        answer = answers[name]
+
+        def call(**_kw):
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        return call
+
+
+def _preflight_clients(account="123456789012", roles=None, buckets=()):
+    return {
+        "sts": _Client({"get_caller_identity": {"Account": account}}),
+        "iam": _Client(
+            {"get_account_summary": {"SummaryMap": {"RolesQuota": 1000, "Roles": 10}}},
+            {"list_roles": [{"Roles": [{"RoleName": r} for r in roles or ()]}]},
+        ),
+        "cloudformation": _Client({"describe_stacks": Exception("does not exist")}),
+        "s3": _Client({"list_buckets": {"Buckets": [{"Name": b} for b in buckets]}}),
+        "dynamodb": _Client(pages={"list_tables": [{"TableNames": []}]}),
+        "logs": _Client(pages={"describe_log_groups": [{"logGroups": []}]}),
+        "cognito-idp": _Client(pages={"list_user_pools": [{"UserPools": []}]}),
+        # Bound by the sweep even with nothing recorded, so a real client is
+        # never built: every service the preflight touches is a fake.
+        "kms": _Client(),
+        "bedrock-data-automation": _Client(),
+    }
+
+
+class _Preflight(tut.Run):
+    """The real Run with its AWS clients and the terraform binary replaced, so
+    phase_preflight runs every check it makes, inherited ones included."""
+
+    def __init__(self, settings, clients):
+        super().__init__(settings)
+        self._boto_cache.update(clients)
+
+    def terraform_capture(self, directory, *args):
+        assert args == ("version", "-json")
+        return json.dumps({"terraform_version": "1.15.0"})
+
+
+def test_the_real_preflight_runs_with_the_drivers_own_settings(tmp_path):
+    """The preflight reaches the migration test's sweep, which reads a setting
+    only the migration test defined (its variant, in ``Sweeper._gateways``).
+    Every other test here stubs the phases, so a Settings missing it passed them
+    all while the driver failed on its first live step with an AttributeError."""
+    settings = tut.parse_args(
+        [
+            "--stack-name",
+            "tfup1",
+            "--admin-email",
+            "admin@example.com",
+            "--region",
+            "us-west-2",
+            "--work-dir",
+            str(tmp_path),
+            "--from-module-url",
+            f"{PUBLISHED}/idp-terraform-0.6.14.zip",
+            "--to-module-url",
+            f"{PUBLISHED}/idp-terraform-0.6.15.zip",
+        ]
+    )
+    run = _Preflight(settings, _preflight_clients())
+    assert run.identity_problems() == []
+    detail = run.phase_preflight()
+    assert run.preflight_passed
+    assert "0.6.14 -> 0.6.15" in detail
+    assert run.ctx["account"] == "123456789012"
+
+
+def test_the_real_preflight_refuses_a_name_something_else_already_holds(tmp_path):
+    """The same path, with the sweep's inventory finding a bucket under the run's
+    name: the refusal comes from the inherited check, so it is reached and read."""
+    run = _Preflight(
+        _settings(tmp_path), _preflight_clients(buckets=["tfup1-inputbucket-x"])
+    )
+    with pytest.raises(tut.PhaseFailed, match="bucket tfup1-inputbucket-x"):
+        run.phase_preflight()
+    assert not run.preflight_passed
+
+
+def test_the_real_preflight_refuses_another_account(tmp_path):
+    run = _Preflight(
+        _settings(tmp_path, expected_account="111122223333"), _preflight_clients()
+    )
+    with pytest.raises(tut.PhaseFailed, match="not 111122223333"):
+        run.phase_preflight()
 
 
 # -- the summary ------------------------------------------------------------

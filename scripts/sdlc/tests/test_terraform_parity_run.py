@@ -208,6 +208,7 @@ def _session(tf_secret=SECRET_VALUE, cfn_secret=SECRET_VALUE, tf_extra=()):
             "s3": _S3({("bridge", "dir.json"): directory}),
             "cloudcontrol": _CloudControl(props),
             "lambda": object(),
+            "sqs": object(),
         }
     )
 
@@ -217,6 +218,8 @@ def test_the_reads_ride_out_throttling(cbd):
     cbd.check_terraform_parity(TWIN, STACK, ROLE, session=session)
     assert session.configs["cloudcontrol"] is cbd._THROTTLE_RETRY_CONFIG
     assert session.configs["lambda"] is cbd._THROTTLE_RETRY_CONFIG
+    assert session.configs["cloudformation"] is cbd._THROTTLE_RETRY_CONFIG
+    assert session.configs["sqs"] is cbd._THROTTLE_RETRY_CONFIG
 
 
 def test_two_matching_deployments_are_the_same(cbd):
@@ -253,7 +256,7 @@ def test_a_resource_on_one_side_only_fails(cbd):
 
 def test_a_comparison_that_could_not_run_is_an_error_not_a_difference(cbd):
     class Denied:
-        def client(self, name):
+        def client(self, name, config=None):
             raise RuntimeError("AccessDenied")
 
     verdict = cbd.check_terraform_parity(TWIN, STACK, ROLE, session=Denied())
@@ -296,6 +299,18 @@ def test_the_verdict_is_the_tools_own(cbd, tool, fields, status):
     verdict = cbd.judge_terraform_parity(report)
     assert verdict["status"] == status
     assert (status == "same") == report.ok
+
+
+def test_the_row_counts_the_policies_compared_through_their_targets(cbd, tool):
+    """A per-target policy is not a one-sided resource, so the row passes; the
+    count keeps that visible rather than silent."""
+    report = _report(tool, through_target=["P (AWS::SQS::QueuePolicy: q)"] * 2)
+    verdict = cbd.judge_terraform_parity(report)
+    assert verdict["status"] == "same"
+    assert (
+        "2 per-target polic(y/ies) compared through their targets"
+        in (verdict["detail"])
+    )
 
 
 def test_the_listed_findings_are_bounded(cbd, tool):

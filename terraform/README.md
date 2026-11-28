@@ -506,8 +506,16 @@ the validation below is:
    the same parameters: `make terraform-parity CFN_STACK=<name> TF_STACK=<name>
    [REGION=<region>]` (`tools/parity.py`). It reads every resource of both, main and
    nested stacks, the Terraform side through the label stack's resource directory,
-   through Cloud Control (functions also through the Lambda API), and diffs them
-   after replacing the names that necessarily differ. A difference fails it unless
+   through Cloud Control (functions also through the Lambda API, queues' policies
+   through SQS), and diffs them after replacing the names that necessarily differ:
+   stack names, every paired physical id and the name inside a paired ARN or queue
+   URL, each only where it is a whole token of a value. A KMS key ARN is read as its
+   key id, an empty `VpcConfig` as none, and the tags each tool adds itself are
+   dropped. A type whose Cloud Control identifier is compound (`UserPoolId|GroupName`)
+   is read with one built from its schema's primary identifier and the template;
+   one that cannot be built, or that Cloud Control refuses, is listed and counted apart from a type Cloud Control cannot read. An `AWS::SQS::QueuePolicy`
+   or `AWS::IAM::Policy`, which Terraform writes once per target, is compared through
+   its queues' and roles' policies. A difference fails it unless
    `tools/parity_baseline.json` explains it, one entry per type and property path
    with its reason; so does a resource on one side only and an entry that explained
    nothing. It is a release-validation tier

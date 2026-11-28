@@ -5843,7 +5843,10 @@ def judge_terraform_parity(report):
         f"{report.compared} resources compared, "
         f"{len(report.explained)} difference(s) explained by "
         "terraform/tools/parity_baseline.json, "
-        f"{len(report.unreadable)} resource(s) Cloud Control cannot read"
+        f"{len(report.unreadable)} resource(s) Cloud Control cannot read, "
+        f"{len(report.refused)} whose identifier was not built or was refused, "
+        f"{len(report.through_target)} per-target polic(y/ies) compared through "
+        "their targets"
     )
     if report.ok:
         return {"status": "same", "detail": f"{tally}; {context}", "findings": []}
@@ -5872,7 +5875,7 @@ def check_terraform_parity(twin_name, stack_name, role_arn, *, session=None, too
     try:
         tool = tool or _terraform_parity_tool()
         session = session or _role_session(role_arn)
-        cfn = session.client("cloudformation")
+        cfn = session.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
         baseline = json.loads(tool.BASELINE.read_text(encoding="utf-8"))["entries"]
         report = tool.compare(
             tool.cfn_tree(cfn, twin_name),
@@ -5885,6 +5888,10 @@ def check_terraform_parity(twin_name, stack_name, role_arn, *, session=None, too
             # The tool's per-resource lines carry property values; see
             # judge_terraform_parity for why those are not printed.
             log=lambda _line: None,
+            # Builds compound Cloud Control identifiers, and reads each queue's
+            # policy, which is how a queue policy is compared.
+            cfn=cfn,
+            sqs=session.client("sqs", config=_THROTTLE_RETRY_CONFIG),
         )
     except (Exception, SystemExit) as e:  # noqa: BLE001 - reported as the row
         verdict = {
