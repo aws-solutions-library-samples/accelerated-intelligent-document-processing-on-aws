@@ -1730,16 +1730,17 @@ class TestPreviousReleaseManifest:
         s3 = MagicMock()
         monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
         order = []
+        previous_zip = _module_zip()
         monkeypatch.setattr(
             tf,
-            "previous_release_manifest",
-            lambda s3c, b, p, v: order.append("previous") or {"resources": []},
+            "previous_release_module",
+            lambda s3c, b, p, v: order.append("previous") or previous_zip,
         )
         monkeypatch.setattr(
             tf,
             "translate_published_template",
-            lambda src, tpl, work, ver, prev=None: (
-                order.append(("translate", prev)) or Path(work)
+            lambda src, tpl, work, ver, prev=None, prev_zip=None: (
+                order.append(("translate", prev, prev_zip)) or Path(work)
             ),
         )
         monkeypatch.setattr(
@@ -1748,7 +1749,46 @@ class TestPreviousReleaseManifest:
         IDPClient(region=REGION).publish.publish_terraform(
             str(tmp_path), "b-us-west-2", "p", REGION, "1"
         )
-        assert order == ["previous", ("translate", {"resources": []}), "upload"]
+        # The manifest and the module it came from: an older manifest records
+        # no inline policy names, and the translator reads them from the module.
+        assert order == ["previous", ("translate", MANIFEST, previous_zip), "upload"]
+
+    def test_the_translator_is_given_the_previous_module(self, tmp_path, monkeypatch):
+        (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
+        (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
+        cmd, _ = tf.translator_command(
+            str(tmp_path), "t.yaml", "out", "cache", "9", "/w/p.json", "/w/p.zip"
+        )
+        assert cmd[cmd.index("--previous-module") + 1] == "/w/p.zip"
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert "--previous-module" not in cmd
+        seen = {}
+
+        def run(cmd, **kw):
+            seen["zip"] = Path(cmd[cmd.index("--previous-module") + 1]).read_bytes()
+            out = Path(cmd[cmd.index("--out") + 1])
+            out.mkdir(parents=True)
+            (out / tf.MANIFEST_NAME).write_text("{}")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(tf.subprocess, "run", run)
+        tf.translate_published_template(
+            str(tmp_path), "t.yaml", str(tmp_path / "w"), "1", MANIFEST, b"zip-bytes"
+        )
+        assert seen["zip"] == b"zip-bytes"
+
+    def test_the_previous_module_is_checksum_verified(self):
+        data = _module_zip()
+        pointer = tf.build_pointer(
+            "0.6.14", "https://s3.us-west-2.amazonaws.com/b/p/0.6.14/m.zip", "0" * 64
+        )
+        s3 = MagicMock()
+        s3.get_object.side_effect = [
+            {"Body": io.BytesIO(json.dumps(pointer).encode())},
+            {"Body": io.BytesIO(data)},
+        ]
+        with pytest.raises(IDPConfigurationError, match="sha256"):
+            tf.previous_release_module(s3, "b", "p")
 
 
 class TestInitUpgrade:
@@ -2086,12 +2126,12 @@ class TestPublishOperation:
 
         s3 = MagicMock()
         monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
-        monkeypatch.setattr(tf, "previous_release_manifest", lambda *a: None)
+        monkeypatch.setattr(tf, "previous_release_module", lambda *a: None)
         translated = []
         monkeypatch.setattr(
             tf,
             "translate_published_template",
-            lambda src, tpl, work, ver, prev=None: (
+            lambda src, tpl, work, ver, prev=None, prev_zip=None: (
                 translated.append((tpl, work)) or Path(work)
             ),
         )
@@ -2149,11 +2189,11 @@ class TestPublishOperation:
         from idp_sdk.operations import publish as pub
 
         monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: MagicMock())
-        monkeypatch.setattr(tf, "previous_release_manifest", lambda *a: None)
+        monkeypatch.setattr(tf, "previous_release_module", lambda *a: None)
         monkeypatch.setattr(
             tf,
             "translate_published_template",
-            lambda src, tpl, work, ver, prev=None: Path(work),
+            lambda src, tpl, work, ver, prev=None, prev_zip=None: Path(work),
         )
 
         def upload(s3c, **kw):

@@ -7,6 +7,8 @@ property fails the translation instead of being dropped.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -232,6 +234,38 @@ GENERATED_NAME_ROLE_LIFECYCLE = (
 )
 
 
+def inline_policy_label(role_label: str, role_logical_id: str, policy_name: Any) -> str:
+    """The resource label of a role's inline policy, derived from its name.
+
+    An inline policy is identified by its role and its name, so the Terraform
+    address follows the name rather than the policy's place in ``Policies``.
+    Labelled by position, a policy inserted ahead of others renamed every later
+    one, a rename replaces the policy, and the replacement of one address was
+    created before the deposed object of the address that used to hold the same
+    name was destroyed, which deleted the policy just written. Keyed by name,
+    one name is one address on every release, and a reordered or renumbered
+    list (SAM names policies ``<Role>Policy<n>`` by position) updates the
+    policies in place, as CloudFormation does.
+
+    A literal name drops the role's logical id where SAM prefixed it and is
+    snake-cased; a name that is an intrinsic is keyed by a hash of it.
+    """
+    if isinstance(policy_name, str):
+        stem = policy_name
+        if stem.startswith(role_logical_id) and len(stem) > len(role_logical_id):
+            stem = stem[len(role_logical_id) :]
+        key = hcl.snake(stem).strip("_") or "policy"
+    else:
+        digest = hashlib.sha1(
+            json.dumps(policy_name, sort_keys=True).encode(), usedforsecurity=False
+        ).hexdigest()
+        key = f"h{digest[:10]}"
+    if key.isdigit():
+        # <role>_<digits> is the label the positional naming used.
+        key = f"p{key}"
+    return f"{role_label}_{key}"
+
+
 class IamRoleMapper:
     """One CloudFormation role becomes a role, its inline policies and its
     managed-policy attachments. Anything referencing the role also waits for
@@ -290,11 +324,28 @@ class IamRoleMapper:
     def _has_managed(plan: Plan) -> bool:
         return plan.props.get("ManagedPolicyArns", NO_VALUE) != NO_VALUE
 
+    def _policy_labels(self, plan: Plan) -> list[str]:
+        """Each inline policy's resource label, from its name (see
+        :func:`inline_policy_label`), in template order."""
+        labels: list[str] = []
+        names: dict[str, Any] = {}
+        for p in self._policies(plan):
+            body = p["Fn::If"][1] if isinstance(p, dict) and set(p) == {"Fn::If"} else p
+            if not isinstance(body, dict) or "PolicyName" not in body:
+                raise TranslationError(f"{plan.logical_id}: policy without PolicyName")
+            label = inline_policy_label(plan.name, plan.logical_id, body["PolicyName"])
+            if label in names or label == f"{plan.name}_tf_directory":
+                raise TranslationError(
+                    f"{plan.logical_id}: inline policies {names.get(label)!r} and "
+                    f"{body['PolicyName']!r} both become aws_iam_role_policy.{label}; "
+                    "rename one"
+                )
+            names[label] = body["PolicyName"]
+            labels.append(label)
+        return labels
+
     def _policy_addresses(self, plan: Plan) -> list[str]:
-        out = [
-            f"aws_iam_role_policy.{plan.name}_{i}"
-            for i, _ in enumerate(self._policies(plan))
-        ]
+        out = [f"aws_iam_role_policy.{label}" for label in self._policy_labels(plan)]
         if self._has_managed(plan):
             out.append(f"aws_iam_role_policy_attachment.{plan.name}")
         return out
@@ -329,7 +380,8 @@ class IamRoleMapper:
             hcl.block(f'resource "aws_iam_role" "{plan.name}"', head + lines + tail)
         ]
         role = f"aws_iam_role.{plan.name}{'[0]' if plan.condition else ''}.name"
-        for i, p in enumerate(self._policies(plan)):
+        labels = self._policy_labels(plan)
+        for label, p in zip(labels, self._policies(plan)):
             cond_lines = []
             body = p
             if isinstance(p, dict) and set(p) == {"Fn::If"}:
@@ -353,7 +405,7 @@ class IamRoleMapper:
             )
             out.append(
                 hcl.block(
-                    f'resource "aws_iam_role_policy" "{plan.name}_{i}"',
+                    f'resource "aws_iam_role_policy" "{label}"',
                     cond_lines
                     + [
                         f"name = {tr.expr(body['PolicyName'])}",
@@ -365,8 +417,8 @@ class IamRoleMapper:
         sleep_deps = [f"aws_iam_role.{plan.name}"] + self._policy_addresses(plan)
         idx = "[0]" if plan.condition else ""
         inline = [
-            f"aws_iam_role_policy.{plan.name}_{i}"
-            for i, p in enumerate(self._policies(plan))
+            f"aws_iam_role_policy.{label}"
+            for label, p in zip(labels, self._policies(plan))
             if not (isinstance(p, dict) and set(p) == {"Fn::If"})
         ]
         # Re-wait when a grant changes on an upgrade, not only on create.

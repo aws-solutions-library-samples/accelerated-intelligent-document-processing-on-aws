@@ -21,6 +21,14 @@ current one and writes ``moved.tf``:
 - by inference: a logical id and type that left one nested stack and appear in
   exactly one other, and nowhere else on either side.
 
+A role's inline policies are paired by name rather than by address: an
+inline policy is identified by its role and its name, and its address is
+derived from the name (``aws_mappers.inline_policy_label``). Modules before
+format 3 labelled them by position (``<role>_<n>``) and record no names, so for
+those the names are read from the previous module's own files
+(``--previous-module``); each positional address moves to the address that now
+holds the same name, which Terraform then updates in place.
+
 A resource whose Terraform type changed cannot be moved (the state formats
 differ) and is reported instead; the plan guard is what stops it. Moves are
 kept in the manifest and written again by every later release, so a deployment
@@ -29,6 +37,9 @@ that skips releases still follows every move.
 
 from __future__ import annotations
 
+import io
+import re
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,6 +80,80 @@ def load_renames(path: Path = RENAMES_FILE) -> dict[str, dict[str, str]]:
     return out
 
 
+_POLICY_BLOCK = re.compile(
+    r'^resource "aws_iam_role_policy" "([A-Za-z0-9_-]+)" \{\n(.*?)^\}', re.M | re.S
+)
+_TOP_LEVEL_NAME = re.compile(r"^  name\s*=\s*(.+?)\s*$", re.M)
+POSITIONAL_POLICY = re.compile(r"^aws_iam_role_policy\.([a-z0-9_]+)_[0-9]+$")
+
+
+def inline_policy_names(text: str, prefix: str = "") -> dict[str, str]:
+    """``{address: name expression}`` for every ``aws_iam_role_policy`` in
+    ``text``, read from the block's top-level ``name`` argument."""
+    out = {}
+    for label, body in _POLICY_BLOCK.findall(text):
+        m = _TOP_LEVEL_NAME.search(body)
+        if m:
+            out[f"{prefix}aws_iam_role_policy.{label}"] = m.group(1)
+    return out
+
+
+def module_policy_names(source: Path) -> dict[str, str]:
+    """Every inline policy name in a generated module tree (a directory or the
+    published zip), keyed by its address from the root module. A nested module
+    ``x`` is ``modules/x/`` and is called as ``module.x``."""
+    files: dict[str, str] = {}
+    if source.is_dir():
+        for f in source.rglob("*.tf"):
+            files[f.relative_to(source).as_posix()] = f.read_text()
+    else:
+        with zipfile.ZipFile(io.BytesIO(source.read_bytes())) as zf:
+            for n in zf.namelist():
+                if n.endswith(".tf"):
+                    files[n] = zf.read(n).decode()
+    out: dict[str, str] = {}
+    for rel, text in files.items():
+        parts = rel.split("/")[:-1]
+        if len(parts) % 2 or any(p != "modules" for p in parts[::2]):
+            continue
+        prefix = "".join(f"module.{name}." for name in parts[1::2])
+        out.update(inline_policy_names(text, prefix))
+    return out
+
+
+def _policy_move(
+    old_addr: str,
+    old: dict[str, Any],
+    new: dict[str, Any],
+    previous_names: dict[str, str],
+    result: MoveResult,
+) -> tuple[bool, str | None]:
+    """``(handled, destination)`` for an inline policy of a role.
+
+    Paired by name: the destination is the current address holding the name
+    ``old_addr`` held. A name the role no longer has has no destination, and
+    the policy is destroyed, which deletes only that name."""
+    if old["cfnType"] != "AWS::IAM::Role" or _split(old_addr)[1] != (
+        "aws_iam_role_policy"
+    ):
+        return False, None
+    name = (old.get("inlinePolicies") or {}).get(old_addr, previous_names.get(old_addr))
+    if name is None:
+        _, rtype, label = _split(old_addr)
+        if POSITIONAL_POLICY.match(f"{rtype}.{label}"):
+            result.errors.append(
+                f"{identity(old)}: the previous module names {old_addr} by position "
+                "and its manifest records no policy names; pass the previous "
+                "module (--previous-module) so the policy can be paired by name"
+            )
+            return True, None
+        return False, None
+    for addr, current in (new.get("inlinePolicies") or {}).items():
+        if current == name:
+            return True, addr
+    return True, None
+
+
 def _split(address: str) -> tuple[str, str, str]:
     """``module.a.aws_x.name`` -> ("module.a.", "aws_x", "name"); a module
     address ``module.a.module.b`` splits as ("module.a.", "module", "b")."""
@@ -107,9 +192,14 @@ def plan_moves(
     previous: dict[str, Any],
     current: list[dict[str, Any]],
     renames: dict[str, dict[str, str]],
+    previous_policy_names: dict[str, str] | None = None,
 ) -> MoveResult:
-    """Moves from ``previous`` (a manifest) to ``current`` (resource entries)."""
+    """Moves from ``previous`` (a manifest) to ``current`` (resource entries).
+
+    ``previous_policy_names`` is :func:`module_policy_names` of the previous
+    module, needed when its manifest predates ``inlinePolicies``."""
     result = MoveResult()
+    previous_names = previous_policy_names or {}
     cur_by_id = {identity(e): e for e in current}
     live = {a for e in current for a in e["addresses"]}
     for old_id, entry in renames.items():
@@ -178,7 +268,9 @@ def plan_moves(
             continue
         for old_addr in old["addresses"]:
             src = after_module_moves(old_addr)
-            dst = _counterpart(old_addr, old, new)
+            handled, dst = _policy_move(old_addr, old, new, previous_names, result)
+            if not handled:
+                dst = _counterpart(old_addr, old, new)
             if dst is None:
                 if old_addr not in live:
                     result.warnings.append(

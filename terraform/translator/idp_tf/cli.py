@@ -189,8 +189,9 @@ HEADER = re.compile(
     r'^(?:resource "([a-z0-9_]+)" "([a-z0-9_]+)"|module "([a-z0-9_]+)") \{', re.M
 )
 #: Version 2 adds statefulAddresses, resources, moves and customOutputEdges;
-#: every version-1 key is unchanged.
-MANIFEST_FORMAT_VERSION = 2
+#: every version-1 key is unchanged. Version 3 adds ``inlinePolicies`` to each
+#: IAM role's resource entry, and labels inline policies by name.
+MANIFEST_FORMAT_VERSION = 3
 
 
 def tree_resources(tr: Translator, stack: str = "", prefix: str = "") -> list[dict]:
@@ -206,15 +207,20 @@ def tree_resources(tr: Translator, stack: str = "", prefix: str = "") -> list[di
             )
         if not addresses and not plan.virtual:
             continue
-        out.append(
-            {
-                "stack": stack,
-                "logicalId": lid,
-                "cfnType": plan.cfn_type,
-                "address": prefix + plan.address,
-                "addresses": sorted(set(addresses)),
-            }
-        )
+        entry: dict[str, Any] = {
+            "stack": stack,
+            "logicalId": lid,
+            "cfnType": plan.cfn_type,
+            "address": prefix + plan.address,
+            "addresses": sorted(set(addresses)),
+        }
+        if plan.cfn_type == "AWS::IAM::Role":
+            # The name each inline policy has, so the next release pairs the
+            # policies by name (moved.plan_moves).
+            policies = moved.inline_policy_names(text, prefix)
+            if policies:
+                entry["inlinePolicies"] = dict(sorted(policies.items()))
+        out.append(entry)
         if plan.kind == "module":
             child_stack = f"{stack}/{lid}" if stack else lid
             out.extend(
@@ -336,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
         "moved blocks are generated for every resource whose address changed",
     )
     ap.add_argument(
+        "--previous-module",
+        type=Path,
+        help="the previous release's module (its zip or a directory); read for "
+        "its inline policy names when its manifest does not record them",
+    )
+    ap.add_argument(
         "--renames",
         type=Path,
         default=moved.RENAMES_FILE,
@@ -401,7 +413,12 @@ def main(argv: list[str] | None = None) -> int:
         previous = (
             load_manifest(args.previous_manifest) if args.previous_manifest else {}
         )
-        move = moved.plan_moves(previous, resources, renames)
+        previous_policy_names = (
+            moved.module_policy_names(args.previous_module)
+            if args.previous_module
+            else None
+        )
+        move = moved.plan_moves(previous, resources, renames, previous_policy_names)
         errors.extend(move.errors)
         moves, dropped = moved.carry_history(previous, move.moves, live)
         warnings = move.warnings + dropped

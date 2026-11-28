@@ -463,9 +463,12 @@ class PublishOperation:
             raise IDPStackError(
                 f"cannot read the published template s3://{bucket}/{key}: {e}"
             ) from e
-        previous = tf.previous_release_manifest(s3, bucket, prefix, variant)
+        previous_zip = tf.previous_release_module(s3, bucket, prefix, variant)
+        previous = (
+            tf.manifest_from_zip(previous_zip) if previous_zip is not None else None
+        )
         module_dir = tf.translate_published_template(
-            source_dir, local_template, work, version, previous
+            source_dir, local_template, work, version, previous, previous_zip
         )
         try:
             return tf.upload_module(

@@ -249,6 +249,7 @@ def translator_command(
     nested_cache: str,
     version: str,
     previous_manifest: Optional[str] = None,
+    previous_module: Optional[str] = None,
 ) -> Tuple[List[str], Dict[str, str]]:
     """The translator invocation and its environment.
 
@@ -256,8 +257,11 @@ def translator_command(
     by ``TemplateURL`` into ``nested_cache``. The same template labels the
     deployment, at ``version``. ``previous_manifest`` is the path of the
     previous release's ``idp-terraform.json``, from which the translator writes
-    ``moved`` blocks for resources whose address changed. The checkout's
-    ``template.yaml`` supplies the scanner suppressions carried into the module.
+    ``moved`` blocks for resources whose address changed. ``previous_module``
+    is the path of that release's module zip, from which the translator reads
+    the inline policy names a manifest before format 3 does not record. The
+    checkout's ``template.yaml`` supplies the scanner suppressions carried into
+    the module.
     """
     translator = Path(source_dir) / "terraform" / "translator"
     if not (translator / "idp_tf" / "cli.py").is_file():
@@ -293,6 +297,8 @@ def translator_command(
     ]
     if previous_manifest:
         cmd += ["--previous-manifest", previous_manifest]
+    if previous_module:
+        cmd += ["--previous-module", previous_module]
     # The published template has lost its comments, so the scanner suppressions
     # the module carries are read from the source template it was packaged from.
     source_template = Path(source_dir) / "template.yaml"
@@ -304,7 +310,16 @@ def translator_command(
 def previous_release_manifest(
     s3, bucket: str, prefix: str, variant: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
-    """The ``idp-terraform.json`` of the module the bucket's latest pointer names.
+    """The ``idp-terraform.json`` of the module the bucket's latest pointer names
+    (see :func:`previous_release_module`)."""
+    data = previous_release_module(s3, bucket, prefix, variant)
+    return None if data is None else manifest_from_zip(data)
+
+
+def previous_release_module(
+    s3, bucket: str, prefix: str, variant: Optional[str] = None
+) -> Optional[bytes]:
+    """The zip of the module the bucket's latest pointer names, checksum-verified.
 
     Publishing reads it before uploading the new module, so it is the previous
     release's. ``None`` when there is no pointer yet (the first publish of a
@@ -323,7 +338,9 @@ def previous_release_manifest(
             f"cannot read the previous Terraform pointer s3://{bucket}/{key}: {e}"
         ) from e
     module_url, sha = resolve_pointer(json.loads(body))
-    return load_module_manifest(module_url, sha, lambda region: s3)
+    data = load_module_zip(module_url, sha, lambda region: s3)
+    manifest_from_zip(data)
+    return data
 
 
 def translate_published_template(
@@ -332,11 +349,14 @@ def translate_published_template(
     work_dir: str,
     version: str,
     previous_manifest: Optional[Dict[str, Any]] = None,
+    previous_module: Optional[bytes] = None,
 ) -> Path:
     """Translate the published main template into ``<work_dir>/module``.
 
     ``previous_manifest`` (the previous release's ``idp-terraform.json``) makes
-    the translator generate ``moved`` blocks for addresses that changed."""
+    the translator generate ``moved`` blocks for addresses that changed;
+    ``previous_module`` (that release's module zip) supplies the inline policy
+    names an older manifest does not record."""
     work = Path(work_dir)
     out = work / "module"
     cache = work / "nested-cache"
@@ -348,6 +368,10 @@ def translate_published_template(
     if previous_manifest is not None:
         previous_path = work / "previous-idp-terraform.json"
         previous_path.write_text(json.dumps(previous_manifest))
+    module_path = None
+    if previous_module is not None:
+        module_path = work / "previous-module.zip"
+        module_path.write_bytes(previous_module)
     cmd, env = translator_command(
         source_dir,
         template_path,
@@ -355,6 +379,7 @@ def translate_published_template(
         str(cache),
         version,
         str(previous_path) if previous_path else None,
+        str(module_path) if module_path else None,
     )
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     for line in (proc.stdout or "").splitlines():
@@ -874,6 +899,18 @@ def load_module_manifest(
     s3_factory: Optional[Callable[[str], Any]] = None,
     checksum_source: str = "its pointer",
 ) -> Dict[str, Any]:
+    return manifest_from_zip(
+        load_module_zip(module_url, expected_sha256, s3_factory, checksum_source)
+    )
+
+
+def load_module_zip(
+    module_url: str,
+    expected_sha256: Optional[str] = None,
+    s3_factory: Optional[Callable[[str], Any]] = None,
+    checksum_source: str = "its pointer",
+) -> bytes:
+    """A module zip, checked against ``expected_sha256`` when one is given."""
     data = fetch_url(module_url, s3_factory)
     if expected_sha256:
         actual = hashlib.sha256(data).hexdigest()
@@ -882,7 +919,7 @@ def load_module_manifest(
                 f"the module at {module_url} has sha256 {actual}, but {checksum_source} "
                 f"says {expected_sha256}"
             )
-    return manifest_from_zip(data)
+    return data
 
 
 # ---------------------------------------------------------------------------
