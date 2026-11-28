@@ -2410,14 +2410,20 @@ without an upload tag.
   - `reject`: a tagged upload is written `FAILED` with a reason on the row, and no
     workflow starts
 - **Cost**: reads the tracking row rather than waiting for extraction, since
-  resolution happens in `queue_sender` when the object lands. That is what keeps
-  it cheap enough for the parallel pool.
+  resolution happens in `queue_sender` when the object lands. Its documents are
+  then aborted through the stack's `abortWorkflow` resolver, so they do not run
+  the pipeline; the step waits for them to settle for at most
+  `_CPM_SETTLE_TIMEOUT_SECONDS` before cleaning up, and reports any still in
+  flight rather than failing.
 - **Isolation**: creates its own run-scoped Configuration Profile and three
   run-scoped prefixes, and removes the mappings **before** the profile in its
   `finally` — `deleteConfigVersion` refuses while a mapping still names the
   profile, which is a guard the feature adds and this cleanup respects rather than
   fights. Dropping the mappings first also stops a `reject` rule catching an
-  unrelated upload while the rest of the cleanup runs.
+  unrelated upload while the rest of the cleanup runs. Objects and rows are
+  deleted only after the abort, so no execution of its own fails on a missing
+  object; the row of a document aborted while still queued is kept, because the
+  queue processor refuses to start a document only while its row reads `ABORTED`.
 
 
 ### Step 16: Quick Start Bootstrap ⚡ *Parallel*

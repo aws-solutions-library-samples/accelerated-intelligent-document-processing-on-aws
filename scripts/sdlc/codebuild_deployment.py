@@ -2888,6 +2888,151 @@ def test_step13_permission_boundaries(stack_name):
         return {"success": False, "error": f"Permission-boundary check failed: {e}"}
 
 
+# Tracking statuses at which step 15 stops waiting for a document. They are the
+# ones `terminal_document_status` can produce for a finished execution (including
+# HITL_IN_PROGRESS, where a document whose abort did not take waits for a
+# reviewer indefinitely), FAILED written at ingest by a reject mapping, ABORTED
+# written by `abortWorkflow`, and the malware gate's QUARANTINED and
+# MALWARE_SCAN_FAILED.
+_CPM_SETTLED_STATUSES = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "ABORTED",
+        "REJECTED",
+        "REDACTED_SUPERSEDED",
+        "HITL_IN_PROGRESS",
+        "QUARANTINED",
+        "MALWARE_SCAN_FAILED",
+    }
+)
+# The abort is one synchronous resolver call (Timeout: 60). Read for longer than
+# the function can run, and do not retry: a retried abort holds the `finally`
+# for minutes before the mappings are dropped. A missed abort leaves a document
+# unsettled, and the cleanup then leaves what it reads in place rather than
+# failing it.
+_CPM_ABORT_CLIENT_CONFIG = _BotoConfig(
+    read_timeout=120, connect_timeout=10, retries={"total_max_attempts": 1}
+)
+# Bound on waiting for step 15's aborted documents to settle before cleanup.
+_CPM_SETTLE_TIMEOUT_SECONDS = 300
+_CPM_SETTLE_POLL_SECONDS = 10
+
+
+def _cpm_abort_function(cf, stack_name):
+    """Physical name of the stack's `abortWorkflow` resolver Lambda, or None.
+
+    The function is a resource of the nested API resolver stack (`APIRESOLVERSTACK`;
+    `APPSYNCSTACK` on stacks deployed before the AppSync removal). It has no stack
+    output, so it is read from the nested stack's resources.
+    """
+    for page in cf.get_paginator("list_stack_resources").paginate(StackName=stack_name):
+        for r in page.get("StackResourceSummaries", []):
+            if r.get("ResourceType") == "AWS::CloudFormation::Stack" and r.get(
+                "LogicalResourceId"
+            ) in ("APIRESOLVERSTACK", "APPSYNCSTACK"):
+                detail = cf.describe_stack_resource(
+                    StackName=r["PhysicalResourceId"],
+                    LogicalResourceId="AbortWorkflowResolverFunction",
+                )
+                return detail["StackResourceDetail"]["PhysicalResourceId"]
+    return None
+
+
+def _cpm_invoke_abort(lam, function_name, keys):
+    """Abort `keys` through the product's own `abortWorkflow` resolver.
+
+    A direct invoke carries no `identity`, which the resolver admits on IAM (the
+    same route `abortTestRuns` and the SDK use), so this needs no Cognito token.
+    The resolver does what the UI's abort does: a QUEUED document is written
+    ABORTED, conditionally, so the queue processor refuses to start it; a running
+    one has its execution stopped and is written ABORTED. Reimplementing that here
+    would be a second copy of a race the resolver already handles (#1612).
+
+    Never raises: an abort that could not be made leaves the settle wait to report
+    the document as still in flight.
+    """
+    try:
+        response = lam.invoke(
+            FunctionName=function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(
+                {
+                    "info": {"fieldName": "abortWorkflow"},
+                    "arguments": {"objectKeys": keys},
+                }
+            ),
+        )
+        body = response["Payload"].read()
+        result = json.loads(body) if body else {}
+        if response.get("FunctionError"):
+            print(f"  ⚠️  abortWorkflow raised: {result}")
+            return
+        print(f"  {result.get('message', 'abortWorkflow returned no message')}")
+        # A document that already finished is reported as not abortable, which
+        # is expected here and needs no action.
+        for err in result.get("errors") or []:
+            print(f"    {err}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️  could not invoke abortWorkflow: {e}")
+
+
+def _cpm_settle(
+    keys,
+    *,
+    observe,
+    timeout,
+    interval,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    stop=lambda: False,
+):
+    """Wait, bounded, until every key's document has stopped moving.
+
+    `observe(key)` returns `(status, execution_arn, execution_status)`: the
+    tracking row's ObjectStatus (None with no row), its WorkflowExecutionArn and
+    that execution's Step Functions status (both None when it never started). A
+    document is settled when its status is terminal and its execution, if any, is
+    no longer RUNNING -- an ABORTED row alone is not enough, because the resolver
+    writes ABORTED even when its StopExecution call failed.
+
+    Returns `(unsettled, keep_rows)`. `unsettled` describes every document still
+    in flight when the bound was hit, or when `stop()` (the run's ABORT_TESTS)
+    turned true; it is reported, never failed on, since the step asserts routing
+    only. `keep_rows` holds the documents that were aborted
+    while QUEUED: their SQS message may not have been consumed yet, and the queue
+    processor refuses to start a document only while its tracking row reads
+    ABORTED -- with no row at all it starts it, and the execution then fails at
+    OCR on the deleted object. Those rows must be left in place.
+    """
+    deadline = clock() + timeout
+    pending = list(keys)
+    keep_rows = set()
+    last = {}
+    while True:
+        still = []
+        for key in pending:
+            try:
+                status, arn, execution_status = observe(key)
+            except Exception as e:  # noqa: BLE001
+                last[key] = f"unreadable ({e})"
+                still.append(key)
+                continue
+            last[key] = f"status={status!r} execution={execution_status!r}"
+            if status is None:
+                continue  # no row: nothing was ingested, nothing to wait for
+            if status in _CPM_SETTLED_STATUSES and execution_status != "RUNNING":
+                if status == "ABORTED" and not arn:
+                    keep_rows.add(key)
+                continue
+            still.append(key)
+        pending = still
+        if not pending or clock() >= deadline or stop():
+            break
+        sleep(interval)
+    return [f"{key}: {last[key]}" for key in pending], keep_rows
+
+
 def test_step15_config_prefix_mappings(stack_name):
     """Verify a config prefix mapping actually routes a document at ingest.
 
@@ -2915,7 +3060,9 @@ def test_step15_config_prefix_mappings(stack_name):
     Mappings are written through `PrefixMappingStore` -- the same code path
     `putConfigPrefixMapping` uses -- so this needs no Cognito token. Cleans up its
     mappings, objects and tracking rows on the way out, including on failure, so a
-    reject mapping cannot be left behind to fail an unrelated step.
+    reject mapping cannot be left behind to fail an unrelated step. Before deleting
+    anything its documents read, it aborts them through `abortWorkflow` and waits
+    (bounded) for them to settle, so they end ABORTED rather than FAILED.
     """
     print("Step 15: Testing config prefix mappings end to end...")
 
@@ -2967,6 +3114,9 @@ def test_step15_config_prefix_mappings(stack_name):
     tagged_profile = "default"
     prefixes = {}
     uploaded = []
+    # The reject-mode tagged upload is FAILED at ingest by design; it has no
+    # workflow to stop.
+    rejected_by_design = set()
     created_profile = False
 
     def _row(key, attempts=30):
@@ -3022,6 +3172,8 @@ def test_step15_config_prefix_mappings(stack_name):
                     kwargs["Metadata"] = metadata
                 s3.put_object(**kwargs)
                 uploaded.append(key)
+                if mode == "reject" and metadata:
+                    rejected_by_design.add(key)
         print(f"  uploaded {len(uploaded)} documents")
 
         failures = []
@@ -3084,26 +3236,99 @@ def test_step15_config_prefix_mappings(stack_name):
     except Exception as e:
         return {"success": False, "error": f"Config prefix mapping check failed: {e}"}
     finally:
-        # Order matters: drop the mappings FIRST so a reject rule cannot catch an
-        # unrelated upload while the rest of the cleanup runs.
+        # Stop this step's own documents BEFORE deleting anything they read. The
+        # routing assertion is done seconds after upload, while five of the six
+        # are still queued or running; deleting their object, row and profile
+        # under them used to fail each one at OCRStep, and every nightly then
+        # reported those failures as noise for the failure analyst to explain.
+        # Aborted executions end ABORTED, which the failure report does not list
+        # (it reads FAILED executions only).
+        to_stop = [k for k in uploaded if k not in rejected_by_design]
+        if to_stop:
+            try:
+                abort_fn = _cpm_abort_function(cf, stack_name)
+                if not abort_fn:
+                    print("  ⚠️  no abortWorkflow resolver found; not aborting")
+            except Exception as e:  # noqa: BLE001
+                abort_fn = None
+                print(f"  ⚠️  could not locate the abortWorkflow resolver: {e}")
+            if abort_fn:
+                print(f"  aborting {len(to_stop)} documents through abortWorkflow")
+                _cpm_invoke_abort(
+                    boto3.client("lambda", config=_CPM_ABORT_CLIENT_CONFIG),
+                    abort_fn,
+                    to_stop,
+                )
+        # Drop the mappings next, before the wait, so a reject rule cannot catch
+        # an unrelated upload while the rest of the cleanup runs. Resolution
+        # happened at ingest, so in-flight documents no longer read them.
         for prefix in prefixes:
             try:
                 store.delete(prefix)
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠️  could not delete mapping {prefix}: {e}")
+        keep_rows = set()
+        in_flight = set()
+        if to_stop:
+            sfn = boto3.client("stepfunctions", config=_THROTTLE_RETRY_CONFIG)
+
+            def _observe(key):
+                item = (
+                    ddb.get_item(
+                        TableName=tracking_table,
+                        Key={"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}},
+                        ConsistentRead=True,
+                    ).get("Item")
+                    or {}
+                )
+                status = (item.get("ObjectStatus") or {}).get("S")
+                arn = (item.get("WorkflowExecutionArn") or {}).get("S")
+                execution_status = (
+                    sfn.describe_execution(executionArn=arn).get("status")
+                    if arn
+                    else None
+                )
+                return status, arn, execution_status
+
+            unsettled, keep_rows = _cpm_settle(
+                to_stop,
+                observe=_observe,
+                timeout=_CPM_SETTLE_TIMEOUT_SECONDS,
+                interval=_CPM_SETTLE_POLL_SECONDS,
+                stop=ABORT_TESTS.is_set,
+            )
+            if unsettled:
+                # An unsettled document was not stopped -- its abort did not take,
+                # or the wait was cut short -- so it may still start or be running.
+                # Deleting what it reads would fail it at OCR, the failure this
+                # cleanup exists to prevent, so its object, its row and the
+                # profile are left for the stack teardown instead.
+                in_flight = {entry.split(": ", 1)[0] for entry in unsettled}
+                print(
+                    f"  ⚠️  {len(unsettled)} documents were still in flight; leaving "
+                    f"their objects, rows and profile {mapped_profile} for the stack "
+                    f"teardown (routing was already asserted): " + "; ".join(unsettled)
+                )
         for key in uploaded:
+            if key in in_flight:
+                continue
             try:
                 s3.delete_object(Bucket=input_bucket, Key=key)
-                ddb.delete_item(
-                    TableName=tracking_table,
-                    Key={"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}},
-                )
+                # A document aborted while QUEUED keeps its ABORTED row: it is
+                # what makes the queue processor refuse the message still on the
+                # queue (with no row it would start it). The stack is torn down
+                # with the run, row included.
+                if key not in keep_rows:
+                    ddb.delete_item(
+                        TableName=tracking_table,
+                        Key={"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}},
+                    )
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠️  could not clean up {key}: {e}")
         # Last, and only after the mappings are gone: `deleteConfigVersion` refuses
         # while a mapping still names the profile, which is a guard this feature
         # adds and which this cleanup order respects rather than fights.
-        if created_profile:
+        if created_profile and not in_flight:
             try:
                 ddb.delete_item(
                     TableName=config_table,
