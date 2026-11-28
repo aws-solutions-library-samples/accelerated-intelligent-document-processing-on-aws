@@ -218,6 +218,8 @@ def test_the_reads_ride_out_throttling(cbd):
     cbd.check_terraform_parity(TWIN, STACK, ROLE, session=session)
     assert session.configs["cloudcontrol"] is cbd._THROTTLE_RETRY_CONFIG
     assert session.configs["lambda"] is cbd._THROTTLE_RETRY_CONFIG
+    assert session.configs["cloudformation"] is cbd._THROTTLE_RETRY_CONFIG
+    assert session.configs["sqs"] is cbd._THROTTLE_RETRY_CONFIG
 
 
 def test_two_matching_deployments_are_the_same(cbd):
@@ -254,7 +256,7 @@ def test_a_resource_on_one_side_only_fails(cbd):
 
 def test_a_comparison_that_could_not_run_is_an_error_not_a_difference(cbd):
     class Denied:
-        def client(self, name):
+        def client(self, name, config=None):
             raise RuntimeError("AccessDenied")
 
     verdict = cbd.check_terraform_parity(TWIN, STACK, ROLE, session=Denied())

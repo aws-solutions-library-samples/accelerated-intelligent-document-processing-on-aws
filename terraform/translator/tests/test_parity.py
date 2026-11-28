@@ -323,7 +323,9 @@ class Sqs:
 def side(name, *resources):
     """One side of a comparison: ``(stack path, logical id, type, physical id)``
     rows under the stack ``name``."""
-    resource = sys.modules["_parity"].Resource  # loaded by the parity fixture
+    module = sys.modules.get("_parity")
+    assert module is not None, "the parity fixture registers the tool as _parity"
+    resource = module.Resource
     return ([resource(*row) for row in resources], {"": name})
 
 
@@ -471,8 +473,9 @@ def test_a_service_assigned_identifier_part_is_the_physical_id(parity):
 def test_an_identifier_that_cannot_be_built_or_read_is_listed_not_fatal(parity):
     """Cloud Control's ValidationException for an identifier it does not accept
     stopped the whole run at the first such resource. It is now listed as
-    unreadable, as is a compound identifier with two parts the template does
-    not give, which is not sent at all."""
+    refused, counted apart from a type Cloud Control cannot read at all, as is a
+    compound identifier with two parts the template does not give, which is not
+    sent at all."""
     cfn = SchemaCfn(
         {
             "AWS::Cognito::UserPoolGroup": ["UserPoolId", "GroupName"],
@@ -480,7 +483,14 @@ def test_an_identifier_that_cannot_be_built_or_read_is_listed_not_fatal(parity):
         },
         {"idp": {"Resources": {}}},
     )
-    cc = ReadingCloudControl({}, errors={"Admin": "ValidationException"})
+    cc = ReadingCloudControl(
+        {},
+        errors={
+            "Admin": "ValidationException",
+            "t1": "UnsupportedActionException",
+            "t2": "UnsupportedActionException",
+        },
+    )
     report = compare_sides(
         parity,
         side(
@@ -496,10 +506,8 @@ def test_an_identifier_that_cannot_be_built_or_read_is_listed_not_fatal(parity):
         cc,
     )
     # Without a CloudFormation client the physical id is sent, as before.
-    assert report.unreadable == [
-        "AdminGroup (AWS::Cognito::UserPoolGroup)",
-        "Table (AWS::Glue::Table)",
-    ]
+    assert report.refused == ["AdminGroup (AWS::Cognito::UserPoolGroup)"]
+    assert report.unreadable == ["Table (AWS::Glue::Table)"]
     cc = ReadingCloudControl({})
     report = compare_sides(
         parity,
@@ -508,7 +516,7 @@ def test_an_identifier_that_cannot_be_built_or_read_is_listed_not_fatal(parity):
         cc,
         cfn=cfn,
     )
-    assert report.unreadable == ["Table (AWS::Glue::Table)"]
+    assert report.refused == ["Table (AWS::Glue::Table)"]
     assert cc.asked == []
 
 
@@ -733,6 +741,15 @@ def test_a_queue_policy_nothing_compared_is_still_one_sided(parity):
     cfn_side, tf_side, props, *_ = _policy_sides()
     report = compare_sides(parity, cfn_side, tf_side, ReadingCloudControl(props))
     assert report.only_cfn == ["DocumentQueuePolicy"]
+    # An SQS client but no queue pair: no queue policy was read.
+    no_queue = (
+        [r for r in cfn_side[0] if r.cfn_type != "AWS::SQS::Queue"],
+        cfn_side[1],
+    )
+    report = compare_sides(
+        parity, no_queue, tf_side, ReadingCloudControl(props), sqs=Sqs({})
+    )
+    assert "DocumentQueuePolicy" in report.only_cfn
     report = compare_sides(
         parity, cfn_side, tf_side, ReadingCloudControl(props), sqs=Sqs({}, fail=True)
     )

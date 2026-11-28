@@ -16,6 +16,9 @@ checked without AWS is what decides whether a green run means anything:
   * a refused plan's addresses reach the failure message rather than only a log;
   * a failed phase still tears down, and a preflight that refused tears nothing
     down, because the sweep deletes by name;
+  * the real preflight, inherited sweep included, runs with this driver's own
+    ``Settings`` against fake clients, so a setting only the migration test
+    defined fails here rather than on the first live step;
   * the Makefile target refuses to run without the four values it needs.
 """
 

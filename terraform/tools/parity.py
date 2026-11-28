@@ -83,14 +83,15 @@ PER_TARGET_POLICY_TYPES = {
     "AWS::IAM::Policy": "the inline Policies Cloud Control reads with each role",
     "AWS::SQS::QueuePolicy": "the Policy attribute read with each queue",
 }
-#: Cloud Control error codes that mean "this type, or this identifier, cannot be
-#: read": the resource is listed as unreadable, and the run goes on.
-UNREADABLE_CODES = (
-    "UnsupportedActionException",
-    "TypeNotFoundException",
-    "ValidationException",
-    "InvalidRequestException",
-)
+#: Cloud Control error codes that mean "this type cannot be read": the resource
+#: is listed as unreadable, and the run goes on.
+UNREADABLE_CODES = ("UnsupportedActionException", "TypeNotFoundException")
+#: Codes that mean "not with this identifier". The resource is listed apart, as
+#: refused, and counted on its own, because a wrong identifier is something this
+#: tool built, and a rise in that count is how a regression in the builder shows.
+REFUSED_CODES = ("ValidationException", "InvalidRequestException")
+#: The marker read_or_refused returns for a refused identifier.
+REFUSED = "refused"
 #: The shortest name read out of an ARN or URL that is substituted on its own;
 #: below this a name is too likely to be an ordinary word.
 MIN_ALIAS_LENGTH = 8
@@ -119,6 +120,8 @@ class Report:
     #: Per-target policies, compared through their targets (PER_TARGET_POLICY_TYPES).
     through_target: list[str] = field(default_factory=list)
     unreadable: list[str] = field(default_factory=list)
+    #: Resources whose identifier could not be built or was refused (REFUSED_CODES).
+    refused: list[str] = field(default_factory=list)
     stale: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -339,18 +342,28 @@ def _error_code(exc: Exception) -> str:
     return getattr(exc, "response", {}).get("Error", {}).get("Code", "")
 
 
-def read(cc: Any, cfn_type: str, ident: str | None) -> dict | None:
-    """The resource's properties through Cloud Control, or None when the type or
-    the identifier is not one it can read."""
+def read_or_refused(cc: Any, cfn_type: str, ident: str | None) -> dict | str | None:
+    """The resource's properties through Cloud Control; None when the type is
+    not one it can read; REFUSED when no identifier could be built or Cloud
+    Control refused the one it was given."""
     if not ident:
-        return None
+        return REFUSED
     try:
         resp = cc.get_resource(TypeName=cfn_type, Identifier=ident)
     except Exception as exc:  # noqa: BLE001 - unreadable types are listed
-        if _error_code(exc) in UNREADABLE_CODES:
+        code = _error_code(exc)
+        if code in UNREADABLE_CODES:
             return None
+        if code in REFUSED_CODES:
+            return REFUSED
         raise
     return json.loads(resp["ResourceDescription"]["Properties"])
+
+
+def read(cc: Any, cfn_type: str, ident: str | None) -> dict | None:
+    """The resource's properties, or None when they cannot be read."""
+    found = read_or_refused(cc, cfn_type, ident)
+    return found if isinstance(found, dict) else None
 
 
 class Identifiers:
@@ -556,6 +569,7 @@ def compare(
 
     used: set[tuple[str, str]] = set()
     compared_types: set[str] = set()
+    queue_policies_read = False
     for a, b in pairs:
         if a.cfn_type == STACK_TYPE:
             continue
@@ -565,10 +579,13 @@ def compare(
             )
             continue
         left, right = (
-            read(cc, a.cfn_type, ident(ids_cfn, a)),
-            read(cc, b.cfn_type, ident(ids_tf, b)),
+            read_or_refused(cc, a.cfn_type, ident(ids_cfn, a)),
+            read_or_refused(cc, b.cfn_type, ident(ids_tf, b)),
         )
-        if left is None or right is None:
+        if REFUSED in (left, right):
+            report.refused.append(f"{a.identity} ({a.cfn_type})")
+            continue
+        if not isinstance(left, dict) or not isinstance(right, dict):
             report.unreadable.append(f"{a.identity} ({a.cfn_type})")
             continue
         if a.cfn_type == "AWS::Lambda::Function":
@@ -588,6 +605,7 @@ def compare(
                 report.unreadable.append(f"{a.identity} (AWS::SQS::Queue Policy)")
                 through_target.discard("AWS::SQS::QueuePolicy")
             else:
+                queue_policies_read = True
                 for side, policy in zip((left, right), policies):
                     if policy:
                         side["Policy"] = policy
@@ -609,8 +627,10 @@ def compare(
         )
         for _, prop, text in unexplained:
             log(f"    {prop}: {text}")
-    # A queue policy counts as compared only if every queue's policy was read,
-    # and an IAM policy only if a role, user or group was compared at all.
+    # A queue policy counts as compared only if a queue's policy was read and
+    # none failed, and an IAM policy only if a role, user or group was compared.
+    if not queue_policies_read:
+        through_target.discard("AWS::SQS::QueuePolicy")
     if not compared_types & {"AWS::IAM::Role", "AWS::IAM::User", "AWS::IAM::Group"}:
         through_target.discard("AWS::IAM::Policy")
     for res in per_target:
@@ -656,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         ("only in Terraform", report.only_tf),
         ("compared through their targets", report.through_target),
         ("not readable through Cloud Control", report.unreadable),
+        ("identifier not built or refused by Cloud Control", report.refused),
         ("stale baseline entries", report.stale),
     ):
         if items:

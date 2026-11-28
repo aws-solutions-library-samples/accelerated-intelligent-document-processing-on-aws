@@ -426,11 +426,11 @@ class Settings:
     #: The migration test's settings for its variant and upstream IAM path. The
     #: inherited sweep's ``Sweeper._gateways`` reads ``variant`` during preflight
     #: (to decide whether to look for AgentCore gateways). Every reader of
-    #: ``upstream_iam_path`` is on a path this driver overrides or does not run,
-    #: so it is here so that the Settings the inherited Run is given has every
-    #: field that Run reads. This test deploys the standard module and
-    #: pre-creates nothing, so both hold the migration test's base values and
-    #: neither is a flag.
+    #: ``upstream_iam_path`` (identity_problems, execute, prepare_old_root) is on a
+    #: path this driver overrides or does not run; it is defined beside
+    #: ``variant`` because the two are read together there. This test deploys
+    #: the standard module and pre-creates nothing, so both hold the migration
+    #: test's base values and neither is a flag.
     variant: str = field(default=tmt.BASE_VARIANT, init=False)
     upstream_iam_path: Optional[str] = field(default=None, init=False)
 

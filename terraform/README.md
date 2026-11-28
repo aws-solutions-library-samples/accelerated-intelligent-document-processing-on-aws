@@ -513,7 +513,7 @@ the validation below is:
    key id, an empty `VpcConfig` as none, and the tags each tool adds itself are
    dropped. A type whose Cloud Control identifier is compound (`UserPoolId|GroupName`)
    is read with one built from its schema's primary identifier and the template;
-   one that cannot be built or read is listed as unreadable. An `AWS::SQS::QueuePolicy`
+   one that cannot be built, or that Cloud Control refuses, is listed and counted apart from a type Cloud Control cannot read. An `AWS::SQS::QueuePolicy`
    or `AWS::IAM::Policy`, which Terraform writes once per target, is compared through
    its queues' and roles' policies. A difference fails it unless
    `tools/parity_baseline.json` explains it, one entry per type and property path
