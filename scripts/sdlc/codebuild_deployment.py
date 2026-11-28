@@ -5885,6 +5885,10 @@ def check_terraform_parity(twin_name, stack_name, role_arn, *, session=None, too
             # The tool's per-resource lines carry property values; see
             # judge_terraform_parity for why those are not printed.
             log=lambda _line: None,
+            # Builds compound Cloud Control identifiers, and reads each queue's
+            # policy, which is how a queue policy is compared.
+            cfn=cfn,
+            sqs=session.client("sqs", config=_THROTTLE_RETRY_CONFIG),
         )
     except (Exception, SystemExit) as e:  # noqa: BLE001 - reported as the row
         verdict = {

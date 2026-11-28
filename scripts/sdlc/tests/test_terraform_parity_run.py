@@ -208,6 +208,7 @@ def _session(tf_secret=SECRET_VALUE, cfn_secret=SECRET_VALUE, tf_extra=()):
             "s3": _S3({("bridge", "dir.json"): directory}),
             "cloudcontrol": _CloudControl(props),
             "lambda": object(),
+            "sqs": object(),
         }
     )
 
