@@ -3864,7 +3864,7 @@ UI has no control for it.
 
 ### `chat`
 
-Interactive Agent Companion Chat from the terminal. Provides access to the full multi-agent orchestrator including Analytics, Error Analyzer, Code Intelligence, and any configured External MCP Agents.
+Interactive Agent Companion Chat from the terminal. Provides access to the multi-agent orchestrator with the Analytics and Error Analyzer agents, and, when you enable them, the Code Intelligence Agent and any configured External MCP Agents. The Quick Start agent is not included.
 
 The chat command runs the same orchestrator as the Web UI's Agent Companion Chat, but locally in your terminal — with real-time streaming and multi-turn conversation support.
 
@@ -3880,6 +3880,9 @@ idp-cli chat [OPTIONS]
 - `--region`: AWS region (optional)
 - `--prompt`: Single-shot prompt — sends one message, prints the response, and exits. Useful for scripts and CI/CD.
 - `--enable-code-intelligence`: Enable the Code Intelligence Agent (disabled by default because it uses external third-party services)
+- `--enable-external-mcp-agents`: Enable the External MCP agents configured for the stack (disabled by default because they send queries to servers outside the deployment)
+
+The agents are chosen the way the Web UI's Agent Companion Chat chooses them: once the Analytics or Error Analyzer agent has returned a result in the session, the Code Intelligence Agent and External MCP agents answer that they are not available for the rest of it (see [Opt-in agents and conversations that hold your data](agent-companion-chat.md#opt-in-agents-and-conversations-that-hold-your-data)). The `Agents:` line lists the agents the session was started with.
 
 **Examples:**
 

@@ -20,6 +20,7 @@ from botocore.exceptions import ClientError
 from idp_common.agents.analytics import get_analytics_config, parse_agent_response
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
+from idp_common.chat_session_agents import orchestrator_selection, requested_agents
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Configure logging for both application and Strands framework
@@ -103,9 +104,26 @@ def process_agent_query(query: str, agent_ids: list, job_id: str = None, user_id
         config = get_analytics_config()
         logger.info("Analytics configuration loaded successfully")
         
+        # The same selection and session gate the Agent Chat processors apply.
+        # A job is a single turn with no conversation memory, so it starts
+        # holding no data-agent results; naming an opt-in agent (Code
+        # Intelligence, an External MCP agent) is the opt-in to it. Within the
+        # turn, once a data agent (Analytics, Error Analyzer) has returned a
+        # result, an opt-in agent the orchestrator was built with answers that it
+        # is not available instead of running.
+        named_agents, opt_ins = requested_agents(
+            agent_factory.list_available_agents(), agent_ids
+        )
+        agent_ids, session_gate = orchestrator_selection(
+            named_agents, opt_ins=opt_ins, holds_data_results=False
+        )
+
         # Determine whether to use single agent or orchestrator
         if len(agent_ids) == 1:
-            # Single agent - use directly
+            # Single agent - use directly. No gate is needed: a job that names
+            # one agent has no other agent whose result could reach it, so an
+            # opt-in agent run alone holds no data-agent result, and a data
+            # agent run alone hands its result to nothing else.
             agent_id = agent_ids[0]
             logger.info(f"Using single agent: {agent_id}")
             
@@ -126,7 +144,8 @@ def process_agent_query(query: str, agent_ids: list, job_id: str = None, user_id
                 config=config,
                 session=session,
                 job_id=job_id,
-                user_id=user_id
+                user_id=user_id,
+                session_gate=session_gate,
             )
             logger.info("Orchestrator agent created successfully")
         

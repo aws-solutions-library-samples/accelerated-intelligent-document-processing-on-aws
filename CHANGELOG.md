@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every route that runs the agent orchestrator now chooses its agents the same way.** The Agent Analysis page and the Troubleshoot dialog (`submitAgentQuery`) and `idp-cli chat` and the SDK's `client.chat` now apply the rule the Agent Companion Chat already applied: once the Analytics or Error Analyzer agent has returned a result, the Code Intelligence Agent and External MCP agents answer that they are not available instead of running. On the Agent Analysis page, selecting one of those agents is what opts in to it, so "Select All Agents" still works; to get both a code answer and an answer about your data, ask them as two queries. `idp-cli chat` and `client.chat` no longer include the Quick Start agent, and include External MCP agents only with the new `idp-cli chat --enable-external-mcp-agents` flag, as Code Intelligence already required `--enable-code-intelligence`. The `Agents:` line `idp-cli chat` prints now lists the agents the session actually has. See [Opt-in agents and conversations that hold your data](docs/agent-companion-chat.md#opt-in-agents-and-conversations-that-hold-your-data).
+
 ### Fixed
 
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).

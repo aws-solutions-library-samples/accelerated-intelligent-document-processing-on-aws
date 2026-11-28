@@ -590,11 +590,16 @@ class _FakeAgentFactory:
 
     def list_available_agents(self) -> list[dict]:
         return [
-            {"agent_id": agent_id, "name": agent_id} for agent_id in self._agent_ids
+            {
+                "agent_id": agent_id,
+                "name": agent_id,
+                "opt_in": OPT_IN_KINDS.get(agent_id),
+            }
+            for agent_id in self._agent_ids
         ]
 
     def create_conversational_orchestrator(
-        self, *, agent_ids, session_id, config, session, user_id
+        self, *, agent_ids, session_id, config, session, user_id, session_gate
     ):
         self.calls.append(
             {
@@ -603,6 +608,7 @@ class _FakeAgentFactory:
                 "config": config,
                 "session": session,
                 "user_id": user_id,
+                "session_gate": session_gate,
             }
         )
         return self._orchestrator
@@ -612,6 +618,19 @@ ALL_AGENT_IDS = [
     "Analytics-Agent",
     "Document-Analysis-Agent",
     "Code-Intelligence-Agent",
+]
+
+#: ``opt_in`` of the registry entries that carry one, as ``registry.py`` sets it.
+#: The Code Intelligence Agent is left out on purpose: it is recognised by id too.
+OPT_IN_KINDS = {"Remote-Tools-Agent": "external_mcp"}
+
+#: A registry holding every kind of agent the selection treats differently.
+REGISTRY_WITH_EVERY_KIND = [
+    "Analytics-Agent",
+    "Error-Analyzer-Agent",
+    "Code-Intelligence-Agent",
+    "Quick-Start-Agent",
+    "Remote-Tools-Agent",
 ]
 
 CONFIG_SENTINEL = object()
@@ -793,6 +812,66 @@ class TestOrchestratorComposition:
             proc._ensure_orchestrator(enable_code_intelligence=True)
 
             assert factory.calls[0]["agent_ids"] == ALL_AGENT_IDS
+
+    @pytest.mark.parametrize(
+        ("code_intelligence", "external_mcp", "expected"),
+        [
+            (False, False, ["Analytics-Agent", "Error-Analyzer-Agent"]),
+            (
+                True,
+                False,
+                ["Analytics-Agent", "Error-Analyzer-Agent", "Code-Intelligence-Agent"],
+            ),
+            (
+                False,
+                True,
+                ["Analytics-Agent", "Error-Analyzer-Agent", "Remote-Tools-Agent"],
+            ),
+        ],
+    )
+    def test_the_agents_are_selected_as_on_the_agent_chat_routes(
+        self, aws_credentials, monkeypatch, code_intelligence, external_mcp, expected
+    ):
+        """Quick Start is never included, and each opt-in kind only when asked.
+
+        The same rule the Agent Chat processors apply through
+        ``idp_common.chat_session_agents.orchestrator_selection``.
+        """
+        with _agent_framework(monkeypatch, REGISTRY_WITH_EVERY_KIND) as (factory, _):
+            proc = _chat_processor()
+
+            proc._ensure_orchestrator(
+                enable_code_intelligence=code_intelligence,
+                enable_external_mcp_agents=external_mcp,
+            )
+
+            assert factory.calls[0]["agent_ids"] == expected
+            assert proc.agent_ids == expected
+
+    def test_the_orchestrator_gets_the_session_gate(self, aws_credentials, monkeypatch):
+        """Once a data agent has returned a result, opt-in agents are refused.
+
+        The gate handed to the orchestrator is what its sub-agent tools consult
+        (``test_orchestrator_session_gate.py`` covers that half). Without it, an
+        opt-in agent the session was built with would run after Analytics in the
+        same conversation.
+        """
+        from idp_common.chat_session_agents import SessionAgentGate
+
+        with _agent_framework(monkeypatch, REGISTRY_WITH_EVERY_KIND) as (factory, _):
+            proc = _chat_processor()
+            proc._ensure_orchestrator(
+                enable_code_intelligence=True, enable_external_mcp_agents=True
+            )
+
+            gate = factory.calls[0]["session_gate"]
+            assert isinstance(gate, SessionAgentGate)
+            assert gate.allows("Code-Intelligence-Agent")
+            assert gate.allows("Remote-Tools-Agent")
+            gate.note_data_result("Analytics-Agent")
+            assert not gate.allows("Code-Intelligence-Agent")
+            assert not gate.allows("Remote-Tools-Agent")
+            assert gate.allows("Error-Analyzer-Agent")
 
     def test_a_generated_session_id_is_prefixed_and_short(
         self, aws_credentials, monkeypatch

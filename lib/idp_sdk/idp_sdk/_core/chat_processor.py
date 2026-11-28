@@ -37,6 +37,7 @@ class ChatProcessor:
         self.region = region
         self._orchestrator = None
         self._session_id = None
+        self._agent_ids: list[str] = []
         self._env_ready = False
 
     def _setup_env(self):
@@ -96,8 +97,19 @@ class ChatProcessor:
         self,
         session_id: Optional[str] = None,
         enable_code_intelligence: bool = False,
+        enable_external_mcp_agents: bool = False,
     ):
-        """Create orchestrator if not already created."""
+        """Create orchestrator if not already created.
+
+        The agents are chosen, and the session gate is built, the way the Agent
+        Chat processors do it (``idp_common.chat_session_agents``): the Quick
+        Start agent is never included, the Code Intelligence Agent and External
+        MCP agents only when asked for, and once a data agent (Analytics, Error
+        Analyzer) has returned a result in this session an opt-in agent answers
+        that it is not available instead of running. The gate lives as long as
+        the orchestrator, which is one session, so it covers every later turn of
+        that session in this process.
+        """
         if self._orchestrator:
             return
 
@@ -105,15 +117,27 @@ class ChatProcessor:
 
         from idp_common.agents.analytics.config import get_analytics_config
         from idp_common.agents.factory import agent_factory
+        from idp_common.chat_session_agents import (
+            orchestrator_selection,
+            requested_opt_ins,
+        )
 
         self._session_id = session_id or f"sdk-{uuid.uuid4().hex[:12]}"
         config = get_analytics_config()
         session = boto3.Session(region_name=self.region)
 
-        all_agents = agent_factory.list_available_agents()
-        agent_ids = [a["agent_id"] for a in all_agents]
-        if not enable_code_intelligence:
-            agent_ids = [aid for aid in agent_ids if aid != "Code-Intelligence-Agent"]
+        agent_ids, session_gate = orchestrator_selection(
+            agent_factory.list_available_agents(),
+            opt_ins=requested_opt_ins(
+                enable_code_intelligence=enable_code_intelligence,
+                enable_external_mcp_agents=enable_external_mcp_agents,
+            ),
+            # The SDK keeps no per-session flag, so a session starts holding no
+            # data-agent results. The opt-in agents are reachable only through
+            # the CLI's flags, and the CLI starts a new session on every run.
+            holds_data_results=False,
+        )
+        self._agent_ids = agent_ids
 
         self._orchestrator = agent_factory.create_conversational_orchestrator(
             agent_ids=agent_ids,
@@ -125,6 +149,7 @@ class ChatProcessor:
             # so its conversations get an owner of their own, which no Cognito
             # sub (a UUID) can equal.
             user_id=SDK_MEMORY_OWNER,
+            session_gate=session_gate,
         )
 
     def send_message(
@@ -172,3 +197,8 @@ class ChatProcessor:
     @property
     def session_id(self) -> Optional[str]:
         return self._session_id
+
+    @property
+    def agent_ids(self) -> list[str]:
+        """The agents the current orchestrator was built with."""
+        return list(self._agent_ids)

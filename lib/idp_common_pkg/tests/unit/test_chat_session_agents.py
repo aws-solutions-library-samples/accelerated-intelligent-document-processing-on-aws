@@ -78,6 +78,71 @@ class TestSelection:
 
 
 @pytest.mark.unit
+class TestRequestedAgents:
+    """``submitAgentQuery``: the caller names its agents, which is the opt-in."""
+
+    def test_naming_an_opt_in_agent_opts_in_to_its_kind(self):
+        named, kinds = sa.requested_agents(
+            AGENTS, ["Code-Intelligence-Agent", "Analytics-Agent"]
+        )
+        assert [a["agent_id"] for a in named] == [
+            "Code-Intelligence-Agent",
+            "Analytics-Agent",
+        ]
+        assert kinds == {"code_intelligence"}
+
+    def test_naming_only_data_agents_opts_in_to_nothing(self):
+        _, kinds = sa.requested_agents(AGENTS, ["Analytics-Agent"])
+        assert kinds == frozenset()
+
+    def test_an_unknown_id_is_refused(self):
+        with pytest.raises(ValueError, match="not found in registry"):
+            sa.requested_agents(AGENTS, ["Analytics-Agent", "missing"])
+
+
+@pytest.mark.unit
+class TestOrchestratorSelection:
+    def test_the_ids_are_the_selection_and_the_gate_knows_every_opt_in_agent(self):
+        ids, gate = sa.orchestrator_selection(
+            AGENTS, opt_ins={"code_intelligence"}, holds_data_results=False
+        )
+        assert ids == [
+            "Analytics-Agent",
+            "Error-Analyzer-Agent",
+            "Code-Intelligence-Agent",
+        ]
+        assert gate.allows("Code-Intelligence-Agent")
+        gate.note_data_result("Analytics-Agent")
+        assert not gate.allows("Code-Intelligence-Agent")
+        assert not gate.allows("remote-tools")
+        assert gate.allows("Error-Analyzer-Agent")
+
+    def test_a_flagged_session_gets_a_closed_gate(self):
+        ids, gate = sa.orchestrator_selection(
+            AGENTS,
+            opt_ins={"code_intelligence", "external_mcp"},
+            holds_data_results=True,
+        )
+        assert not set(ids) & OPT_IN
+        assert gate.holds_data_results
+        assert not gate.allows("Code-Intelligence-Agent")
+
+    def test_record_and_recheck_reach_the_gate(self):
+        recorded = []
+        ids, gate = sa.orchestrator_selection(
+            AGENTS,
+            opt_ins={"external_mcp"},
+            holds_data_results=False,
+            record=lambda: recorded.append(1),
+            recheck=lambda: True,
+        )
+        assert "remote-tools" in ids
+        assert not gate.allows("remote-tools")  # the recheck saw a flag
+        gate.note_data_result("Analytics-Agent")
+        assert recorded == []  # already flagged by the recheck, so not recorded
+
+
+@pytest.mark.unit
 class TestGate:
     def test_first_data_result_records_once_and_closes_opt_in_agents(self):
         recorded = []

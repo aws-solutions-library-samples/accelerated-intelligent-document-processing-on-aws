@@ -28,13 +28,18 @@ returned a result in a session, the session is flagged
 * a request that opts in on a flagged session is moved to a new session with no
   memory (:func:`needs_new_session`), by whichever entry point persists the turn.
 
+Every entry point that builds an orchestrator gets its agent ids and its gate from
+:func:`orchestrator_selection`, so the rule is the same on each of them: the two
+Agent Chat processors, the ``submitAgentQuery`` processor (where naming an agent
+is the opt-in to it, see :func:`requested_agents`), and the SDK and CLI chat.
+
 Imports nothing beyond the standard library, so both chat processors and their
 tests load it without the agent framework.
 """
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +125,62 @@ def select_orchestrator_agent_ids(
             continue
         selected.append(agent_id)
     return selected
+
+
+def opt_in_agent_ids(agents: Iterable[Dict[str, Any]]) -> List[str]:
+    """The ids of the opt-in agents (any kind) among ``agents``."""
+    return [agent["agent_id"] for agent in agents if opt_in_of(agent)]
+
+
+def requested_agents(
+    agents: Iterable[Dict[str, Any]], agent_ids: Iterable[str]
+) -> Tuple[List[Dict[str, Any]], frozenset]:
+    """The registry entries a request names, and the opt-ins naming them makes.
+
+    For an entry point where the caller picks the agents by id
+    (``submitAgentQuery``): picking an opt-in agent is the request to use it, so
+    its kind counts as opted in. Entries come back in the order the request
+    named them.
+
+    Raises:
+        ValueError: an id the registry does not hold.
+    """
+    by_id = {agent["agent_id"]: agent for agent in agents}
+    named = []
+    for agent_id in agent_ids:
+        if agent_id not in by_id:
+            raise ValueError(f"Agent ID '{agent_id}' not found in registry")
+        named.append(by_id[agent_id])
+    kinds = frozenset(kind for kind in map(opt_in_of, named) if kind)
+    return named, kinds
+
+
+def orchestrator_selection(
+    agents: Iterable[Dict[str, Any]],
+    *,
+    opt_ins: Iterable[str],
+    holds_data_results: bool,
+    record: Optional[Callable[[], None]] = None,
+    recheck: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[str], "SessionAgentGate"]:
+    """The agent ids an orchestrator is built with, and its gate for the turn.
+
+    The ids are :func:`select_orchestrator_agent_ids` over ``agents``; the gate
+    is a :class:`SessionAgentGate` that treats every opt-in agent among
+    ``agents`` as one, with ``record`` and ``recheck`` as documented there. Pass
+    the gate to the orchestrator as ``session_gate``.
+    """
+    agents = list(agents)
+    agent_ids = select_orchestrator_agent_ids(
+        agents, opt_ins=opt_ins, holds_data_results=holds_data_results
+    )
+    gate = SessionAgentGate(
+        holds_data_results=holds_data_results,
+        opt_in_agent_ids=opt_in_agent_ids(agents),
+        record=record,
+        recheck=recheck,
+    )
+    return agent_ids, gate
 
 
 class SessionAgentGate:
