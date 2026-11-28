@@ -318,6 +318,7 @@ class TestChatCommandForwarding:
             region="us-west-2",
             prompt="how many documents?",
             enable_code_intelligence=True,
+            enable_external_mcp_agents=False,
         )
 
     def test_the_defaults_are_forwarded_as_none_and_false(self, runner):
@@ -337,6 +338,7 @@ class TestChatCommandForwarding:
             region=None,
             prompt=None,
             enable_code_intelligence=False,
+            enable_external_mcp_agents=False,
         )
 
     def test_stack_name_is_required(self, runner):

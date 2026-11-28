@@ -403,9 +403,15 @@ entries:
     note: >-
       Each enabled agent is one of its tools. It holds the whole conversation, so an
       answer the Analytics or Error Analyzer agent gave earlier is in its context
-      when it writes a question for another agent. The Code Intelligence and External
-      MCP agents are opt-in per request, and are left out of (or refused within) any
-      session in which a data agent has returned a result.
+      when it writes a question for another agent. Every route that builds it takes
+      its agents and its session gate from orchestrator_selection: the two Agent
+      Chat processors, the submitAgentQuery processor (AgentProcessorFunction, the
+      Agent Analysis page and the Troubleshoot dialog, where selecting an opt-in
+      agent is the opt-in) and the SDK and CLI chat. On each, the Quick Start agent
+      is never included, the Code Intelligence and External MCP agents are opt-in
+      per request, and they are left out of (or refused within) any session in
+      which a data agent has returned a result. A submitAgentQuery job naming one
+      agent runs it directly with no gate: no other agent's result can reach it.
     roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
     reads: [reporting_tables, tracking_and_logs, chat_memory]
     inputs: [user_prompt, conversation_history, reporting_rows, logs_and_records,
@@ -424,9 +430,20 @@ entries:
          limits: deepwiki_mcp_server}
       - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::SessionAgentGate,
          limits: external_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::orchestrator_selection,
+         limits: deepwiki_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::orchestrator_selection,
+         limits: external_mcp_server}
       - *safe_markdown_images
       - *safe_markdown_schema
     test:
+      - lib/idp_common_pkg/tests/unit/agents/orchestrator/test_orchestrator_session_gate.py::test_code_intelligence_is_refused_after_analytics_in_the_same_turn
+      - src/lambda/chat_stream_processor/tests/test_processor_session_agents.py::test_analytics_then_code_intelligence_never_builds_it_into_that_session
+      - src/lambda/chat_stream_processor/tests/test_processor_session_agents.py::test_analytics_then_code_intelligence_on_the_resolver_path
+      - src/lambda/chat_stream_processor/tests/test_processor_session_agents.py::test_the_gate_closes_opt_in_agents_within_the_turn
+      - lib/idp_common_pkg/tests/unit/lambdas/test_agent_processor_session_gate.py::test_code_intelligence_is_refused_after_analytics_in_the_same_job
+      - lib/idp_sdk/tests/unit/test_search_and_chat_processors.py::TestOrchestratorComposition::test_the_orchestrator_gets_the_session_gate
+      - lib/idp_sdk/tests/unit/test_search_and_chat_processors.py::TestOrchestratorComposition::test_the_agents_are_selected_as_on_the_agent_chat_routes
       - lib/idp_common_pkg/tests/unit/test_chat_session_owner.py::TestReadPath::test_the_row_a_message_used_to_create_is_not_ownership
       - lib/idp_common_pkg/tests/unit/agents/utils/test_memory_provider.py::TestConstructionAndKeys::test_two_users_naming_one_session_id_get_different_keys
       - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestSelection::test_a_flagged_session_gets_no_opt_in_agent_whatever_was_asked

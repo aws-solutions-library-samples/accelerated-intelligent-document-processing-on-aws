@@ -26,11 +26,9 @@ from idp_common.agents.factory import agent_factory
 from idp_common.chat_session_agents import (
     SESSION_DATA_RESULTS_EVENT,
     SESSION_REPLACED_EVENT,
-    SessionAgentGate,
     needs_new_session,
-    opt_in_of,
+    orchestrator_selection,
     requested_opt_ins,
-    select_orchestrator_agent_ids,
 )
 from idp_common.chat_session_owner import (
     claim_chat_session,
@@ -1370,20 +1368,14 @@ def handler(event, context):
                 "Quick Start mode requested but Quick-Start-Agent not registered; "
                 "falling back to the chat agent list"
             )
-        if not use_direct_quick_start:
-            # Opt-in agents only when the request opts in to their kind, and
-            # never in a session holding data-agent results.
-            agent_ids = select_orchestrator_agent_ids(
-                all_agents, opt_ins=opt_ins, holds_data_results=holds
-            )
-        # Shared by the orchestrator's tools for this turn: the first data-agent
-        # result flags the session and closes the opt-in agents for the rest of
-        # the turn too.
-        session_gate = SessionAgentGate(
+        # Opt-in agents only when the request opts in to their kind, and never
+        # in a session holding data-agent results. The gate is shared by the
+        # orchestrator's tools for this turn: the first data-agent result flags
+        # the session and closes the opt-in agents for the rest of the turn too.
+        selected_agent_ids, session_gate = orchestrator_selection(
+            all_agents,
+            opt_ins=opt_ins,
             holds_data_results=holds,
-            opt_in_agent_ids=[
-                agent["agent_id"] for agent in all_agents if opt_in_of(agent)
-            ],
             record=_data_results_recorder(session_id, owner_sub),
             # Another turn on this session may record a data result after the
             # read above; the gate reads the flag again before an opt-in agent
@@ -1394,6 +1386,8 @@ def handler(event, context):
                 else None
             ),
         )
+        if not use_direct_quick_start:
+            agent_ids = selected_agent_ids
 
         if use_direct_quick_start:
             logger.info("Quick Start mode: running Quick-Start-Agent directly with memory")

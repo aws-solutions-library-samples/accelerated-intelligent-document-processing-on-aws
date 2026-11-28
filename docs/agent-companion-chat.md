@@ -124,6 +124,19 @@ before DynamoDB deletes it: a conversation resumed after both have expired start
 with neither its memory nor the record. Memory written before this behaviour was
 introduced carries no expiry.
 
+The same agent selection and the same within-turn rule apply wherever the
+orchestrator is built: the Agent Analysis page (`submitAgentQuery`, where
+selecting an opt-in agent is the opt-in to it; see
+[Agent Analysis](agent-analysis.md#agent-selection)), `idp-cli chat`, which
+includes the Code Intelligence Agent and External MCP agents only with
+`--enable-code-intelligence` and `--enable-external-mcp-agents` respectively, and
+the SDK's `client.chat.send_message`, which includes neither. None of them
+includes the Quick Start agent. Those routes keep no
+record on `ChatSessionOwnersTable`: a `submitAgentQuery` job is a single turn with
+no conversation memory, the CLI starts a new session on every run, and the SDK
+includes no opt-in agent, so the rule is applied for as long as the orchestrator
+lives.
+
 ### Data Storage and Retention
 
 **Conversation History**:

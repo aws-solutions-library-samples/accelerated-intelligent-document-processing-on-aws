@@ -8343,11 +8343,19 @@ def publish(
     default=False,
     help="Enable Code Intelligence Agent (uses external third-party services)",
 )
+@click.option(
+    "--enable-external-mcp-agents",
+    is_flag=True,
+    default=False,
+    help="Enable the External MCP agents configured for the stack (send queries "
+    "to servers outside the deployment)",
+)
 def chat(
     stack_name: str,
     region: Optional[str],
     prompt: Optional[str],
     enable_code_intelligence: bool,
+    enable_external_mcp_agents: bool,
 ):
     """Interactive Agent Companion Chat from the terminal.
 
@@ -8386,6 +8394,7 @@ def chat(
         region=region,
         prompt=prompt,
         enable_code_intelligence=enable_code_intelligence,
+        enable_external_mcp_agents=enable_external_mcp_agents,
     )
 
 

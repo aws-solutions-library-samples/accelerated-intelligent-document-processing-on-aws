@@ -139,6 +139,8 @@ class FakeProcessor:
         self.calls: list[str] = []
         self.session_ids: list[str] = []
         self.code_intelligence_flags: list[bool] = []
+        self.external_mcp_flags: list[bool] = []
+        self.agent_ids = ["Analytics-Agent", "Error-Analyzer-Agent"]
         self.disable_level_during_setup: int | None = None
         self._orchestrator = (
             orchestrator if orchestrator is not None else (FakeOrchestrator([]))
@@ -154,11 +156,15 @@ class FakeProcessor:
             raise self._setup_error
 
     def _ensure_orchestrator(
-        self, session_id: str, enable_code_intelligence: bool = False
+        self,
+        session_id: str,
+        enable_code_intelligence: bool = False,
+        enable_external_mcp_agents: bool = False,
     ) -> None:
         self.calls.append("ensure_orchestrator")
         self.session_ids.append(session_id)
         self.code_intelligence_flags.append(enable_code_intelligence)
+        self.external_mcp_flags.append(enable_external_mcp_agents)
 
 
 @pytest.fixture(autouse=True)
@@ -200,8 +206,10 @@ def stub_agent_factory(monkeypatch):
     module = types.ModuleType("idp_common.agents.factory")
     module.agent_factory = SimpleNamespace(
         list_available_agents=lambda: [
-            {"agent_name": "Analytics Agent"},
-            {"agent_name": "Error Analyzer Agent"},
+            {"agent_id": "Analytics-Agent", "agent_name": "Analytics Agent"},
+            {"agent_id": "Error-Analyzer-Agent", "agent_name": "Error Analyzer Agent"},
+            # Registered but not in this session's orchestrator, so not listed.
+            {"agent_id": "Quick-Start-Agent", "agent_name": "Quick Start Agent"},
         ]
     )
     monkeypatch.setitem(sys.modules, "idp_common.agents.factory", module)
@@ -934,6 +942,20 @@ def test_the_code_intelligence_flag_reaches_the_orchestrator(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("enabled", [False, True])
+def test_the_external_mcp_flag_reaches_the_orchestrator(
+    enabled, recording_console, fake_idp_client, stub_agent_factory
+):
+    """External MCP agents send their query outside the deployment: opt-in only."""
+    recording_console()
+    client = fake_idp_client()
+
+    chat.run_chat(stack_name="s", prompt="hi", enable_external_mcp_agents=enabled)
+
+    assert client.processor.external_mcp_flags == [enabled]
+
+
+@pytest.mark.unit
 def test_the_available_agents_are_listed_before_the_first_prompt(
     recording_console, fake_idp_client, stub_agent_factory
 ):
@@ -944,6 +966,8 @@ def test_the_available_agents_are_listed_before_the_first_prompt(
 
     assert "Analytics Agent" in console.text
     assert "Error Analyzer Agent" in console.text
+    # Listed from the orchestrator's own agents, not the whole registry.
+    assert "Quick Start Agent" not in console.text
     assert "Type /quit to exit" in console.text
 
 

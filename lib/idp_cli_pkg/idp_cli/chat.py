@@ -30,6 +30,7 @@ def run_chat(
     region: Optional[str] = None,
     prompt: Optional[str] = None,
     enable_code_intelligence: bool = False,
+    enable_external_mcp_agents: bool = False,
 ):
     """
     Run the chat command — interactive REPL or single-shot.
@@ -38,6 +39,8 @@ def run_chat(
         stack_name: CloudFormation stack name
         region: AWS region
         prompt: If provided, run single-shot and exit
+        enable_code_intelligence: Include the Code Intelligence Agent
+        enable_external_mcp_agents: Include the External MCP agents
     """
     console.print("[bold blue]IDP Agent Chat[/bold blue]")
     console.print(f"[dim]Stack: {stack_name}[/dim]")
@@ -62,13 +65,15 @@ def run_chat(
             processor._ensure_orchestrator(
                 session_id,
                 enable_code_intelligence=enable_code_intelligence,
+                enable_external_mcp_agents=enable_external_mcp_agents,
             )
 
-        # Show available agents
+        # Show the agents this session's orchestrator was built with
         from idp_common.agents.factory import agent_factory
 
+        in_use = set(processor.agent_ids)
         agents = agent_factory.list_available_agents()
-        agent_names = [a["agent_name"] for a in agents]
+        agent_names = [a["agent_name"] for a in agents if a["agent_id"] in in_use]
         console.print(
             f"[green]✓ Ready[/green]  [dim]Agents: {' · '.join(agent_names)}[/dim]"
         )

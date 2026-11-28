@@ -207,6 +207,18 @@ The **Quick Start** agent is registered there too, but it is left out of this li
 it runs only from its own panel, which offers it to Admins (see
 [Quick Start](quick-start.md)), and `submitAgentQuery` refuses a query that names it.
 
+**Selecting Code Intelligence or an External MCP agent with a data agent.** Both
+send their query to a service outside your deployment, so a query uses them under
+the same rule as the Agent Companion Chat (see
+[Opt-in agents and conversations that hold your data](agent-companion-chat.md#opt-in-agents-and-conversations-that-hold-your-data)).
+Selecting one is what opts in to it. Once the Analytics Agent or the Error Analyzer
+Agent has returned a result while answering the query, an opt-in agent that is also
+selected answers that it is not available instead of running. One that is used
+before any data agent has returned a result runs normally, and one selected on its
+own always runs, because no data-agent result can reach it. So "Select All Agents"
+still works; to get both a code answer and an answer about your data, ask them as
+two separate queries.
+
 **Agent Selection Tips:**
 
 - Select specific agents when you know what type of analysis you need

@@ -401,28 +401,35 @@ surface (below), and the opt-in ones below.
 
 ### Opt-in agents per session
 
-`idp_common.chat_session_agents` decides which agents a chat orchestrator is built
-with. An agent registered with `opt_in` (`register_agent(..., opt_in=...)`, reported
-by `list_available_agents()`) sends its query to a service outside the deployment:
-the Code Intelligence Agent (`opt_in="code_intelligence"`) and every External MCP
-agent (`opt_in="external_mcp"`). Each is included only when the request opts in to
-its kind (`enableCodeIntelligence`, `enableExternalMcpAgents`, both literal `true`,
-both off by default).
+`idp_common.chat_session_agents` decides which agents an orchestrator is built
+with, on every route that builds one: each calls `orchestrator_selection`, which
+returns the agent ids (`select_orchestrator_agent_ids`) and the `SessionAgentGate`
+for them. An agent registered with `opt_in` (`register_agent(..., opt_in=...)`,
+reported by `list_available_agents()`) sends its query to a service outside the
+deployment: the Code Intelligence Agent (`opt_in="code_intelligence"`) and every
+External MCP agent (`opt_in="external_mcp"`). Each is included only when the request
+opts in to its kind, and how a request opts in depends on the route:
+
+| Route | Opt-in | Gate lifetime |
+|---|---|---|
+| Agent Chat processors (`agent_chat_processor`, `chat_stream_processor`) | `enableCodeIntelligence`, `enableExternalMcpAgents` (literal `true`, off by default) | one turn; the session flag below carries it to later turns |
+| `submitAgentQuery` processor (`agent_processor`) | naming the agent in `agentIds` (`requested_agents`) | one job, which has no memory; a job naming one agent runs it directly with no gate |
+| SDK/CLI chat (`idp_sdk._core.chat_processor`) | `idp-cli chat --enable-code-intelligence`, `--enable-external-mcp-agents` | the orchestrator, which is one session in one process |
 
 The data agents (`DATA_AGENT_IDS`: Analytics, Error Analyzer) read the deployment's
 own data, and their results reach later turns through memory. The two never share a
 session:
 
-- The processor hands the orchestrator a per-turn `SessionAgentGate` as
+- The route hands the orchestrator its `SessionAgentGate` as
   `session_gate` (popped by `create_orchestrator_agent`, never forwarded to a
   sub-agent). A data agent's tool calls `note_data_result` before it yields its
   result — also when its stream ends without a `result` event — and the first call
   in a session records `dataResultsAt` on the owner row
   (`chat_session_owner.record_data_results`, conditional on `#owner = :owner`,
-  first time kept). If the record cannot be written, the tool yields an error in
-  place of the result. From then on an opt-in agent's tool answers
+  first time kept; only the Agent Chat processors record). If the record cannot be
+  written, the tool yields an error in place of the result. From then on an opt-in agent's tool answers
   `UNAVAILABLE_MESSAGE` without building its sub-agent.
-- On every later turn the processor reads the flag
+- On every later turn an Agent Chat processor reads the flag
   (`chat_session_owner.holds_data_results`; a failed read counts as set) and
   `select_orchestrator_agent_ids` leaves every opt-in agent out.
 - A turn that opts in on a flagged session (`needs_new_session`) runs in a new
