@@ -9,6 +9,8 @@ SPDX-License-Identifier: MIT-0
 
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
 
+- **A document sent back from review, or reprocessed from Assessment, now gets real confidence scores.** The tracking record now keeps each page's OCR confidence and raw OCR locations, so a document rebuilt from it for **Send back for reprocessing** or **Reprocess › Start at Assessment** is assessed with the same OCR confidence as its first run. Documents processed before this change recover both locations from the OCR step's page layout. Before, every populated field came back at 100% confidence and the document completed without the review its first run had asked for. A section whose pages supplied no OCR confidence to a prompt that asks for it now carries an `assessment_ocr_confidence_unavailable` warning. See [Troubleshooting](docs/troubleshooting.md) (#2258).
+
 ## [0.6.16]
 
 ### Added

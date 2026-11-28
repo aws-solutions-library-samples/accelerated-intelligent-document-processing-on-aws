@@ -4679,6 +4679,10 @@
     "message": "Évaluation incomplète",
     "sourceHash": "c84f86d6c5af8ab0"
   },
+  "documents.processingIssue.code.assessmentOcrConfidenceUnavailable": {
+    "message": "Évaluation : confiance OCR non disponible",
+    "sourceHash": "b365494834d76032"
+  },
   "documents.processingIssue.code.assessmentPagesMissing": {
     "message": "Évaluation : pages manquantes",
     "sourceHash": "8ae34fa7283106fd"

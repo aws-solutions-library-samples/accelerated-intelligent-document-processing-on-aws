@@ -1138,6 +1138,13 @@ The assessment service automatically uses pre-generated text confidence data whe
 1. **Primary**: Uses pre-generated `textConfidence.json` files from OCR processing
 2. **Fallback**: Generates text confidence data on-demand from raw OCR for backward compatibility
 
+When neither yields anything for a page that has OCR output, and the confidence
+prompt contains `{OCR_TEXT_CONFIDENCE}`, the section records a warning-severity
+`assessment_ocr_confidence_unavailable` issue naming those pages: their values
+were scored with an empty OCR-confidence block, and the scores alone do not show
+it. The decision-model method and a prompt without the placeholder never read the
+block, so they record nothing.
+
 ### Token Usage Optimization
 ```python
 # Traditional approach (high token usage)

@@ -197,6 +197,58 @@ def serialize_page_classification_signals(page: Any) -> Dict[str, Any]:
     return signals
 
 
+def serialize_page_ocr_locations(page: Any) -> Dict[str, Any]:
+    """Serialize where a Page's raw OCR response and OCR confidence live.
+
+    ``TextUri`` holds the parsed text. Two more OCR outputs sit beside it and are
+    read back when a document is rebuilt from the tracking item (Reprocess, Send
+    back for reprocessing): ``TextConfidenceUri``, the per-line OCR confidence the
+    confidence assessment and the table parser read, and ``RawTextUri``, the raw
+    OCR response. Without them a rebuilt page had no confidence location and its
+    raw location pointed at the parsed text, so the assessment ran with no OCR
+    confidence at all (GitHub #2258).
+
+    Returns only the keys that have a value, and ``RawTextUri`` only when it
+    differs from the location ``TextUri`` stores, so a page without them adds no
+    attributes and older items stay byte-identical.
+
+    Shared by the live doc item writer (update_document) and the run-record
+    writer (create_document_run), as ``serialize_page_classification_signals``
+    is.
+    """
+    locations: Dict[str, Any] = {}
+    if page.text_confidence_uri:
+        locations["TextConfidenceUri"] = page.text_confidence_uri
+    text_uri = page.parsed_text_uri or page.raw_text_uri
+    if page.raw_text_uri and page.raw_text_uri != text_uri:
+        locations["RawTextUri"] = page.raw_text_uri
+    return locations
+
+
+#: The page-output layout every OCR backend writes (``OcrService``):
+#: ``<prefix>/pages/<page id>/result.json`` (parsed text) beside
+#: ``rawText.json`` and ``textConfidence.json``.
+_OCR_PARSED_TEXT_URI = re.compile(
+    r"^(?P<dir>s3://.+/pages/(?P<page>[^/]+)/)result\.json$"
+)
+
+
+def _sibling_ocr_output(text_uri: Any, page_id: str, filename: str) -> Optional[str]:
+    """The OCR output ``filename`` beside a page's parsed text, or ``None``.
+
+    For tracking items written before ``TextConfidenceUri`` and ``RawTextUri``
+    were stored. Derived only when ``text_uri`` has the OCR step's own layout for
+    this page id, so a location written by anything else (BDA mode stores
+    ``parsedResult.json``) is never guessed at.
+    """
+    if not isinstance(text_uri, str):
+        return None
+    match = _OCR_PARSED_TEXT_URI.match(text_uri)
+    if not match or match.group("page") != str(page_id):
+        return None
+    return f"{match.group('dir')}{filename}"
+
+
 # Confidence alerts are stored INLINE in the tracking item, and EVERY section's
 # alerts live in the same item's `Sections` list, so the list is bounded here or
 # not at all. Unbounded, it can push the item past DynamoDB's 409,600-byte
@@ -692,6 +744,10 @@ class DocumentDynamoDBService:
                     "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
                     "OcrPageDataUri": page.ocr_page_data_uri or "",
                 }
+                # Where the page's OCR confidence and raw OCR response live, so
+                # a document rebuilt from this item for reprocessing still has
+                # them (#2258). Each is omitted when absent.
+                page_data.update(serialize_page_ocr_locations(page))
                 # Optional classification signals — the confidence in Class, the
                 # model's reason for it, and the "start"/"continue" boundary
                 # signal that sectionSplitting: llm_determined splits on.
@@ -1090,12 +1146,24 @@ class DocumentDynamoDBService:
             for page_data in pages_data:
                 page_id = str(page_data.get("Id"))
                 text_uri = page_data.get("TextUri")
+                # Items written before RawTextUri and TextConfidenceUri were
+                # stored recover both from the OCR step's page layout; a page
+                # that matches neither keeps the parsed text as its raw
+                # location, as before (#2258).
+                raw_text_uri = (
+                    page_data.get("RawTextUri")
+                    or _sibling_ocr_output(text_uri, page_id, "rawText.json")
+                    or text_uri
+                )
+                text_confidence_uri = page_data.get(
+                    "TextConfidenceUri"
+                ) or _sibling_ocr_output(text_uri, page_id, "textConfidence.json")
                 doc.pages[page_id] = Page(
                     page_id=page_id,
                     image_uri=page_data.get("ImageUri"),
-                    raw_text_uri=text_uri,
-                    parsed_text_uri=text_uri,  # Set both raw and parsed to same URI
-                    text_confidence_uri=page_data.get("TextConfidenceUri"),
+                    raw_text_uri=raw_text_uri,
+                    parsed_text_uri=text_uri,
+                    text_confidence_uri=text_confidence_uri,
                     ocr_page_data_uri=page_data.get("OcrPageDataUri") or None,
                     classification=page_data.get("Class"),
                     # Stored as a DynamoDB Decimal; back to float for the model.
@@ -2263,6 +2331,7 @@ class DocumentDynamoDBService:
                     "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
                     "OcrPageDataUri": page.ocr_page_data_uri or "",
                 }
+                page_snapshot.update(serialize_page_ocr_locations(page))
                 # Snapshot the classification signals too (confidence, reason,
                 # boundary), so a historical run can be audited for why its pages
                 # were classified — and its sections split — the way they were.

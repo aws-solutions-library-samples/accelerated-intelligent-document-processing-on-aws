@@ -857,6 +857,65 @@ class AssessmentService:
 
         return ""
 
+    #: ``ProcessingIssue.code`` for a section whose confidence prompt asks for
+    #: OCR confidence ({OCR_TEXT_CONFIDENCE}) while some of its pages, though they
+    #: have OCR output, supplied none (#2258).
+    OCR_CONFIDENCE_UNAVAILABLE_CODE = "assessment_ocr_confidence_unavailable"
+
+    def _ocr_confidence_unavailable_issue(
+        self,
+        section_id: str,
+        page_ids: List[str],
+        page_count: int,
+    ) -> Optional[ProcessingIssue]:
+        """A warning when the confidence prompt was sent without OCR confidence.
+
+        The shipped confidence prompt tells the model to "account for OCR
+        confidence scores when provided". A page whose confidence block is
+        missing is therefore scored with no OCR evidence, and nothing in the
+        scores shows it: a document rebuilt for reprocessing without its
+        ``textConfidence.json`` location came back with every populated field at
+        1.0 and raised no alert. This records that on the section, where the
+        Sections panel and the Processing Report show it.
+
+        Returns ``None`` when every page supplied its confidence, or when the
+        confidence pass would not have read it anyway: the decision-model method
+        never sends it, and a prompt without ``{OCR_TEXT_CONFIDENCE}`` never asks
+        for it.
+        """
+        if not page_ids:
+            return None
+        confidence_cfg = self.config.extraction.confidence
+        if confidence_cfg.method != "llm":
+            return None
+        from idp_common.extraction.prompt_assembly import (
+            select_confidence_task_prompt,
+        )
+
+        prompt_template = select_confidence_task_prompt(self.config.extraction) or ""
+        if "{OCR_TEXT_CONFIDENCE}" not in prompt_template:
+            return None
+        return ProcessingIssue(
+            stage="assessment",
+            severity="warning",
+            code=self.OCR_CONFIDENCE_UNAVAILABLE_CODE,
+            message=(
+                f"OCR confidence data was not available for {len(page_ids)} of "
+                f"this section's {page_count} pages, so confidence for values on "
+                "them was assessed without OCR confidence scores and may be "
+                "overstated. Review these values before relying on their "
+                "confidence."
+            ),
+            root_cause=(
+                "No text confidence file could be read for pages "
+                f"{', '.join(map(str, page_ids))}, and it could not be "
+                "regenerated from the raw OCR output. Check that the OCR step's "
+                "textConfidence.json exists for these pages."
+            ),
+            section_id=section_id,
+            details={"page_ids": [str(p) for p in page_ids]},
+        )
+
     def _convert_bbox_to_geometry(
         self, bbox_coords: List[float], page_num: int
     ) -> Dict[str, Any]:
@@ -1819,6 +1878,9 @@ class AssessmentService:
 
             # Read text confidence data for confidence information
             ocr_text_confidence = ""
+            # Pages that have OCR output but whose OCR confidence could not be
+            # read or regenerated. Reported on the section below (#2258).
+            ocr_confidence_unavailable_page_ids: List[str] = []
             for page_id in sorted_page_ids:
                 if page_id not in document.pages:
                     continue
@@ -1830,6 +1892,8 @@ class AssessmentService:
                         f"\n--- Page {page_id} Text Confidence Data ---\n"
                     )
                     ocr_text_confidence += text_confidence_data_str
+                elif page.text_confidence_uri or page.raw_text_uri:
+                    ocr_confidence_unavailable_page_ids.append(page_id)
 
             t4 = time.time()
             logger.info(f"Time taken to read raw OCR results: {t4 - t3:.2f} seconds")
@@ -1993,6 +2057,13 @@ class AssessmentService:
                         },
                     )
                 ] + processing_issues
+            ocr_confidence_issue = self._ocr_confidence_unavailable_issue(
+                section_id,
+                ocr_confidence_unavailable_page_ids,
+                len(sorted_page_ids),
+            )
+            if ocr_confidence_issue is not None:
+                processing_issues = [ocr_confidence_issue] + processing_issues
             # MERGE, do not replace. Extraction already wrote its own issues here
             # (extraction_incomplete, extraction_validation_failed, ...); this step
             # owns only the assessment-stage ones. Replacing the list dropped
