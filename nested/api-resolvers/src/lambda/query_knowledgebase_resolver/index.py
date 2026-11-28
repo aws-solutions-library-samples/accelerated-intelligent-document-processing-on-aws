@@ -6,9 +6,12 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.parse
 
 import boto3
+from botocore.exceptions import ClientError
+from idp_common.chat_session_owner import claim_chat_session, recorded_owner
 from idp_common.config_scope import unscoped_is_denied
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.settings_helper import get_setting
@@ -46,6 +49,19 @@ KB_CLIENT = (
     if KB_ID
     else None
 )
+
+# Who each Bedrock knowledge-base session belongs to. Recorded in the registry the
+# chat paths share (ChatSessionOwnersTable, keyed sessionId), under a key of its own
+# so a knowledge-base session id and a chat session id never share a row.
+OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE", "")
+DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "1"))
+KB_SESSION_KEY_PREFIX = "knowledge-base#"
+
+_dynamodb = boto3.resource("dynamodb")
+
+
+class SessionNotOwned(PermissionError):
+    """The request names a knowledge-base session the caller does not own."""
 
 
 def get_kb_response(query, sessionId):
@@ -96,7 +112,15 @@ def get_kb_response(query, sessionId):
     if sessionId:
         input["sessionId"] = sessionId
 
-    logger.info("Amazon Bedrock KB Request: %s", json.dumps(input))
+    # Ids and sizes only: the question is the user's own text.
+    logger.info(
+        "Amazon Bedrock KB request: knowledgeBaseId=%s queryChars=%d "
+        "continuesSession=%s guardrail=%s",
+        KB_ID,
+        len(query or ""),
+        bool(sessionId),
+        bool(GUARDRAIL_ENV),
+    )
     try:
         resp = KB_CLIENT.retrieve_and_generate(**input)
     except Exception as e:
@@ -198,17 +222,114 @@ def _refuse_non_admin_when_unscoped_is_denied(event):
         )
 
 
+def _verified_sub(event):
+    """The caller's Cognito ``sub``, from the verified identity, or ``""``."""
+    identity = event.get("identity") or {}
+    if not isinstance(identity, dict):
+        return ""
+    claims = identity.get("claims") or {}
+    return str(identity.get("sub") or claims.get("sub") or "").strip()
+
+
+def _owner_key(session_id):
+    return f"{KB_SESSION_KEY_PREFIX}{session_id}"
+
+
+def _expires_after():
+    return int(time.time()) + DATA_RETENTION_DAYS * 24 * 60 * 60
+
+
+def _session_to_continue(event, session_id):
+    """The Bedrock session id this request may continue, or ``None`` for a new one.
+
+    A session id is recorded against the caller who started it (see
+    :func:`_record_session`). An id recorded against another caller is refused. An
+    id with no record, such as one started before sessions were recorded or one
+    whose record has expired, is not continued: the question starts a new session.
+    An invocation with no ``identity`` is the IAM-gated backend path and is not
+    checked. Fails closed: an unconfigured table, a caller with no ``sub`` or a
+    DynamoDB error refuses the request.
+    """
+    if not session_id or event.get("identity") is None:
+        return session_id
+    caller_sub = _verified_sub(event)
+    if not (OWNERS_TABLE and caller_sub):
+        logger.error("Cannot verify knowledge base session ownership; refusing")
+        raise SessionNotOwned(
+            "Unauthorized: knowledge base session ownership cannot be verified"
+        )
+    table = _dynamodb.Table(OWNERS_TABLE)
+    key = _owner_key(session_id)
+    try:
+        if claim_chat_session(
+            table,
+            key,
+            caller_sub,
+            expires_after=_expires_after(),
+            allow_new=False,
+            has_stored_messages=lambda: False,
+            holds_earlier_record=lambda: False,
+        ):
+            return session_id
+        owner = recorded_owner(table, key)
+    except ClientError as e:
+        logger.error("Could not verify knowledge base session ownership: %s", e)
+        raise SessionNotOwned(
+            "Unauthorized: knowledge base session ownership cannot be verified"
+        ) from e
+    if owner is not None:
+        logger.warning("Refusing a knowledge base session owned by another user")
+        raise SessionNotOwned(
+            "Unauthorized: this knowledge base session belongs to another user"
+        )
+    logger.info("Knowledge base session has no recorded owner; starting a new one")
+    return None
+
+
+def _record_session(event, kb_response, continued):
+    """Record a newly started Bedrock session against the caller.
+
+    The session id Bedrock returns is handed back to the browser only once it is
+    recorded as the caller's, so a later request can continue it. When it cannot
+    be recorded, it is removed from the response and the next question starts a
+    new session. A continued session was checked before the call and its record's
+    expiry moved forward then.
+    """
+    session_id = kb_response.get("sessionId")
+    if not session_id or event.get("identity") is None or session_id == continued:
+        return
+    caller_sub = _verified_sub(event)
+    recorded = False
+    if OWNERS_TABLE and caller_sub:
+        try:
+            recorded = claim_chat_session(
+                _dynamodb.Table(OWNERS_TABLE),
+                _owner_key(session_id),
+                caller_sub,
+                expires_after=_expires_after(),
+                allow_new=True,
+                has_stored_messages=lambda: False,
+                holds_earlier_record=lambda: False,
+            )
+        except ClientError as e:
+            logger.error("Could not record knowledge base session owner: %s", e)
+    if not recorded:
+        logger.warning("Knowledge base session not recorded; it will not continue")
+        kb_response.pop("sessionId", None)
+
+
 def handler(event, context):
     # Log a redacted copy — the raw event contains identity.claims and the
-    # user's natural-language query, which we truncate rather than log in full.
+    # user's natural-language query, which is left out.
     logger.info(
         "Received event: %s",
-        json.dumps(sanitize_event_for_logging(event, extra_truncate_keys=["input"])),
+        json.dumps(sanitize_event_for_logging(event, extra_deny_keys=["input"])),
     )
     _refuse_non_admin_when_unscoped_is_denied(event)
     query = event["arguments"]["input"]
-    sessionId = event["arguments"].get("sessionId") or None
+    sessionId = _session_to_continue(event, event["arguments"].get("sessionId") or None)
     kb_response = get_kb_response(query, sessionId)
+    _record_session(event, kb_response, sessionId)
     kb_response["markdown"] = markdown_response(kb_response)
     # KB response contains LLM output + document snippets. Truncate for logs
     # to limit log volume and avoid writing large PII-bearing documents

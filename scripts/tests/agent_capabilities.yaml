@@ -639,17 +639,27 @@ entries:
     note: >-
       Bedrock Knowledge Base retrieve-and-generate, with no tools. Which callers may
       query it is an authorization question recorded as GAP-02 in
-      scripts/api_rbac_expectations.yaml.
+      scripts/api_rbac_expectations.yaml. The knowledge base indexes the whole
+      output bucket, so passages can include other models' stored outputs. Bedrock
+      keeps the conversation of a session server-side, keyed on a session id the
+      browser sends back; the resolver records each session it starts against the
+      caller's Cognito sub in ChatSessionOwnersTable and continues one only for that
+      caller (_session_to_continue). The question is not logged at INFO.
     reads: [knowledge_base]
-    inputs: [user_prompt, knowledge_base_passages]
+    inputs: [user_prompt, knowledge_base_passages, conversation_history]
     outputs: [ui_rendered]
     control:
       - *safe_markdown_images
       - *safe_markdown_schema
+      - {symbol: nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py::_session_to_continue,
+         limits: conversation_history}
     test:
       - *safe_markdown_test
       - *markdown_surfaces_test
       - *csp_test
+      - lib/idp_common_pkg/tests/unit/lambdas/test_query_knowledgebase_resolver_session.py::test_another_callers_session_id_is_refused_before_bedrock
+      - lib/idp_common_pkg/tests/unit/lambdas/test_query_knowledgebase_resolver_session.py::test_a_session_id_nobody_recorded_starts_a_new_session
+      - lib/idp_common_pkg/tests/unit/lambdas/test_query_knowledgebase_resolver_session.py::test_a_new_session_is_recorded_against_the_caller
 
   data-generator-runtime:
     declared:

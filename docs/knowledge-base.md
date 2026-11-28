@@ -167,6 +167,12 @@ When the feature is enabled, the solution:
 3. This allows for a natural conversation about your documents
 4. You can start a new topic at any time by asking an unrelated question
 
+The conversation is a Bedrock Knowledge Base session. The first question starts it,
+and the stack records it as belonging to the user who asked; a later question
+continues it only for that user, and a request naming another user's session is
+refused. A session the stack has no record of, such as one started before an
+upgrade, is not continued: the question starts a new conversation.
+
 ## Best Practices
 
 1. **Be specific**: Clearly state what information you're looking for
@@ -189,4 +195,5 @@ The Knowledge Base feature maintains the security controls of the overall soluti
 - Access is restricted to authenticated users
 - Document visibility respects user permissions
 - Questions and answers are processed securely within your AWS account
+- The resolver logs the length of each question, not its text
 - No data is sent to external services beyond the configured Bedrock models
