@@ -20,7 +20,8 @@ What it proves, and how:
 4. In ``Strict`` mode, two uploads must not cross the boundary: one outside every
    tenant prefix must be refused, and one under tenant A's prefix whose metadata
    names tenant B's profile must be refused or processed under A's own profile (the
-   default "Mapping wins" mode does the latter), never under B's. In ``Off``
+   default "Mapping wins" mode does the latter), never under B's. A document held
+   for review under A's own profile counts as processed under it. In ``Off``
    mode those rows are SKIP — the stack does not claim to refuse them.
 
 Each row is PASS, FAIL, SKIP or ERROR, and only PASS is a pass. Everything created
@@ -79,6 +80,33 @@ def _document(status: int, body: Any) -> Optional[Dict[str, Any]]:
     if status == 200 and isinstance(body, dict) and body.get("ObjectKey"):
         return body
     return None
+
+
+#: Review kinds (``normalize_hitl_status``) that mean a review is still owed: the
+#: legacy flow's pending and in-progress spellings, and a review queue's
+#: ``in_review``. Finished, rejected and skipped reviews are not holds.
+_REVIEW_OWED_KINDS = frozenset({"pending", "in_progress", "in_review"})
+
+
+def _held_for_review(doc: Mapping[str, Any]) -> bool:
+    """Whether a tracked document stopped at a review point rather than finishing.
+
+    A review queue ends the run with ``ObjectStatus`` ``HITL_IN_PROGRESS`` (the
+    default on new stacks, where Review Routing is on); the legacy flow records
+    the owed review in ``HITLStatus``. Either way the document was admitted and
+    assigned its profile, which is what the ingest rows judge.
+    """
+    from idp_common.models import Status
+    from idp_common.review_queues.statuses import normalize_hitl_status
+
+    if doc.get("ObjectStatus") == Status.HITL_IN_PROGRESS.value:
+        return True
+    return normalize_hitl_status(doc.get("HITLStatus")).kind in _REVIEW_OWED_KINDS
+
+
+def _settled(doc: Mapping[str, Any]) -> bool:
+    """Finished, failed, or held for review: nothing further happens unattended."""
+    return doc.get("ObjectStatus") in ("FAILED", "COMPLETED") or _held_for_review(doc)
 
 
 def _pick_profile_for(
@@ -369,9 +397,8 @@ def run_verify(
             )
             s3.put_object(Bucket=input_bucket, Key=key, Body=document, **extra)
             uploaded.append(key)
-            doc = wait_for(
-                key, lambda d: d.get("ObjectStatus") in ("FAILED", "COMPLETED")
-            )
+            doc = wait_for(key, _settled)
+            held = doc is not None and _held_for_review(doc)
             if not doc:
                 add(name, _ERROR, f"{key!r} was not tracked within {timeout_seconds}s.")
             elif doc.get("ObjectStatus") == "FAILED" and doc.get(
@@ -380,14 +407,16 @@ def run_verify(
                 add(name, _PASS, str(doc.get("ConfigAssignmentError"))[:200])
             elif (
                 may_stay_in is not None
-                and doc.get("ObjectStatus") == "COMPLETED"
+                and (doc.get("ObjectStatus") == "COMPLETED" or held)
                 and tenant_for_profile(doc.get("ConfigVersion"), [may_stay_in])
             ):
+                hold_note = " and held for review" if held else ""
                 add(
                     name,
                     _PASS,
                     f"Processed under {doc.get('ConfigVersion')!r}, its own tenant's "
-                    f"profile; the other tenant's profile in its metadata was not used.",
+                    f"profile{hold_note}; the other tenant's profile in its metadata "
+                    f"was not used.",
                 )
             else:
                 add(

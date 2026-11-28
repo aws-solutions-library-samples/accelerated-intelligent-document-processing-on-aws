@@ -659,8 +659,20 @@ def test_uncovered_prefix_detection():
 class FakeStack:
     """A stack that behaves correctly unless told to leak."""
 
-    def __init__(self, *, leak=False, strict_refuses=True, metadata_wins=False):
+    def __init__(
+        self,
+        *,
+        leak=False,
+        strict_refuses=True,
+        metadata_wins=False,
+        admitted_status="COMPLETED",
+        hitl_status=None,
+    ):
         self.leak = leak
+        # The status an admitted document ends on: COMPLETED, or HITL_IN_PROGRESS
+        # where Review Routing holds it for review (the default on new stacks).
+        self.admitted_status = admitted_status
+        self.hitl_status = hitl_status
         self.strict_refuses = strict_refuses
         # Models a mapping in "Upload metadata wins" mode, the one way an unrefused
         # upload can end up under the profile its metadata named.
@@ -691,8 +703,9 @@ class FakeStack:
         self.docs[Key] = {
             "ObjectKey": Key,
             "ConfigVersion": None if rejected else resolved,
-            "ObjectStatus": "FAILED" if rejected else "COMPLETED",
+            "ObjectStatus": "FAILED" if rejected else self.admitted_status,
             "ConfigAssignmentError": "Refused: crosses a tenant" if rejected else None,
+            "HITLStatus": None if rejected else self.hitl_status,
         }
 
     def delete_object(self, Bucket, Key):
@@ -761,6 +774,7 @@ MAPPINGS = [
 
 
 def _verify(stack, mode="Strict", mappings=MAPPINGS, **kwargs):
+    kwargs.setdefault("timeout_seconds", 0)
     return run_verify(
         isolation_mode=mode,
         tenants=[ACME, GLOBEX],
@@ -773,7 +787,6 @@ def _verify(stack, mode="Strict", mappings=MAPPINGS, **kwargs):
         make_password=stack.make_password,
         delete_cognito_user=stack.delete_cognito,
         s3=stack,
-        timeout_seconds=0,
         sleep=lambda s: None,
         run_id="r1",
         **kwargs,
@@ -843,6 +856,166 @@ def test_metadata_ignored_in_favour_of_the_tenants_own_profile_is_a_pass():
     assert row.outcome == TenantVerifyOutcome.PASS
     assert "acme-invoices" in row.detail
     assert by_name["ingest:outside-every-tenant"].outcome == TenantVerifyOutcome.FAIL
+
+
+CROSS = "ingest:acme-prefix-with-globex-metadata"
+OUTSIDE = "ingest:outside-every-tenant"
+
+
+def _rows(result):
+    return {c.name: c for c in result.checks}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "admitted_status, hitl_status",
+    [
+        ("HITL_IN_PROGRESS", "in_review"),  # a review queue's hold
+        ("HITL_IN_PROGRESS", None),
+        ("CLASSIFYING", "PendingReview"),  # the legacy flow's owed review
+        ("CLASSIFYING", "Review Pending"),
+        ("CLASSIFYING", "InProgress"),
+    ],
+)
+def test_held_for_review_under_its_own_tenants_profile_is_a_pass(
+    admitted_status, hitl_status
+):
+    """With Review Routing on, the document stops at the review point instead of
+    COMPLETED. It was admitted under its own tenant's profile, which is what the
+    row judges, so it passes like a completed one."""
+    result = _verify(
+        FakeStack(
+            strict_refuses=False,
+            admitted_status=admitted_status,
+            hitl_status=hitl_status,
+        )
+    )
+    row = _rows(result)[CROSS]
+    assert row.outcome == TenantVerifyOutcome.PASS, row.detail
+    assert "acme-invoices" in row.detail and "held for review" in row.detail
+
+
+@pytest.mark.unit
+def test_completed_under_its_own_tenants_profile_is_a_pass():
+    row = _rows(_verify(FakeStack(strict_refuses=False)))[CROSS]
+    assert row.outcome == TenantVerifyOutcome.PASS
+    assert "held for review" not in row.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "admitted_status, hitl_status",
+    [
+        ("COMPLETED", None),
+        ("HITL_IN_PROGRESS", "in_review"),
+        ("CLASSIFYING", "PendingReview"),
+        ("FAILED", None),
+        ("RUNNING", None),
+    ],
+)
+def test_processed_under_the_other_tenants_profile_fails_in_any_status(
+    admitted_status, hitl_status
+):
+    result = _verify(
+        FakeStack(
+            strict_refuses=False,
+            metadata_wins=True,
+            admitted_status=admitted_status,
+            hitl_status=hitl_status,
+        )
+    )
+    row = _rows(result)[CROSS]
+    assert row.outcome == TenantVerifyOutcome.FAIL
+    assert "globex-w2" in row.detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("admitted_status", ["COMPLETED", "HITL_IN_PROGRESS"])
+def test_a_refusal_is_a_pass_on_both_strict_rows(admitted_status):
+    rows = _rows(_verify(FakeStack(admitted_status=admitted_status)))
+    assert rows[CROSS].outcome == TenantVerifyOutcome.PASS
+    assert rows[OUTSIDE].outcome == TenantVerifyOutcome.PASS
+    assert "Refused" in rows[CROSS].detail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("hitl_status", [None, "in_review"])
+def test_outside_every_tenant_held_for_review_is_still_a_fail(hitl_status):
+    """Outside every tenant only a refusal passes; a review hold is not one."""
+    rows = _rows(
+        _verify(
+            FakeStack(
+                strict_refuses=False,
+                admitted_status="HITL_IN_PROGRESS",
+                hitl_status=hitl_status,
+            )
+        )
+    )
+    assert rows[OUTSIDE].outcome == TenantVerifyOutcome.FAIL
+
+
+@pytest.mark.unit
+def test_the_review_hold_vocabulary_comes_from_idp_common():
+    """Every HITLStatus spelling idp_common reads as a review still owed counts as
+    a hold, and none it reads as finished does."""
+    from idp_common.review_queues.statuses import (
+        LegacyHitlStatus,
+        ReviewStatus,
+        is_review_finished,
+        normalize_hitl_status,
+    )
+    from idp_sdk._core.tenancy_verify import _held_for_review
+
+    spellings = [s.value for s in (*LegacyHitlStatus, *ReviewStatus)]
+    owed = [v for v in spellings if not is_review_finished(v)]
+    finished = [v for v in spellings if is_review_finished(v)]
+    assert owed and finished
+    for value in owed:
+        assert normalize_hitl_status(value).kind != "none", value
+        assert _held_for_review({"ObjectStatus": "RUNNING", "HITLStatus": value})
+    for value in finished:
+        assert not _held_for_review({"ObjectStatus": "COMPLETED", "HITLStatus": value})
+    assert _held_for_review({"ObjectStatus": "HITL_IN_PROGRESS"})
+    assert not _held_for_review({"ObjectStatus": "REJECTED"})
+
+
+@pytest.mark.unit
+def test_the_wait_ends_on_a_review_hold_and_not_before():
+    """The wait for a strict row stops once the document has finished, failed or
+    been held for review, and keeps polling while it is still being processed."""
+    from idp_sdk._core.tenancy_verify import _settled
+
+    assert _settled({"ObjectStatus": "HITL_IN_PROGRESS"})
+    assert _settled({"ObjectStatus": "COMPLETED"})
+    assert _settled({"ObjectStatus": "FAILED"})
+    assert _settled({"ObjectStatus": "CLASSIFYING", "HITLStatus": "PendingReview"})
+    assert not _settled({"ObjectStatus": "RUNNING"})
+    assert not _settled({"ObjectStatus": "EXTRACTING", "HITLStatus": "Completed"})
+
+
+@pytest.mark.unit
+def test_a_review_hold_reached_after_polling_ends_the_wait():
+    """Driven through run_verify with a real timeout: the document is RUNNING on
+    the first poll and held for review on the second, and the row passes."""
+    stack = FakeStack(strict_refuses=False, admitted_status="HITL_IN_PROGRESS")
+    polls: Dict[str, int] = {}
+    real_api = stack.api
+
+    def api(field, args, token):
+        status, body = real_api(field, args, token)
+        key = args.get("ObjectKey", "")
+        if field == "getDocument" and token == "admin-token" and "-cross-" in key:
+            polls[key] = polls.get(key, 0) + 1
+            if polls[key] == 1:
+                body = {**body, "ObjectStatus": "RUNNING"}
+        return status, body
+
+    stack.api = api
+    ticks = iter(range(1000))
+    result = _verify(stack, timeout_seconds=100, clock=lambda: next(ticks))
+    row = _rows(result)[CROSS]
+    assert row.outcome == TenantVerifyOutcome.PASS, row.detail
+    assert list(polls.values()) == [2]
 
 
 @pytest.mark.unit
