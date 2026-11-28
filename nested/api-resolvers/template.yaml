@@ -2913,6 +2913,9 @@ Resources:
           AWS_PARTITION: !Ref AWS::Partition
           MODEL_ID: !Ref KnowledgeBaseModelId
           SETTINGS_PARAMETER: !Ref SettingsParameterName
+          # Records which user each knowledge base session belongs to.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           GUARDRAIL_ID_AND_VERSION:
             !If [
               HasGuardrail,
@@ -2928,6 +2931,13 @@ Resources:
                 - bedrock:Retrieve
                 - bedrock:RetrieveAndGenerate
               Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*"
+            # Read, register and extend the owner row of a knowledge base session.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ChatSessionOwnersTableName}"
             - Effect: Allow
               Action:
                 - "bedrock:InvokeModel"

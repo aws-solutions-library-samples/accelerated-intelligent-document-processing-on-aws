@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **A Document Knowledge Base conversation continues only for the user who started it.** The stack records each knowledge base session against the user who asked its first question, and a follow-up question that names a session recorded for another user is refused before the knowledge base is queried. A session with no record, such as one started before upgrading, is not continued; the question starts a new conversation. The query resolver now logs the length of each question instead of its text. See [Follow-up Questions](docs/knowledge-base.md#follow-up-questions).
+
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
 
 ## [0.6.16]

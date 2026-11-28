@@ -1490,6 +1490,7 @@ operations:
     groups: ANY_GROUP
     kind: read
     skip_allowed: true
+    ownership: true
     enforced_in: nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py
     args: { input: "hi" }
     known_gap: GAP-02
@@ -1499,7 +1500,10 @@ operations:
       against it returns that content in synthesised form, and the call bills
       Bedrock inference. GAP-02 records that the resolver itself still has no
       group check — the dispatcher floor is now the only group gate, which is
-      why the gap stays open rather than being retired here.
+      why the gap stays open rather than being retired here. ownership: the
+      sessionId argument continues a Bedrock session only for the caller it is
+      recorded against (verified sub, in ChatSessionOwnersTable); another
+      caller's session id is refused.
 
   # ==========================================================================
   # Inbox (idp_common.notifications) — self-scoped by verified identity
