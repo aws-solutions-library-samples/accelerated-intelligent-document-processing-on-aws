@@ -9,6 +9,8 @@ SPDX-License-Identifier: MIT-0
 
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
 
+- **The SDK's admin sign-in helper and the stack's Web UI OAuth URL registration now keep exactly the app-client settings Cognito's update accepts.** Both read the Cognito app client and write it back, because Cognito's update clears any setting it is not sent. The SDK (`tenancy verify`) and the repository's API RBAC harness used to send back everything except a fixed list of read-only fields, so they failed once Cognito began returning a new read-only field, `ClientType`. The stack's Web UI OAuth URL registration (API Gateway hosting) sent back only a fixed list of fields, so each stack create, update or delete cleared any other setting on the client, such as refresh-token rotation or the authentication session validity. Both now take the field list from the AWS SDK's own model of the update.
+
 ## [0.6.16]
 
 ### Added

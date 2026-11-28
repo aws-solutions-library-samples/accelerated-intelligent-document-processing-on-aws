@@ -16,8 +16,10 @@ enabling ADMIN_USER_PASSWORD_AUTH on the app client and restoring the original
 auth flows afterward. Keeping that in one place means a change to the stack
 shape (output key names, resource logical ids) is fixed once.
 
-Requires: awscli v2 on PATH; credentials with Cognito admin + CloudFormation
-read (the deploy-account creds are enough).
+Requires: awscli v2 on PATH, boto3, and this checkout's ``idp_common`` importable
+(``make setup``, or the first-party PYTHONPATH the ``make`` targets pin);
+credentials with Cognito admin + CloudFormation read (the deploy-account creds
+are enough).
 """
 
 import json
@@ -195,38 +197,39 @@ def resolve_stack(stack, region):
 # ----------------------------------------------------------------------------
 # App-client auth-flow management (capture-and-restore)
 # ----------------------------------------------------------------------------
+def _cognito(ctx):
+    """A boto3 ``cognito-idp`` client in the stack's region.
+
+    The app-client read and write go through boto3 rather than the CLI on
+    purpose: the fields sent back to UpdateUserPoolClient are chosen from the
+    SDK model that parsed the describe response, and the CLI bundles its own
+    botocore whose model can differ from the Python one. Both calls therefore
+    stay in one SDK. boto3 resolves credentials through the same chain the CLI
+    does (environment, ``AWS_PROFILE``, shared files, instance role).
+    """
+    import boto3
+
+    return boto3.client("cognito-idp", region_name=ctx["region"])
+
+
 def get_auth_flows(ctx):
-    return (
-        aws(
-            "cognito-idp",
-            "describe-user-pool-client",
-            "--user-pool-id",
-            ctx["user_pool"],
-            "--client-id",
-            ctx["client"],
-            "--query",
-            "UserPoolClient.ExplicitAuthFlows",
-            region=ctx["region"],
-        )
-        or []
-    )
-
-
-# Properties UpdateUserPoolClient does NOT accept back. Everything else the
-# describe call returns has to be re-sent, because the update is a full replace.
-_CLIENT_READ_ONLY_FIELDS = frozenset(
-    {"ClientSecret", "CreationDate", "LastModifiedDate"}
-)
+    try:
+        client = _cognito(ctx).describe_user_pool_client(
+            UserPoolId=ctx["user_pool"], ClientId=ctx["client"]
+        )["UserPoolClient"]
+    except Exception as exc:  # noqa: BLE001 - same contract as aws()
+        raise RuntimeError(f"describe-user-pool-client failed: {exc}") from exc
+    return list(client.get("ExplicitAuthFlows") or [])
 
 
 def set_auth_flows(ctx, flows):
     """Change ONLY the app client's auth flows, preserving everything else.
 
     UpdateUserPoolClient is a full replace, not a patch: any property omitted
-    from the request is cleared. Sending just --explicit-auth-flows therefore
-    wiped ReadAttributes, WriteAttributes, SupportedIdentityProviders,
-    CallbackURLs, LogoutURLs, AllowedOAuthFlows/Scopes and the token validities
-    off the UI app client every time the harness minted a token — which
+    from the request is cleared. Sending just the auth flows therefore wiped
+    ReadAttributes, WriteAttributes, SupportedIdentityProviders, CallbackURLs,
+    LogoutURLs, AllowedOAuthFlows/Scopes and the token validities off the UI
+    app client every time the harness minted a token — which
     * broke the Web UI's hosted-UI login (no callback URLs, no OAuth flows),
     * broke external IdP federation (no supported providers), and
     * removed the WriteAttributes restriction that keeps end users from writing
@@ -235,37 +238,24 @@ def set_auth_flows(ctx, flows):
     resource is unchanged in the template, so the stack update skips it and the
     out-of-band edit survives.
 
-    So read the current client, change one field, and send the whole thing back.
+    So read the current client, change one field, and send back exactly the
+    fields the update accepts, per the SDK model
+    (``idp_common.cognito_user_pool_client``). A fixed list of read-only fields
+    to drop broke when Cognito started returning ``ClientType``.
     """
-    current = (
-        aws(
-            "cognito-idp",
-            "describe-user-pool-client",
-            "--user-pool-id",
+    from idp_common.cognito_user_pool_client import (
+        update_user_pool_client_preserving,
+    )
+
+    try:
+        update_user_pool_client_preserving(
+            _cognito(ctx),
             ctx["user_pool"],
-            "--client-id",
             ctx["client"],
-            "--query",
-            "UserPoolClient",
-            region=ctx["region"],
+            ExplicitAuthFlows=list(flows),
         )
-        or {}
-    )
-    desired = {
-        k: v
-        for k, v in current.items()
-        if k not in _CLIENT_READ_ONLY_FIELDS and v is not None
-    }
-    desired["UserPoolId"] = ctx["user_pool"]
-    desired["ClientId"] = ctx["client"]
-    desired["ExplicitAuthFlows"] = list(flows)
-    aws(
-        "cognito-idp",
-        "update-user-pool-client",
-        "--cli-input-json",
-        json.dumps(desired),
-        region=ctx["region"],
-    )
+    except Exception as exc:  # noqa: BLE001 - same contract as aws()
+        raise RuntimeError(f"update-user-pool-client failed: {exc}") from exc
 
 
 def enable_admin_auth(ctx):

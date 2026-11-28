@@ -14647,23 +14647,22 @@ Resources:
             else:
                 cb |= urls
                 lo |= urls
-            # Preserve every writable field cognito requires on update.
+            # The update is a full replace, so send back every described field
+            # the update accepts, per the same SDK model that parsed the describe:
+            # no read-only field (ClientType) is sent and no writable one cleared.
+            # (A field this runtime's botocore does not model stays invisible.)
+            accepted = cognito.meta.service_model.operation_model(
+                "UpdateUserPoolClient"
+            ).input_shape.members
             update = {
-                "UserPoolId": pool_id,
-                "ClientId": client_id,
-                "CallbackURLs": sorted(cb),
-                "LogoutURLs": sorted(lo),
+                k: v for k, v in client.items() if k in accepted and v is not None
             }
-            for k in (
-                "ClientName", "RefreshTokenValidity", "AccessTokenValidity",
-                "IdTokenValidity", "TokenValidityUnits", "ReadAttributes",
-                "WriteAttributes", "ExplicitAuthFlows", "SupportedIdentityProviders",
-                "AllowedOAuthFlows", "AllowedOAuthScopes",
-                "AllowedOAuthFlowsUserPoolClient", "PreventUserExistenceErrors",
-                "EnableTokenRevocation",
-            ):
-                if k in client:
-                    update[k] = client[k]
+            update.update(
+                UserPoolId=pool_id,
+                ClientId=client_id,
+                CallbackURLs=sorted(cb),
+                LogoutURLs=sorted(lo),
+            )
             cognito.update_user_pool_client(**update)
 
         def handler(event, context):

@@ -1398,7 +1398,7 @@ verify-idp-federation: ## Federated sign-in checks vs a deployed stack (STACK_NA
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks/SKILL.md)
 endif
-	$(PYTHON) scripts/security/live_checks/verify_federated_signin.py \
+	$(RUN_FIRST_PARTY) scripts/security/live_checks/verify_federated_signin.py \
 	    --stack-name $(STACK_NAME) \
 	    --region $(if $(REGION),$(REGION),us-west-2) \
 	    --idp-function $(IDP_FUNCTION) \
