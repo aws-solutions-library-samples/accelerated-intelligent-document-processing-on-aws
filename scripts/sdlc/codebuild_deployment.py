@@ -5843,7 +5843,9 @@ def judge_terraform_parity(report):
         f"{report.compared} resources compared, "
         f"{len(report.explained)} difference(s) explained by "
         "terraform/tools/parity_baseline.json, "
-        f"{len(report.unreadable)} resource(s) Cloud Control cannot read"
+        f"{len(report.unreadable)} resource(s) Cloud Control cannot read, "
+        f"{len(report.through_target)} per-target polic(y/ies) compared through "
+        "their targets"
     )
     if report.ok:
         return {"status": "same", "detail": f"{tally}; {context}", "findings": []}

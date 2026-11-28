@@ -520,6 +520,10 @@ def _preflight_clients(account="123456789012", roles=None, buckets=()):
         "dynamodb": _Client(pages={"list_tables": [{"TableNames": []}]}),
         "logs": _Client(pages={"describe_log_groups": [{"logGroups": []}]}),
         "cognito-idp": _Client(pages={"list_user_pools": [{"UserPools": []}]}),
+        # Bound by the sweep even with nothing recorded, so a real client is
+        # never built: every service the preflight touches is a fake.
+        "kms": _Client(),
+        "bedrock-data-automation": _Client(),
     }
 
 
@@ -537,10 +541,10 @@ class _Preflight(tut.Run):
 
 
 def test_the_real_preflight_runs_with_the_drivers_own_settings(tmp_path):
-    """The preflight reaches the migration test's sweep, which reads settings the
-    migration test defines (its variant and upstream IAM path). Every other test
-    here stubs the phases, so a Settings missing either passed them all while the
-    driver failed on its first live step with an AttributeError."""
+    """The preflight reaches the migration test's sweep, which reads a setting
+    only the migration test defined (its variant, in ``Sweeper._gateways``).
+    Every other test here stubs the phases, so a Settings missing it passed them
+    all while the driver failed on its first live step with an AttributeError."""
     settings = tut.parse_args(
         [
             "--stack-name",

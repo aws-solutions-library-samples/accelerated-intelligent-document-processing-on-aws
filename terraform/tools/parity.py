@@ -378,6 +378,7 @@ class Identifiers:
         self.by_key = {(r.stack, r.logical_id): r for r in side[0]}
         self.templates = templates
         self._schemas: dict[str, list[str] | None] = {}
+        self._attributes: dict[tuple[str, str, str], str | None] = {}
 
     def primary(self, cfn_type: str) -> list[str] | None:
         if cfn_type not in self._schemas:
@@ -419,9 +420,12 @@ class Identifiers:
             res = self.by_key.get((stack, target[0]))
             if res is None or res.cfn_type == STACK_TYPE:
                 return None
-            props = read(self.cc, res.cfn_type, res.physical_id) or {}
-            found = props.get(target[1])
-            return found if isinstance(found, str) else None
+            key = (stack, target[0], target[1])
+            if key not in self._attributes:
+                props = read(self.cc, res.cfn_type, res.physical_id) or {}
+                found = props.get(target[1])
+                self._attributes[key] = found if isinstance(found, str) else None
+            return self._attributes[key]
         return None
 
     def identifier(self, res: Resource) -> str | None:
@@ -551,6 +555,7 @@ def compare(
         return side.identifier(res) if side else res.physical_id
 
     used: set[tuple[str, str]] = set()
+    compared_types: set[str] = set()
     for a, b in pairs:
         if a.cfn_type == STACK_TYPE:
             continue
@@ -587,6 +592,7 @@ def compare(
                     if policy:
                         side["Policy"] = policy
         report.compared += 1
+        compared_types.add(a.cfn_type)
         found = diff(normalise(left, names), normalise(right, names))
         unexplained = []
         for prop, text in found:
@@ -603,7 +609,10 @@ def compare(
         )
         for _, prop, text in unexplained:
             log(f"    {prop}: {text}")
-    # A queue policy counts as compared only if every queue's policy was read.
+    # A queue policy counts as compared only if every queue's policy was read,
+    # and an IAM policy only if a role, user or group was compared at all.
+    if not compared_types & {"AWS::IAM::Role", "AWS::IAM::User", "AWS::IAM::Group"}:
+        through_target.discard("AWS::IAM::Policy")
     for res in per_target:
         if res.cfn_type in through_target:
             report.through_target.append(

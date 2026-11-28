@@ -439,15 +439,17 @@ What fails the row is the tool's own verdict against
 
 | Outcome | Row |
 |---|---|
-| no difference beyond what the baseline explains, and every baseline entry explained something | passes; the build log gives the counts, including how many differences the baseline explained and how many resources Cloud Control cannot read (listed by the tool, not compared) |
-| a property difference the baseline does not explain, a resource on one side only, or a baseline entry that explained nothing (stale) | fails, beginning `differs:` with the four counts, then each finding by resource and property path (at most `TERRAFORM_PARITY_LISTED_DIFFERENCES`, then a count) |
+| no difference beyond what the baseline explains, and every baseline entry explained something | passes; the build log gives the counts, including how many differences the baseline explained, how many resources Cloud Control cannot read (listed by the tool, not compared), and how many per-target policies (`AWS::SQS::QueuePolicy`, `AWS::IAM::Policy`, which Terraform writes once per target and lists nowhere) were compared through their queues' and roles' policies instead |
+| a property difference the baseline does not explain, a resource on one side only (other than a per-target policy compared through its targets), or a baseline entry that explained nothing (stale) | fails, beginning `differs:` with the four counts, then each finding by resource and property path (at most `TERRAFORM_PARITY_LISTED_DIFFERENCES`, then a count) |
 | the twin did not deploy, had not finished `TERRAFORM_PARITY_TWIN_WAIT_SECONDS` after the Terraform deployment, or the comparison raised | fails, beginning `not compared:` with the reason, so it is not read as a difference |
 
 A difference the baseline should explain is fixed by adding one entry to the
 baseline, with its reason, which `scripts/tests/gate_exemptions.json` already
 registers; a real difference is fixed in the translator. ⚠️ The baseline was measured
-on one nested stack of the prototype and the tool has not been run against the full
-stack, so expect the first parity runs to fail on differences nobody has triaged yet.
+on one nested stack of the prototype. The normaliser now covers the representation
+differences a full-stack comparison of 0.6.16 showed (generated queue names, key ARNs,
+empty `VpcConfig`, CloudFormation's own tags), but that run also showed differences
+nobody has triaged yet, so expect the first parity runs to fail on some.
 
 The findings name a resource and a property path, never a value. The tool's
 per-property text carries both sides' values, and some resources return a secret

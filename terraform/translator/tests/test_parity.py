@@ -752,3 +752,14 @@ def test_a_list_difference_names_the_elements_that_differ(parity):
             'only in terraform=[{"PolicyName": "c"}]',
         )
     ]
+
+
+def test_an_iam_policy_with_no_compared_role_is_still_one_sided(parity):
+    report = compare_sides(
+        parity,
+        side("idp", ("", "RolePolicy", "AWS::IAM::Policy", "idp-RolePolicy-1")),
+        side("tfidp"),
+        ReadingCloudControl({}),
+    )
+    assert report.only_cfn == ["RolePolicy"]
+    assert report.through_target == []

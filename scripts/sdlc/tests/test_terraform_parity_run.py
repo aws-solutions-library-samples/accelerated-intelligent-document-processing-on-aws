@@ -299,6 +299,18 @@ def test_the_verdict_is_the_tools_own(cbd, tool, fields, status):
     assert (status == "same") == report.ok
 
 
+def test_the_row_counts_the_policies_compared_through_their_targets(cbd, tool):
+    """A per-target policy is not a one-sided resource, so the row passes; the
+    count keeps that visible rather than silent."""
+    report = _report(tool, through_target=["P (AWS::SQS::QueuePolicy: q)"] * 2)
+    verdict = cbd.judge_terraform_parity(report)
+    assert verdict["status"] == "same"
+    assert (
+        "2 per-target polic(y/ies) compared through their targets"
+        in (verdict["detail"])
+    )
+
+
 def test_the_listed_findings_are_bounded(cbd, tool):
     n = cbd.TERRAFORM_PARITY_LISTED_DIFFERENCES + 7
     diffs = [(f"R{i}", ".P", "value") for i in range(n)]

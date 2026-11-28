@@ -423,11 +423,14 @@ class Settings:
     #: Inherited plumbing reads this; this test keeps its state in its work
     #: directory, so there is no mirror and no flag for one.
     state_mirror: Optional[str] = field(default=None, init=False)
-    #: The inherited sweep reads these two of the migration test's settings: the
-    #: variant decides whether it looks for AgentCore gateways, and the upstream
-    #: IAM path names roles another deployment pre-created. This test deploys the
-    #: standard module and pre-creates nothing, so both hold the migration test's
-    #: base values and neither is a flag.
+    #: The migration test's settings for its variant and upstream IAM path. The
+    #: inherited sweep's ``Sweeper._gateways`` reads ``variant`` during preflight
+    #: (to decide whether to look for AgentCore gateways). Every reader of
+    #: ``upstream_iam_path`` is on a path this driver overrides or does not run,
+    #: so it is here so that the Settings the inherited Run is given has every
+    #: field that Run reads. This test deploys the standard module and
+    #: pre-creates nothing, so both hold the migration test's base values and
+    #: neither is a flag.
     variant: str = field(default=tmt.BASE_VARIANT, init=False)
     upstream_iam_path: Optional[str] = field(default=None, init=False)
 
