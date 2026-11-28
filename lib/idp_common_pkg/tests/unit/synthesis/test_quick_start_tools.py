@@ -364,6 +364,7 @@ class TestActivateConfigVersion:
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
 
         mgr = Mock()
+        mgr.list_config_versions.return_value = [{"versionName": "bootstrap-paystub"}]
         with patch(
             "idp_common.config.configuration_manager.ConfigurationManager",
             return_value=mgr,
@@ -387,6 +388,7 @@ class TestActivateConfigVersion:
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
 
         mgr = Mock()
+        mgr.list_config_versions.return_value = []
         mgr.activate_version.side_effect = ValueError("version not found")
         with patch(
             "idp_common.config.configuration_manager.ConfigurationManager",
@@ -394,6 +396,50 @@ class TestActivateConfigVersion:
         ):
             out = json.loads(bt.activate_config_version_impl("missing"))
         assert out == {"activated": False, "error": "version not found"}
+
+    @pytest.mark.parametrize(
+        ("version", "listed"),
+        [
+            ("default", [{"versionName": "default", "isActive": False}]),
+            ("docsplit", [{"versionName": "docsplit", "managed": True}]),
+        ],
+    )
+    def test_a_protected_profile_is_refused_before_anything_is_activated(
+        self, version, listed
+    ):
+        """The same profiles the write tools refuse; none of them is activated."""
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        mgr = Mock()
+        mgr.list_config_versions.return_value = listed
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager",
+            return_value=mgr,
+        ):
+            out = json.loads(bt.activate_config_version_impl(version))
+        mgr.activate_version.assert_not_called()
+        assert out["activated"] is False
+        assert out["refused"] is True
+        assert "View/Edit Configuration" in out["error"]
+
+    def test_an_unreadable_profile_list_activates_nothing(self):
+        """A listing that cannot be read is not taken to mean "nothing is managed"."""
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+
+        mgr = Mock()
+        mgr.list_config_versions.side_effect = RuntimeError("table unavailable")
+        with patch(
+            "idp_common.config.configuration_manager.ConfigurationManager",
+            return_value=mgr,
+        ):
+            out = json.loads(bt.activate_config_version_impl("quickstart-1"))
+        mgr.activate_version.assert_not_called()
+        assert out == {
+            "config_version": "quickstart-1",
+            "activated": False,
+            "refused": False,
+            "error": "The profile could not be checked; try again.",
+        }
 
 
 class TestRefineSchema:

@@ -22,7 +22,7 @@ import {
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import { activatesWithoutAsking, newQuickStartProfileName } from './quickStartDiscoveryTarget';
-import { typedText, visibleChatText, withPanelContext } from './panelContext';
+import { contextClassNames, typedText, visibleChatText, withPanelContext } from './panelContext';
 import { SupportPromptGroup, LoadingBar } from '@cloudscape-design/chat-components';
 import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
@@ -431,9 +431,11 @@ const AgentChatLayout = ({
   const handleUploadComplete = useCallback(
     (result: QuickStartUploadResult) => {
       // The Quick Start agent reads this summary, so it stays English; it is sent hidden, in a panel-context block.
-      const names = result.classNames.length ? result.classNames.join(', ') : 'document type(s)';
+      // Only class names go into the block: the names come from the user's documents.
+      const classNames = contextClassNames(result.classNames);
+      const names = classNames.length ? classNames.join(', ') : 'document type(s)';
       const discoveryKind = result.totalDocuments === 1 ? 'Single-document' : 'Multi-document';
-      const typeCount = result.clustersFound || result.classNames.length;
+      const typeCount = result.clustersFound || classNames.length;
       const summaryFor = (activeness: 'already' | 'not') =>
         `I uploaded ${result.totalDocuments} document(s). ${discoveryKind} discovery inferred ` +
         `${typeCount} document type(s): ${names}, saved as a new configuration profile. Please summarize what was ` +

@@ -336,12 +336,50 @@ def create_config_version_impl(schema_text: str, version_name: str = "") -> str:
 
 
 def activate_config_version_impl(version_name: str) -> str:
+    """Activate ``version_name``, refusing 'default' and stack-managed profiles.
+
+    Every profile Quick Start creates is neither: ``create_config_version`` refuses
+    to write one, and Discovery saves the panel's uploads into a new profile. So the
+    same rule as the write tools limits activation to profiles of that kind, and
+    switching back to 'default' or to a preset stays on Configuration > View/Edit
+    Configuration, where an Admin selects it themselves.
+    """
     from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.synthesis import bootstrap as bootstrap_mod
 
     if not version_name:
         return json.dumps({"activated": False, "error": "version_name is required"})
+    config_manager = ConfigurationManager()
     try:
-        ConfigurationManager().activate_version(version_name)
+        bootstrap_mod.refuse_protected_profile(
+            version_name, config_manager=config_manager
+        )
+    except bootstrap_mod.ProtectedProfileError:
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "activated": False,
+                "refused": True,
+                "error": (
+                    f"'{version_name}' is 'default' or a stack-managed profile. "
+                    "Quick Start activates only the profiles it creates; the user "
+                    "can activate this one on Configuration > View/Edit "
+                    "Configuration."
+                ),
+            }
+        )
+    except Exception:
+        logger.error(f"Could not check profile '{version_name}'", exc_info=True)
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "activated": False,
+                "refused": False,
+                "error": "The profile could not be checked; try again.",
+            }
+        )
+    try:
+        config_manager.activate_version(version_name)
         return json.dumps({"config_version": version_name, "activated": True})
     except Exception as e:
         logger.error(f"Error activating config version '{version_name}': {e}")
@@ -723,7 +761,9 @@ def activate_config_version(version_name: str) -> str:
     Activates the named version and deactivates all others, so newly uploaded
     documents are processed with it. Call this after create_config_version (or
     after the user confirms) so the user can start processing without manually
-    activating in the Configuration page.
+    activating in the Configuration page. 'default' and stack-managed profiles
+    are refused: the user activates those on Configuration > View/Edit
+    Configuration.
 
     Args:
         version_name: The config version to activate (e.g. the value returned by

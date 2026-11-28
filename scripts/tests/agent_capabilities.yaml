@@ -462,22 +462,30 @@ entries:
       Document Analytics does not list it, and submitAgentQuery and the analytics
       processor refuse it, so AgentProcessorFunction is not a role it runs under.
       On a stack deployed with EnableQuickStartWidget=false, both chat routes refuse
-      it too.
+      it too. After an upload, the panel sends the document type names Discovery
+      reported in a hidden panel-context block, reduced to class names
+      (contextClassNames). refuse_protected_profile limits activate_config_version as
+      well as the write tools, so it activates no 'default' or stack-managed profile.
     roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction]
     reads: [configuration_profiles]
-    inputs: [user_prompt, conversation_history, configuration]
+    inputs: [user_prompt, conversation_history, configuration, document_content]
     outputs: [ui_rendered, configuration_write, generation_queue]
     control:
       - *safe_markdown_images
       - *safe_markdown_schema
       - {symbol: lib/idp_common_pkg/idp_common/synthesis/bootstrap.py::refuse_protected_profile,
          limits: configuration_write}
+      - {symbol: src/ui/src/components/agent-chat/panelContext.ts::contextClassNames,
+         limits: document_content}
     test:
       - *safe_markdown_test
       - *markdown_surfaces_test
       - lib/idp_common_pkg/tests/unit/config/test_managed_flag_survives_saves.py::test_bootstrap_leaves_a_managed_profile_as_it_was
       - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestProtectedProfiles::test_a_stack_managed_profile_is_refused
       - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestSetProcessingOptions::test_a_protected_profile_is_refused
+      - lib/idp_common_pkg/tests/unit/synthesis/test_quick_start_tools.py::TestActivateConfigVersion::test_a_protected_profile_is_refused_before_anything_is_activated
+      - lib/idp_common_pkg/tests/unit/synthesis/test_quick_start_tools.py::TestRequestGenerationGuards::test_a_protected_profile_is_refused_before_anything_is_queued
+      - "src/ui/src/components/agent-chat/__tests__/panelContext.test.ts::is applied to the names the chat layout sends"
 
   sample-calculator-agent:
     surfaces:
@@ -506,10 +514,15 @@ entries:
       - tool:lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::DiscoveryAgent._create_agent.get_document_image
     note: >-
       Multi-document discovery. The tools serve images loaded before the agent runs;
-      they make no AWS call of their own.
+      they make no AWS call of their own. The agent's system prompt and model come
+      from the job's configuration profile. Its `classification` label is reduced to
+      a class name (DiscoveredClass, through discovered_class_name) before it reaches
+      the job record the UI shows, the reflection prompt and the Quick Start chat.
+      The reflection call and the configuration write run in
+      MultiDocDiscoverySaveFunction, which holds no tools, so it is not a role here.
     roles: [MultiDocDiscoveryAnalyzeFunction]
     reads: [discovery_samples]
-    inputs: [document_content]
+    inputs: [document_content, configuration]
     outputs: [configuration_write, ui_rendered]
     control:
       - {symbol: lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::DocumentVisualTool.get_document_image,
@@ -519,14 +532,21 @@ entries:
          limits: configuration_write}
       - {symbol: lib/idp_common_pkg/idp_common/discovery/discovered_text.py::clean_text,
          limits: ui_rendered}
+      - {symbol: lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::discovered_class_name,
+         limits: ui_rendered}
       - *safe_markdown_images
       - *safe_markdown_schema
     test:
       - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestToolLimits::test_new_documents_past_the_sample_size_are_refused
       - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestToolLimits::test_a_document_outside_the_cluster_is_refused
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestToolLimits::test_analyze_cluster_binds_both_tools
       - &clean_text_test lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestCleanText::test_urls_images_and_html_are_removed
       - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_cluster_result_is_cleaned
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_cluster_label_is_a_class_name
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_a_rebuilt_class_carries_a_class_name
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_reflection_prompt_receives_class_names
       - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_reflection_report_is_cleaned
+      - lib/idp_common_pkg/tests/unit/test_multi_doc_discovery_save_handler.py::test_labels_and_a_failed_reflection_reach_the_job_record_as_plain_text
       - *safe_markdown_test
 
   discovery-single-document:

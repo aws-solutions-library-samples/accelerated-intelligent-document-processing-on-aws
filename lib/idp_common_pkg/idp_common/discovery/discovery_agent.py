@@ -25,8 +25,16 @@ from pydantic import BaseModel, Field
 
 from idp_common import image
 from idp_common.bedrock.client import BedrockClient
+from idp_common.config.class_names import (
+    MAX_DISCOVERED_CLASS_NAME_CHARS,
+    sanitize_class_name,
+)
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
-from idp_common.discovery.discovered_text import clean_report, clean_schema_text
+from idp_common.discovery.discovered_text import (
+    clean_report,
+    clean_schema_text,
+    clean_text,
+)
 from idp_common.discovery.regional_defaults import default_analysis_model_id
 
 logger = logging.getLogger(__name__)
@@ -46,8 +54,31 @@ class ClusterSchemaOutput(BaseModel):
     )
 
 
+def discovered_class_name(label: Any, fallback: str) -> str:
+    """The model's ``classification`` label as a class name, or ``fallback``.
+
+    The label is cleaned like every other string discovery writes
+    (:func:`~idp_common.discovery.discovered_text.clean_text`), then reduced to the
+    class-name character set (:func:`~idp_common.config.class_names.sanitize_class_name`,
+    the rule the single-document path applies to ``$id``) and capped at
+    :data:`~idp_common.config.class_names.MAX_DISCOVERED_CLASS_NAME_CHARS`. A label
+    with nothing usable left, or one that is not a string, becomes ``fallback``.
+    """
+    if not isinstance(label, str):
+        return fallback
+    name = sanitize_class_name(clean_text(label))
+    name = name[:MAX_DISCOVERED_CLASS_NAME_CHARS].strip("-")
+    return name or fallback
+
+
 class DiscoveredClass:
-    """Represents a discovered document class from a cluster."""
+    """Represents a discovered document class from a cluster.
+
+    ``classification`` is stored as a class name (:func:`discovered_class_name`)
+    and ``error`` as plain text, whichever path builds the object: the cluster
+    analysis, or the save step rebuilding it from the analysis results. Both reach
+    the job record the UI shows, the reflection prompt and the Quick Start chat.
+    """
 
     def __init__(
         self,
@@ -59,11 +90,13 @@ class DiscoveredClass:
         error: Optional[str] = None,
     ):
         self.cluster_id = cluster_id
-        self.classification = classification
+        self.classification = discovered_class_name(
+            classification, f"Cluster_{cluster_id}"
+        )
         self.json_schema = json_schema
         self.document_count = document_count
         self.sample_doc_ids = sample_doc_ids
-        self.error = error
+        self.error = clean_text(error) if error else error
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to serializable dict."""
@@ -488,7 +521,8 @@ class DiscoveryAgent:
 
             return DiscoveredClass(
                 cluster_id=cluster_id,
-                classification=result.get("classification", f"Cluster_{cluster_id}"),
+                # DiscoveredClass reduces the label to a class name.
+                classification=result.get("classification"),
                 # Cleaned here, where the model's output enters the pipeline, so
                 # the job record the UI shows and the profile it saves into both
                 # carry plain text.
@@ -502,7 +536,7 @@ class DiscoveryAgent:
             return DiscoveredClass(
                 cluster_id=cluster_id,
                 classification=f"Error_Cluster_{cluster_id}",
-                json_schema={"error": str(e)},
+                json_schema={"error": clean_text(str(e))},
                 document_count=cluster_size,
                 sample_doc_ids=[],
                 error=str(e),
@@ -611,7 +645,7 @@ class DiscoveryAgent:
                     results[idx] = DiscoveredClass(
                         cluster_id=cluster_id,
                         classification=f"Error_Cluster_{cluster_id}",
-                        json_schema={"error": str(e)},
+                        json_schema={"error": clean_text(str(e))},
                         document_count=cluster_result.cluster_sizes.get(cluster_id, 0),
                         sample_doc_ids=[],
                         error=str(e),
