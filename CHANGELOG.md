@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **`idp-cli tenancy verify` passes a cross-tenant upload that is held for review under its own tenant's profile.** The check for an upload under one tenant's prefix whose metadata names another tenant's profile waited only for `COMPLETED` or `FAILED`, so on a stack with Review Routing on, the default for new stacks, the document stopped at `HITL_IN_PROGRESS` and the row failed although the other tenant's profile had not been used. A document held for review, by a review queue or by the legacy review flow, now counts as processed under the profile it was assigned. Processing under the other tenant's profile still fails in any status, and an upload outside every tenant still passes only when it is refused. See [Multi-Tenant Isolation](docs/multi-tenancy.md).
+
 - **Revoking or creating an MCP service credential on the MCP Configuration page no longer times out while the gateway is slow to update.** A revoke now returns as soon as the credential is refused, and takes it off the gateway and deletes its app client and secret straight afterwards. A create or rotation waits up to 8 seconds for the gateway. If the gateway takes longer, the credential is kept and its secret is still shown once, with a note that it is still activating, which the credentials table also shows. It starts working when the gateway update finishes, and a rotation with no overlap keeps the old credential working until then. The daily sweep finishes any of this work that is left. Before, the request could fail even though the change had been made, and a create could lose the new secret. See [Service credentials](docs/mcp-server.md#service-credentials).
 
 ## [0.6.16]
