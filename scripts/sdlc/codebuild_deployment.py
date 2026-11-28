@@ -2908,8 +2908,9 @@ _CPM_SETTLED_STATUSES = frozenset(
 )
 # The abort is one synchronous resolver call (Timeout: 60). Read for longer than
 # the function can run, and do not retry: a retried abort holds the `finally`
-# for minutes before the mappings are dropped, and a missed abort costs only a
-# document reported as still in flight.
+# for minutes before the mappings are dropped. A missed abort leaves a document
+# unsettled, and the cleanup then leaves what it reads in place rather than
+# failing it.
 _CPM_ABORT_CLIENT_CONFIG = _BotoConfig(
     read_timeout=120, connect_timeout=10, retries={"total_max_attempts": 1}
 )
@@ -2977,7 +2978,14 @@ def _cpm_invoke_abort(lam, function_name, keys):
 
 
 def _cpm_settle(
-    keys, *, observe, timeout, interval, clock=time.monotonic, sleep=time.sleep
+    keys,
+    *,
+    observe,
+    timeout,
+    interval,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    stop=lambda: False,
 ):
     """Wait, bounded, until every key's document has stopped moving.
 
@@ -2989,8 +2997,9 @@ def _cpm_settle(
     writes ABORTED even when its StopExecution call failed.
 
     Returns `(unsettled, keep_rows)`. `unsettled` describes every document still
-    in flight when the bound was hit; it is reported, never failed on, since the
-    step asserts routing only. `keep_rows` holds the documents that were aborted
+    in flight when the bound was hit, or when `stop()` (the run's ABORT_TESTS)
+    turned true; it is reported, never failed on, since the step asserts routing
+    only. `keep_rows` holds the documents that were aborted
     while QUEUED: their SQS message may not have been consumed yet, and the queue
     processor refuses to start a document only while its tracking row reads
     ABORTED -- with no row at all it starts it, and the execution then fails at
@@ -3018,7 +3027,7 @@ def _cpm_settle(
                 continue
             still.append(key)
         pending = still
-        if not pending or clock() >= deadline:
+        if not pending or clock() >= deadline or stop():
             break
         sleep(interval)
     return [f"{key}: {last[key]}" for key in pending], keep_rows
@@ -3259,6 +3268,7 @@ def test_step15_config_prefix_mappings(stack_name):
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠️  could not delete mapping {prefix}: {e}")
         keep_rows = set()
+        in_flight = set()
         if to_stop:
             sfn = boto3.client("stepfunctions", config=_THROTTLE_RETRY_CONFIG)
 
@@ -3285,14 +3295,23 @@ def test_step15_config_prefix_mappings(stack_name):
                 observe=_observe,
                 timeout=_CPM_SETTLE_TIMEOUT_SECONDS,
                 interval=_CPM_SETTLE_POLL_SECONDS,
+                stop=ABORT_TESTS.is_set,
             )
             if unsettled:
+                # An unsettled document was not stopped -- its abort did not take,
+                # or the wait was cut short -- so it may still start or be running.
+                # Deleting what it reads would fail it at OCR, the failure this
+                # cleanup exists to prevent, so its object, its row and the
+                # profile are left for the stack teardown instead.
+                in_flight = {entry.split(": ", 1)[0] for entry in unsettled}
                 print(
-                    f"  ⚠️  {len(unsettled)} documents were still in flight after "
-                    f"{_CPM_SETTLE_TIMEOUT_SECONDS}s; cleaning up anyway "
-                    f"(routing was already asserted): " + "; ".join(unsettled)
+                    f"  ⚠️  {len(unsettled)} documents were still in flight; leaving "
+                    f"their objects, rows and profile {mapped_profile} for the stack "
+                    f"teardown (routing was already asserted): " + "; ".join(unsettled)
                 )
         for key in uploaded:
+            if key in in_flight:
+                continue
             try:
                 s3.delete_object(Bucket=input_bucket, Key=key)
                 # A document aborted while QUEUED keeps its ABORTED row: it is
@@ -3309,7 +3328,7 @@ def test_step15_config_prefix_mappings(stack_name):
         # Last, and only after the mappings are gone: `deleteConfigVersion` refuses
         # while a mapping still names the profile, which is a guard this feature
         # adds and which this cleanup order respects rather than fights.
-        if created_profile:
+        if created_profile and not in_flight:
             try:
                 ddb.delete_item(
                     TableName=config_table,

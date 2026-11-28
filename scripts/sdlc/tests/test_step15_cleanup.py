@@ -241,8 +241,13 @@ class TestStep15Cleanup:
         out = capsys.readouterr().out
         assert "5 documents were still in flight" in out
         assert f"{RUN}-bob1/untagged.pdf: status='QUEUED'" in out
-        # Cleanup still runs, after the wait.
-        assert {e[1] for e in world.events if e[0] == "s3_delete"} == set(_keys())
+        # A document that was not stopped may still start, so nothing it reads
+        # is deleted: only the reject-by-design document is cleaned up, and the
+        # profile is left for the stack teardown. The mappings still go.
+        assert {e[1] for e in world.events if e[0] == "s3_delete"} == {REJECTED}
+        assert {e[1] for e in world.events if e[0] == "row_delete"} == {REJECTED}
+        assert not [e for e in world.events if e[0] == "profile_delete"]
+        assert len([e for e in world.events if e[0] == "mapping_delete"]) == 3
 
 
 @pytest.mark.unit
@@ -319,6 +324,20 @@ class TestCpmSettle:
         assert unsettled == []
         assert keep == {"queued-aborted"}
         assert now[0] == 0  # nothing to wait for, so no sleep
+
+    def test_the_runs_abort_ends_the_wait_at_once(self):
+        clock, sleep, now = self._clock()
+        unsettled, _ = cd._cpm_settle(
+            ["a"],
+            observe=lambda k: ("OCR", "arn:x", "RUNNING"),
+            timeout=300,
+            interval=10,
+            clock=clock,
+            sleep=sleep,
+            stop=lambda: True,
+        )
+        assert unsettled == ["a: status='OCR' execution='RUNNING'"]
+        assert now[0] == 0
 
     def test_a_document_waiting_for_review_does_not_hold_the_wait(self):
         # An abort that did not take can leave a document at the review point,
