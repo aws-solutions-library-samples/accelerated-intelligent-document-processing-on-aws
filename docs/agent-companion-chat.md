@@ -125,8 +125,8 @@ with neither its memory nor the record. Memory written before this behaviour was
 introduced carries no expiry.
 
 The same agent selection and the same within-turn rule apply wherever the
-orchestrator is built: the Agent Analysis page and the Troubleshoot dialog
-(`submitAgentQuery`, where selecting an opt-in agent is the opt-in to it; see
+orchestrator is built: the Agent Analysis page (`submitAgentQuery`, where
+selecting an opt-in agent is the opt-in to it; see
 [Agent Analysis](agent-analysis.md#agent-selection)), `idp-cli chat`, which
 includes the Code Intelligence Agent and External MCP agents only with
 `--enable-code-intelligence` and `--enable-external-mcp-agents` respectively, and

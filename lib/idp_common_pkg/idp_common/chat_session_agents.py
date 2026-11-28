@@ -61,8 +61,9 @@ SESSION_REPLACED_EVENT = "session_replaced"
 
 #: What an opt-in agent answers with in a turn where a data agent already ran.
 UNAVAILABLE_MESSAGE = (
-    "This agent is not available in a conversation that includes Analytics or "
-    "Error Analyzer results. Start a new conversation to use it."
+    "This agent is not available once Analytics or Error Analyzer results have "
+    "been returned. Ask it separately: in a new conversation, or in a query "
+    "without the Analytics and Error Analyzer agents."
 )
 
 

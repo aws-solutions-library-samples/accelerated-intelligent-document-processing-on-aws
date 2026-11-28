@@ -12,8 +12,10 @@ stand-in ``strands.Agent`` raises once it has the tools), and the tools are then
 run in the order a model might call them.
 
 So the assertion that the Code Intelligence Agent is refused after the Analytics
-Agent goes red if the processor stops passing ``session_gate``, and the one about
-Quick Start goes red if it stops selecting.
+Agent goes red if the processor stops passing ``session_gate``. The Quick Start
+test pins the processor's explicit refusal, which runs before the selection; on
+this route that refusal, not the selection's own Quick Start filter, is what keeps
+Quick Start out.
 """
 
 import asyncio
