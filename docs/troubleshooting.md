@@ -243,6 +243,15 @@ extracted values are unchanged. Check the Classification step's section boundari
 and the OCR step's page list; when *every* page is absent the section is skipped
 outright and reported as unscored instead.
 
+**`assessment_ocr_confidence_unavailable` on a section (warning).** The confidence
+prompt asks for OCR confidence (`{OCR_TEXT_CONFIDENCE}`), and for the pages named
+in the issue no `textConfidence.json` could be read or regenerated from the raw OCR
+output, so their values were scored without OCR confidence and the scores may be
+higher than the evidence supports. The extracted values are unchanged, and the
+issue does not by itself send the document to review, so check those values before
+relying on their confidence. Confirm the OCR step's `textConfidence.json` exists
+under the page's output prefix, then reprocess from Assessment.
+
 **`classification_failed`, `classification_page_no_content` or
 `classification_invalid_class_fallback` on a section.** Classification could not
 produce a usable class for one or more of the section's pages, so those pages have

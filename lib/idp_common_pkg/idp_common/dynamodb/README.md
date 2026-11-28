@@ -298,7 +298,15 @@ shows up as a missing field in the UI, not as a schema error.
 - **SK**: `none` - Sort key (always "none" for documents)
 - **ObjectKey**: Document identifier
 - **ObjectStatus**: Document processing status
-- **Pages**: List of page objects with Id, Class, ImageUri, TextUri
+- **Pages**: List of page objects with Id, Class, ImageUri, TextUri (the parsed
+  text) and OcrPageDataUri, plus two OCR locations written only when the page has
+  them: TextConfidenceUri (the per-line OCR confidence, `textConfidence.json`) and
+  RawTextUri (the raw OCR response, `rawText.json`; omitted when it equals
+  TextUri). `get_document` reads both back, so a document rebuilt from the row for
+  Reprocess or Send back keeps the OCR confidence the confidence assessment reads.
+  For a row written before they were stored, it recovers both from the OCR step's
+  page layout when TextUri is `<prefix>/pages/<page id>/result.json`, and leaves
+  any other TextUri (BDA mode's `parsedResult.json`) as it is
 - **Sections**: List of section objects with Id, PageIds, Class, OutputJSONUri
 - **Metering**: JSON string of the document's cumulative metering: `Document.metering_baseline` (the usage of earlier runs) plus `Document.metering` (this run's own), written as `idp_common.utils.cumulative_metering(document)`. Reading the row back puts that total in `Document.metering`
 - **TTL**: ExpiresAfter timestamp

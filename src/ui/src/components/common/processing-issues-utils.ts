@@ -218,6 +218,12 @@ const issueCodeMessages = defineMessages<Record<string, NoMessageValues>>({
     description:
       "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when list rows could not be confidence-scored, so those rows have no confidence. English is the code itself; translate it as a short readable label.",
   },
+  assessment_ocr_confidence_unavailable: {
+    id: 'documents.processingIssue.code.assessmentOcrConfidenceUnavailable',
+    defaultMessage: 'assessment_ocr_confidence_unavailable',
+    description:
+      "Processing issue code, shown above the issue's message in the Processing issues popover of the Document Sections table, and before it in the edit page's Processing Report when the section's result records the issue. Raised by confidence assessment when some of a section's pages had no OCR confidence data, so their values were scored without OCR confidence. English is the code itself; translate it as a short readable label.",
+  },
   assessment_pages_missing: {
     id: 'documents.processingIssue.code.assessmentPagesMissing',
     defaultMessage: 'assessment_pages_missing',
