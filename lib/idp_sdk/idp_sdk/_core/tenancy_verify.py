@@ -398,6 +398,7 @@ def run_verify(
             s3.put_object(Bucket=input_bucket, Key=key, Body=document, **extra)
             uploaded.append(key)
             doc = wait_for(key, _settled)
+            held = doc is not None and _held_for_review(doc)
             if not doc:
                 add(name, _ERROR, f"{key!r} was not tracked within {timeout_seconds}s.")
             elif doc.get("ObjectStatus") == "FAILED" and doc.get(
@@ -406,16 +407,16 @@ def run_verify(
                 add(name, _PASS, str(doc.get("ConfigAssignmentError"))[:200])
             elif (
                 may_stay_in is not None
-                and (doc.get("ObjectStatus") == "COMPLETED" or _held_for_review(doc))
+                and (doc.get("ObjectStatus") == "COMPLETED" or held)
                 and tenant_for_profile(doc.get("ConfigVersion"), [may_stay_in])
             ):
-                held = " and held for review" if _held_for_review(doc) else ""
+                hold_note = " and held for review" if held else ""
                 add(
                     name,
                     _PASS,
                     f"Processed under {doc.get('ConfigVersion')!r}, its own tenant's "
-                    f"profile{held}; the other tenant's profile in its metadata was "
-                    f"not used.",
+                    f"profile{hold_note}; the other tenant's profile in its metadata "
+                    f"was not used.",
                 )
             else:
                 add(

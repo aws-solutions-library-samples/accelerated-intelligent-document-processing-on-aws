@@ -3569,7 +3569,8 @@ and download its own tenant's document and is refused the other's. On a Strict
 stack it also uploads a document outside every tenant, which must be refused at
 ingest, and one under the first tenant's prefix whose metadata names the second
 tenant's profile, which must be refused or processed under the first tenant's own
-profile, never the second's. It temporarily enables
+profile, never the second's; a document held for review under the first tenant's
+profile counts as processed under it. It temporarily enables
 admin password authentication on the app client and restores the original setting,
 and it removes every user and object it created; a cleanup failure is reported as an
 error. Each tenant needs an enabled prefix mapping to one of its own profiles before

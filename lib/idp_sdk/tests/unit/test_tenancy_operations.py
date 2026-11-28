@@ -774,6 +774,7 @@ MAPPINGS = [
 
 
 def _verify(stack, mode="Strict", mappings=MAPPINGS, **kwargs):
+    kwargs.setdefault("timeout_seconds", 0)
     return run_verify(
         isolation_mode=mode,
         tenants=[ACME, GLOBEX],
@@ -786,7 +787,6 @@ def _verify(stack, mode="Strict", mappings=MAPPINGS, **kwargs):
         make_password=stack.make_password,
         delete_cognito_user=stack.delete_cognito,
         s3=stack,
-        timeout_seconds=0,
         sleep=lambda s: None,
         run_id="r1",
         **kwargs,
@@ -977,6 +977,45 @@ def test_the_review_hold_vocabulary_comes_from_idp_common():
         assert not _held_for_review({"ObjectStatus": "COMPLETED", "HITLStatus": value})
     assert _held_for_review({"ObjectStatus": "HITL_IN_PROGRESS"})
     assert not _held_for_review({"ObjectStatus": "REJECTED"})
+
+
+@pytest.mark.unit
+def test_the_wait_ends_on_a_review_hold_and_not_before():
+    """The wait for a strict row stops once the document has finished, failed or
+    been held for review, and keeps polling while it is still being processed."""
+    from idp_sdk._core.tenancy_verify import _settled
+
+    assert _settled({"ObjectStatus": "HITL_IN_PROGRESS"})
+    assert _settled({"ObjectStatus": "COMPLETED"})
+    assert _settled({"ObjectStatus": "FAILED"})
+    assert _settled({"ObjectStatus": "CLASSIFYING", "HITLStatus": "PendingReview"})
+    assert not _settled({"ObjectStatus": "RUNNING"})
+    assert not _settled({"ObjectStatus": "EXTRACTING", "HITLStatus": "Completed"})
+
+
+@pytest.mark.unit
+def test_a_review_hold_reached_after_polling_ends_the_wait():
+    """Driven through run_verify with a real timeout: the document is RUNNING on
+    the first poll and held for review on the second, and the row passes."""
+    stack = FakeStack(strict_refuses=False, admitted_status="HITL_IN_PROGRESS")
+    polls: Dict[str, int] = {}
+    real_api = stack.api
+
+    def api(field, args, token):
+        status, body = real_api(field, args, token)
+        key = args.get("ObjectKey", "")
+        if field == "getDocument" and token == "admin-token" and "-cross-" in key:
+            polls[key] = polls.get(key, 0) + 1
+            if polls[key] == 1:
+                body = {**body, "ObjectStatus": "RUNNING"}
+        return status, body
+
+    stack.api = api
+    ticks = iter(range(1000))
+    result = _verify(stack, timeout_seconds=100, clock=lambda: next(ticks))
+    row = _rows(result)[CROSS]
+    assert row.outcome == TenantVerifyOutcome.PASS, row.detail
+    assert list(polls.values()) == [2]
 
 
 @pytest.mark.unit
