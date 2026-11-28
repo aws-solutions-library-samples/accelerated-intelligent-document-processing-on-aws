@@ -221,7 +221,7 @@ def test_iam_role_splits_policies_and_dependents_wait_for_them(schema):
         }
     }
     out = render(t, schema)["main.tf"]
-    assert 'resource "aws_iam_role_policy" "r_0"' in out
+    assert 'resource "aws_iam_role_policy" "r_p"' in out
     assert 'resource "aws_iam_role_policy_attachment" "r"' in out
     fn = out[out.index('resource "aws_lambda_function"') :]
     # Dependants wait on the role's propagation wait, which itself waits on
@@ -229,7 +229,7 @@ def test_iam_role_splits_policies_and_dependents_wait_for_them(schema):
     assert "time_sleep.r_iam" in fn
     sleep = out[out.index('resource "time_sleep" "r_iam"') :]
     sleep = sleep[: sleep.index("\n}")]
-    assert "aws_iam_role_policy.r_0" in sleep
+    assert "aws_iam_role_policy.r_p" in sleep
     assert "aws_iam_role_policy_attachment.r" in sleep
     # A function name is required by the provider and absent here.
     assert "function_name = " in fn

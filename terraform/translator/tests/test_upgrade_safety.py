@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -952,3 +953,271 @@ def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard)
     }
     assert encrypted & kept, "no retained bucket is encrypted with the key"
     assert not any("kms_alias" in a for a in retained)
+
+
+# ------------------------------------------------- C2: inline policies of a role
+# An inline policy is identified by its role and its name. Labelled by position,
+# a policy inserted ahead of others renamed every later address's policy; the
+# replacement of one address was created before the deposed object of another
+# address holding the same name was destroyed, which deleted the policy just
+# written (a 0.6.15 -> 0.6.16 upgrade lost the state machine's pipeline-hooks
+# invoke grant that way).
+def _policy(name: str, action: str) -> dict:
+    return {
+        "PolicyName": name,
+        "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": action, "Resource": "*"}],
+        },
+    }
+
+
+def _role_template(policies: list[dict]) -> dict:
+    return {
+        "Resources": {
+            "SmRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "AssumeRolePolicyDocument": {"Version": "2012-10-17"},
+                    "Policies": policies,
+                },
+            }
+        }
+    }
+
+
+#: SAM names a resource's policies <Role>Policy<n> by position, so inserting one
+#: renumbers every later policy: what was SmRolePolicy1 is now SmRolePolicy2.
+SAM_BEFORE = [
+    _policy("SmRolePolicy0", "a:A"),
+    _policy("SmRolePolicy1", "b:B"),
+    _policy("DeadLetterQueuePolicy", "sqs:SendMessage"),
+    _policy("SmRolePolicy2", "c:C"),
+]
+SAM_AFTER = [
+    _policy("SmRolePolicy0", "new:Front"),
+    _policy("SmRolePolicy1", "a:A"),
+    _policy("SmRolePolicy2", "b:B"),
+    _policy("DeadLetterQueuePolicy", "sqs:SendMessage"),
+    _policy("SmRolePolicy3", "new:Middle"),
+    _policy("SmRolePolicy4", "c:C"),
+]
+
+
+def _tree_policies(tr: Translator) -> dict[str, tuple[str, str]]:
+    """``{address: (role, name expression)}`` of every inline policy."""
+    out = {}
+    for text in tr.emitted.values():
+        for label, body in re.findall(
+            r'^resource "aws_iam_role_policy" "([\w-]+)" \{\n(.*?)^\}',
+            text,
+            re.M | re.S,
+        ):
+            role = re.search(r"^  role\s*=\s*(.+?)\s*$", body, re.M).group(1)
+            name = re.search(r"^  name\s*=\s*(.+?)\s*$", body, re.M).group(1)
+            out[f"aws_iam_role_policy.{label}"] = (role, name)
+    return out
+
+
+def _simulated_plan(
+    before: dict[str, tuple[str, str]],
+    after: dict[str, tuple[str, str]],
+    moves: list[tuple[str, str]],
+) -> tuple[set, set, set]:
+    """What Terraform plans for the inline policies: the (role, name) pairs it
+    destroys (an address that is gone, or the deposed object of a replaced
+    one), the pairs it creates, and the addresses it replaces. A name change
+    forces replacement of an ``aws_iam_role_policy``."""
+    targets = dict(moves)
+
+    def resolve(address: str) -> str:
+        seen = set()
+        while address in targets and address not in seen:
+            seen.add(address)
+            address = targets[address]
+        return address
+
+    destroyed, created, replaced, kept = set(), set(), set(), set()
+    for address, obj in before.items():
+        now = resolve(address)
+        if now not in after:
+            destroyed.add(obj)
+            continue
+        kept.add(now)
+        if after[now] != obj:
+            replaced.add(now)
+            destroyed.add(obj)
+            created.add(after[now])
+    created |= {obj for a, obj in after.items() if a not in kept}
+    return destroyed, created, replaced
+
+
+def test_inline_policies_are_labelled_by_name(schema):
+    out = translated(_role_template(SAM_BEFORE), schema).render()["main.tf"]
+    for label, name in [
+        ("sm_role_policy0", "SmRolePolicy0"),
+        ("sm_role_dead_letter_queue_policy", "DeadLetterQueuePolicy"),
+    ]:
+        block = out[out.index(f'resource "aws_iam_role_policy" "{label}" {{') :]
+        assert block.splitlines()[1] == f'  name = "{name}"'
+    assert not re.search(r'"aws_iam_role_policy" "sm_role_[0-9]+"', out)
+    sleep = out[out.index('resource "time_sleep" "sm_role_iam"') :]
+    sleep = sleep[: sleep.index("\n}")]
+    assert "aws_iam_role_policy.sm_role_policy2" in sleep
+
+
+def test_an_inserted_policy_never_destroys_a_name_the_upgrade_creates(schema):
+    """Front and middle insertions renumber SAM's names; every address keeps its
+    name, so the upgrade updates policies in place and replaces none."""
+    before = _tree_policies(translated(_role_template(SAM_BEFORE), schema))
+    after = _tree_policies(translated(_role_template(SAM_AFTER), schema))
+    destroyed, created, replaced = _simulated_plan(before, after, [])
+    assert replaced == set()
+    assert destroyed & created == set()
+    assert destroyed == set()
+    assert {n for _, n in created} == {'"SmRolePolicy3"', '"SmRolePolicy4"'}
+
+
+def test_the_positional_labels_are_moved_by_name_on_upgrade(schema, tmp_path):
+    """A deployment of a module before format 3 holds ``<role>_<n>`` addresses.
+    Each moves to the address now holding the same name, whatever position the
+    policy has now, so the upgrade replaces and deletes nothing."""
+    previous_module = tmp_path / "prev"
+    blocks = []
+    for i, p in enumerate(SAM_BEFORE):
+        blocks.append(
+            f'resource "aws_iam_role_policy" "sm_role_{i}" {{\n'
+            f'  name   = "{p["PolicyName"]}"\n'
+            "  role   = aws_iam_role.sm_role.name\n"
+            "  policy = jsonencode({})\n"
+            "}\n"
+        )
+    previous_module.mkdir()
+    (previous_module / "main.tf").write_text("\n".join(blocks))
+    old_addresses = [f"aws_iam_role_policy.sm_role_{i}" for i in range(len(SAM_BEFORE))]
+    previous = {
+        "resources": [
+            entry(
+                "",
+                "SmRole",
+                "AWS::IAM::Role",
+                ["aws_iam_role.sm_role", *old_addresses],
+            )
+        ]
+    }
+    tr = translated(_role_template(SAM_AFTER), schema)
+    current = tree_resources(tr)
+    names = moved.module_policy_names(previous_module)
+    result = moved.plan_moves(previous, current, {}, names)
+    assert result.errors == []
+    assert set(result.moves) == {
+        ("aws_iam_role_policy.sm_role_0", "aws_iam_role_policy.sm_role_policy0"),
+        ("aws_iam_role_policy.sm_role_1", "aws_iam_role_policy.sm_role_policy1"),
+        (
+            "aws_iam_role_policy.sm_role_2",
+            "aws_iam_role_policy.sm_role_dead_letter_queue_policy",
+        ),
+        ("aws_iam_role_policy.sm_role_3", "aws_iam_role_policy.sm_role_policy2"),
+    }
+    before = {
+        a: ("aws_iam_role.sm_role.name", f'"{p["PolicyName"]}"')
+        for a, p in zip(old_addresses, SAM_BEFORE)
+    }
+    destroyed, created, replaced = _simulated_plan(
+        before, _tree_policies(tr), result.moves
+    )
+    assert replaced == set() and destroyed == set()
+    assert destroyed & created == set()
+    # Without the previous module's names a positional address cannot be paired,
+    # and the translation fails rather than letting the upgrade destroy it.
+    result = moved.plan_moves(previous, current, {})
+    assert len(result.errors) == len(old_addresses)
+    assert "--previous-module" in result.errors[0]
+
+
+def test_a_dropped_policy_is_destroyed_and_nothing_else_moves_onto_it(schema):
+    """The format-3 manifest records each policy's name, so the next release
+    pairs by name with no module to read."""
+    tr = translated(_role_template(SAM_BEFORE), schema)
+    previous = {"resources": tree_resources(tr)}
+    role = next(e for e in previous["resources"] if e["logicalId"] == "SmRole")
+    assert role["inlinePolicies"]["aws_iam_role_policy.sm_role_policy1"] == (
+        '"SmRolePolicy1"'
+    )
+    trimmed = [p for p in SAM_BEFORE if p["PolicyName"] != "SmRolePolicy1"]
+    now = translated(_role_template(trimmed), schema)
+    result = moved.plan_moves(previous, tree_resources(now), {})
+    assert result.moves == [] and result.errors == []
+    destroyed, created, replaced = _simulated_plan(
+        _tree_policies(tr), _tree_policies(now), result.moves
+    )
+    assert destroyed == {("aws_iam_role.sm_role.name", '"SmRolePolicy1"')}
+    assert created == set() and replaced == set()
+
+
+def test_two_policy_names_with_one_label_are_refused(schema):
+    t = _role_template([_policy("bedrock-read", "a:A"), _policy("bedrock_read", "b:B")])
+    with pytest.raises(translate.TranslationError, match="both become"):
+        translated(t, schema)
+
+
+def test_positional_moves_from_a_previous_module_validate(standard, tmp_path):
+    """The previous release's module and manifest rewritten to the positional
+    labels, with every role's list rotated by one so no policy keeps its index;
+    the moves pair each address by name, and ``terraform validate`` accepts the
+    result."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    prev_module = tmp_path / "prev"
+    shutil.copytree(standard, prev_module, ignore=shutil.ignore_patterns("zips"))
+    relabel: dict[str, str] = {}
+    previous = {"resources": [], "moves": []}
+    for e in meta["resources"]:
+        e = json.loads(json.dumps(e))
+        policies = e.pop("inlinePolicies", None)
+        if policies:
+            role_label = e["address"].rsplit(".", 1)[1]
+            prefix = e["address"].rsplit("aws_iam_role.", 1)[0]
+            # The directory-read grant had its own label before format 3 too.
+            ordered = sorted(a for a in policies if not a.endswith("_tf_directory"))
+            ordered = ordered[1:] + ordered[:1]
+            for i, address in enumerate(ordered):
+                relabel[address] = f"{prefix}aws_iam_role_policy.{role_label}_{i}"
+            e["addresses"] = sorted(relabel.get(a, a) for a in e["addresses"])
+        previous["resources"].append(e)
+    assert relabel, "the standard template has roles with inline policies"
+    for f in prev_module.rglob("*.tf"):
+        rel = f.relative_to(prev_module).as_posix().split("/")[:-1]
+        prefix = "".join(f"module.{n}." for n in rel[1::2])
+        text = f.read_text()
+        for old, new in relabel.items():
+            if old.startswith(prefix + "aws_iam_role_policy."):
+                text = text.replace(
+                    f'resource "aws_iam_role_policy" "{old.rsplit(".", 1)[1]}" {{',
+                    f'resource "aws_iam_role_policy" "{new.rsplit(".", 1)[1]}" {{',
+                )
+        f.write_text(text)
+    prev_path = tmp_path / "previous.json"
+    prev_path.write_text(json.dumps(previous))
+    out = tmp_path / "m"
+    args = [
+        str(REPO / "template.yaml"),
+        "--offline",
+        "--out",
+        str(out),
+        "--label-template",
+        str(REPO / "template.yaml"),
+        "--version",
+        "0.0.1",
+        "--previous-manifest",
+        str(prev_path),
+        "--previous-module",
+        str(prev_module),
+    ]
+    assert main(args) == 0
+    moves = dict(
+        re.findall(r"from = (\S+)\n  to   = (\S+)", (out / "moved.tf").read_text())
+    )
+    assert moves == {new: old for old, new in relabel.items()}
+    report = _validate(out)
+    errors = [d for d in report["diagnostics"] if d["severity"] == "error"]
+    assert report["valid"] and not errors, errors[:5]

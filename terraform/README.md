@@ -289,6 +289,20 @@ be moved and is reported. The publish path (`idp-cli publish --terraform`, and
 `publish.py`) reads the previous manifest from the module the bucket's
 `idp-terraform-latest.json` pointer names before uploading the new one.
 
+A role's inline policies are labelled by policy name, not by position
+(`aws_iam_role_policy.<role>_<name>`), because IAM identifies an inline policy by
+its role and its name. Labelled by position, a policy inserted ahead of others
+renamed every later address's policy, which replaces it, and the replacement of
+one address was created before the deposed object of another address holding the
+same name was destroyed: the destroy deleted the policy just written. Keyed by
+name, a reordered or renumbered list (SAM names policies `<Role>Policy<n>` by
+position) updates the same-named policies in place, as CloudFormation does. The
+manifest (format 3) records each role's `inlinePolicies` names, and the moves pair
+policies by name. Modules before format 3 used `<role>_<n>` labels and record no
+names, so the translator reads them from the previous module itself
+(`--previous-module <zip or directory>`, which the publish path passes); without
+it, a positional address in the previous manifest fails the translation.
+
 To rename a logical id or a nested stack of a resource that exists in released
 templates, add an entry to `renames.yaml` in the same pull request:
 

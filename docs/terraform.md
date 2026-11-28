@@ -1103,6 +1103,18 @@ Three things in the module do what CloudFormation does implicitly on an update:
   replaces the resource only when one of its other inputs changes, which is when
   CloudFormation would.
 
+A role's inline policies are named in the module by policy name
+(`aws_iam_role_policy.<role>_<policy name>`), as IAM identifies them, so a release
+that adds a policy to a role, or reorders the role's list, updates the role's other
+policies in place. Modules up to 0.6.16 named them by position (`<role>_<n>`), and
+the upgrade from such a module moves each one, by name, to its new address.
+
+⚠️ Those moves follow the 0.6.16 module's names. A deployment still on 0.6.15 that
+upgrades straight past 0.6.16 can, as on the 0.6.15 to 0.6.16 upgrade, finish the
+apply without the state machine role's policy that lets it invoke the pipeline-hooks
+dispatcher. Run `terraform plan` after the apply; if it shows an
+`aws_iam_role_policy` to create, apply again.
+
 The plan check in `idp-cli deploy --terraform` is the backstop for anything these
 miss. If you deploy the module from your own configuration, read the plan for
 deletions of the addresses in `statefulAddresses` before applying.

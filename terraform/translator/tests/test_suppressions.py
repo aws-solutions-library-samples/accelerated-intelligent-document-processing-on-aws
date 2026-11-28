@@ -240,7 +240,7 @@ def test_a_mapped_suppression_is_carried_and_an_unmapped_one_is_listed(
     assert "CKV_AWS_158" not in out
     # checkov numbers the IAM rule separately per framework, and a role's
     # inline policies are separate Terraform resources: each gets the skip.
-    for name in ("r_0", "r_1"):
+    for name in ("r_p", "r_q"):
         block = out[out.index(f'resource "aws_iam_role_policy" "{name}" {{') :]
         assert block.splitlines()[1] == (
             "  #checkov:skip=CKV_AWS_290:write access is scoped by the boundary"
